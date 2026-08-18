@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sb-pomdp"
+version = "0.1.0"
+description = "Score-belief operator policies for partially observable control"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "numpy>=1.24,<2",
+  "torch==2.3.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<10",
+  "ruff>=0.6",
+]
+
+[project.scripts]
+sb-pomdp-train = "sb_pomdp.train:main"
+sb-pomdp-run = "sb_pomdp.run_experiments:main"
+sb-pomdp-compare = "sb_pomdp.compare:main"
+sb-pomdp-aggregate = "sb_pomdp.aggregate:main"
+sb-pomdp-fetch = "sb_pomdp.fetch_results:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sb_pomdp"]
+
+[tool.pytest.ini_options]
+testpaths = ["src/tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

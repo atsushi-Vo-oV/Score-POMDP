@@ -1,0 +1,552 @@
+\documentclass[a4paper,11pt]{article}
+\usepackage{mysty}
+\usepackage[margin=24mm]{geometry}
+\usepackage[hidelinks,unicode]{hyperref}
+
+\hypersetup{
+  pdftitle={Belief-Score-Based POMDP実験の関連研究と比較設計},
+  pdfauthor={Belief-Score-Based-Model}
+}
+\newcommand{\matchpoint}{\par\noindent\textbf{一致点：}}
+\newcommand{\difference}{\par\noindent\textbf{相違点：}}
+\newcommand{\recommendation}{\par\noindent\textbf{本実験での位置付け：}}
+\newcommand{\stopgrad}{\operatorname{stopgrad}}
+\setlength{\emergencystretch}{3em}
+
+\title{Belief-Score-Based POMDP実験の関連研究と比較設計}
+\author{Belief-Score-Based-Model 実験仕様}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+本稿は、粒子上のscoreによる信念更新、belief setからpolicyへの作用素表現、
+連続行動の拡散方策、model-free POMDP reinforcement learningという四つの観点から
+関連研究を整理する。構成要素ごとの先行研究は存在し、とりわけZengらの
+Conditional Score-based Filterはparticle set、Set Transformer、conditional diffusionを
+同時に用いるため非常に近い。本実験の差分は、未知POMDPにおいて信念表現と方策を
+環境報酬からtask-orientedに学習し、連続行動ではper-denoising-step PPOを組み合わせる点にある。
+ただしPPOのみで学習したscoreを較正済みBayesian posteriorと呼ぶことはできない。
+この差分を検証するため、提案法、encoder ablation、Gaussian action ablation、
+model-free MLP/GRU、oracle-state参照からなる6手法の比較実装も定義する。
+信念更新は保存noiseから現在parametersで再生し、episode全体へ逆伝播する
+\texttt{full}と環境時刻境界だけを切る\texttt{tbptt\_1}を比較する。
+active productionではscore TransformerとGRUへ同一のaction headを接続し、
+GRUにも対応する二つのtemporal-gradient modeを実装する。
+\end{abstract}
+
+\section{今回の方法を構成する三つの写像}
+
+今回の方法は、概念的には次の三つの写像からなる。
+\begin{enumerate}
+  \item 初期時刻には専用energy
+  $g_{\theta_0}(o_0,s)-\frac12\lVert s\rVert^2$を使い、それ以降は観測、
+  前時刻の粒子、行動から新しいenergy/score fieldを作る信念更新
+  \begin{equation}
+    \mathfrak{s}_{t+1}(s')
+    =\nabla_{s'}\left[
+      f(o_{t+1},s',a_t)
+      +\operatorname{logsumexp}_{i}u(s',s_{t,i},a_t)
+    \right].
+    \label{eq:proposed-score}
+  \end{equation}
+  ここで二次項はparameter regularizationではなく、初期密度を拘束する標準Gaussian
+  基準密度のlog densityである。無制限の関数族なら$g_{\theta_0}$へ吸収できるが、
+  有限幅MLPが非有界なlatent空間全体で同じ二次tailを正確に表す保証はないため、
+  normalizableな裾とscaleを明示する項として分離する。
+  \item $\{(s_{t,i},\mathfrak{s}_t(s_{t,i}))\}_{i=1}^{K}$という順序なし集合から
+    policy conditionを作るset encoder。
+  \item conditionとaction query、またはconditionとnoisy actionを受け取り、
+    離散action logitまたは連続action reverse kernelを返すoperator policy。
+\end{enumerate}
+以下では、この三要素のどこまでが各先行研究と一致するかを分けて述べる。
+
+\section{Score-based filteringとparticle update}
+
+\subsection{Score-based Filter}
+
+Bao, Zhang, ZhangのScore-based Filter\cite{bao2024scorefilter}は、
+recursive Bayesian filteringへscore-based generative samplingを導入した代表的研究である。
+Bayes則からposterior scoreを
+\begin{equation}
+  \nabla_x\log p(x_t\mid y_{1:t})
+  =\nabla_x\log p(x_t\mid y_{1:t-1})
+   +\nabla_x\log p(y_t\mid x_t)
+  \label{eq:posterior-score-sum}
+\end{equation}
+と分解し、学習したprediction scoreへ観測尤度scoreを加えてreverse diffusionを行う。
+
+\matchpoint
+密度そのものではなくscore fieldを保持し、score-driven samplerで事後粒子を生成する点が一致する。
+式\eqref{eq:proposed-score}も、$f$をlog-likelihood、$u$をlog-transitionとして解釈すれば
+式\eqref{eq:posterior-score-sum}のparticle mixture近似になる。
+
+\difference
+Score-based Filterは状態遷移モデルと観測尤度を既知として扱い、filtering精度を目的にscoreを学習する。
+今回の$f,u$は未知POMDP内で環境報酬だけから学ばれるため、確率モデルとして同定される保証がない。
+
+\subsection{Score-based Sequential Langevin Sampling}
+
+DingらのSSLS\cite{ding2024ssls}は、予測粒子にdenoising score matchingを適用し、
+prediction scoreとlikelihood gradientを足したdriftでannealed Langevin Monte Carloを行う。
+高次元・多峰filteringに加えて収束および長時間誤差を解析している。
+
+\matchpoint
+逐次予測、posterior scoreの加法分解、Langevin particle samplingの組合せが近い。
+
+\difference
+各時刻のscore matching用sampleと既知の尤度を必要とし、policyやcontrol lossは持たない。
+今回のUnadjusted Langevin AlgorithmはMetropolis補正もannealingも行わない簡略形である。
+
+\subsection{Conditional Score-based Filter：最も近いfiltering研究}
+
+ZengらのConditional Score-based Filter（CSF）\cite{zeng2025csf}は、
+prior particle ensembleをSet TransformerとPooling by Multihead Attentionで符号化し、
+そのconditionの下でdiffusion modelからposterior samplesを生成する。
+offlineで多様なprior/posterior pairを学習することにより、online時刻ごとの再学習を避ける。
+
+\matchpoint
+particle set、permutation-invariant Transformer pooling、conditional score/diffusion samplerを
+一つのpipelineで使う点は今回と直接重なる。したがって、新規性を論じる際の最重要引用である。
+
+\difference
+CSFはfiltering/data assimilation専用であり、既知モデルから作った教師posteriorを用いる。
+policy、PPO、action-conditioned belief update、task-oriented representation learningは扱わない。
+今回の新規性は「Set Transformerをscore filterに使うこと」単独には置かず、
+POMDP制御とのend-to-end統合に置くべきである。
+
+\subsection{Trajectory-level score assimilation}
+
+Rozet and Louppe\cite{rozet2023sda}は、短いMarkov segmentから軌道priorのscoreを学び、
+観測尤度でguideしながら全軌道を非自己回帰的に生成する。
+逐次filterではなくsmoothingに近いが、prior scoreとlikelihood scoreを分離できることの関連例である。
+
+\section{Setから関数を出力するoperator architecture}
+
+\subsection{Deep SetsとSet Transformer}
+
+Deep Sets\cite{zaheer2017deepsets}は、permutation-invariantなset functionの基本形
+\begin{equation}
+  F(\{z_i\}_{i=1}^{K})
+  =\rho\!\left(\sum_{i=1}^{K}\varphi(z_i)\right)
+  \label{eq:deep-sets}
+\end{equation}
+を与える。Set Transformer\cite{lee2019settransformer}はself-attentionで要素間相互作用を表し、
+PMAで順序不変にpoolする。今回の
+\begin{equation}
+  z_i=[s_{t,i},\mathfrak{s}_t(s_{t,i})]
+  \longrightarrow \operatorname{TransformerEncoder}
+  \longrightarrow \operatorname{Pool}
+  \label{eq:set-policy-encoder}
+\end{equation}
+は、位置符号化を持たないself-attentionと順序不変poolingからなるSet Transformer型encoderである。
+
+\recommendation
+Deep Setsをarchitecture ablation、Transformer encoderを提案encoderとして同一PPO条件で比較する。
+性能差がなければ、提案の利点はattentionではなくscore-based recurrent updateにあると解釈すべきである。
+
+\subsection{Conditional Neural ProcessesとAttentive Neural Processes}
+
+Conditional Neural Processes（CNP）\cite{garnelo2018cnp}は、context set
+$\{(x_i,y_i)\}$を共有encoderと順序不変aggregationで要約し、target query $x_*$とともにdecoderへ渡して
+$p(y_*\mid x_*,\{(x_i,y_i)\})$を出力する。今回の対応は
+\begin{equation}
+  (x_i,y_i,x_*)
+  =\bigl(s_{t,i},\mathfrak{s}_t(s_{t,i}),a\bigr)
+  \label{eq:cnp-correspondence}
+\end{equation}
+であり、belief setからaction-indexed policy functionを返す構造に近い。
+
+Attentive Neural Processes（ANP）\cite{kim2019anp}はcontext self-attentionと
+target-to-context cross-attentionを導入する。候補actionごとに重要なbelief particleが異なるなら、
+action queryをbelief tokensへcross-attendさせるANP型decoderが自然である。
+
+\difference
+CNP/ANPは複数の教師付きfunction regression taskから条件付き関数分布を学ぶ。
+今回の出力はRL policyであり、教師target functionは存在しない。
+また連続行動版では、action queryは最終actionそのものではなく各拡散stepの
+$(x^n,n)$としてdenoiserへ入る。
+
+\subsection{DeepONet}
+
+DeepONet\cite{lu2021deeponet}は、入力関数を固定sensor上の値としてbranch networkへ、
+出力座標をtrunk networkへ入力し、両者の組合せでoperator valueを返す。
+belief score functionを入力、actionを出力側座標と見れば、今回も
+\begin{equation}
+  \mathfrak{s}_t(\cdot)\longmapsto
+  \bigl[a\mapsto\pi(a\mid\mathfrak{s}_t)\bigr]
+  \label{eq:operator-view}
+\end{equation}
+というoperator learningの形を持つ。
+
+\difference
+DeepONetは通常、固定sensorと教師付きoperator dataを用いる。
+今回のparticle位置は毎時刻変化し、set encoderで処理され、学習信号はreturnのみである。
+したがって実装名称は「Set Transformer conditioned policy/operator」が中心で、
+DeepONetは概念的なoperator解釈として引用するのが適切である。
+
+\section{Particle beliefを用いるPOMDP reinforcement learning}
+
+\subsection{DPFRL}
+
+MaらのDiscriminative Particle Filter Reinforcement Learning（DPFRL）\cite{ma2020dpfrl}は、
+learned transition、observation compatibility、soft resamplingからなる微分可能particle filterを
+actor networkへ組み込み、A2Cでend-to-end学習する。粒子は真のstate posteriorを再構成するためではなく、
+意思決定に有用なdiscriminative latent beliefとして学習される。
+
+\matchpoint
+未知POMDPでparticle setをrecurrently更新し、beliefとpolicyをcontrol objectiveから共同学習する点が
+今回に最も近い。PPOだけではBayesian calibrationが保証されない今回の位置付けにも先例を与える。
+
+\difference
+DPFRLはimportance weightとsoft resamplingを用い、beliefは平均とmoment generating function featuresで
+要約する。今回には明示的重み・resamplingがなく、energy score＋ULAとSet Transformer poolingを用いる。
+
+\subsection{DVRL}
+
+Deep Variational Reinforcement Learning（DVRL）\cite{igl2018dvrl}は、
+sequential latent generative modelとSMC inferenceをactor--criticへ組み込み、
+RL lossと$n$-step ELBOで共同学習する。
+
+\matchpoint
+複数particleで多峰なlatent beliefを維持し、policyと共同学習する。
+
+\difference
+DVRLはobservation decoderを含む明示的生成モデルとvariational lower boundを必要とする。
+今回の「完全モデルフリー」は観測再構成lossを用いないdiscriminative trainingを意味する。
+元論文のoptimizerはA2Cであり、数値をPPO実装と直接比較すべきではない。
+
+\subsection{FORBES}
+
+Flow-based Recurrent Belief State Learning（FORBES）\cite{chen2022forbes}は、
+normalizing flowをvariational recurrent modelへ導入し、連続かつ多峰なbelief densityを表現する。
+得られたbeliefをdownstream RLへ入力してvisual-motor POMDPで評価する。
+
+\difference
+正規化可能なflow densityと補助生成目的を用いるのに対し、今回のenergyは正規化定数を計算せず、
+scoreとsampleだけを利用する。完全再実装は比較コストが大きいため、主要な関連研究として引用し、
+実験比較は追加予算がある場合に限定する。
+
+\section{Recurrent model-free baseline}
+
+Ni, Eysenbach, Salakhutdinov\cite{ni2022recurrent}は、architectureとhyperparameterを丁寧に選んだ
+recurrent model-free RLが、21個のPOMDP環境中18個で特殊化手法と同等以上になり得ることを示した。
+これは、複雑なbelief機構を提案する場合にGRU/LSTM baselineが必須であることを意味する。
+同論文の連続制御では主にrecurrent SAC/TD3を用いており、今回のGRU/LSTM-PPOは
+同じ主張に基づくapples-to-apples adaptationであって、原論文アルゴリズムの完全再現ではない。
+本実装のactive GRUは、連続taskでは提案法と同じDiffusionPolicy、離散taskでは同じ
+categorical headを使う。\texttt{full}は観測・直前行動のepisode prefixをrollout境界越しに
+current parametersで再生し、\texttt{tbptt\_1}は各環境stepへ入るhiddenだけをdetachする。
+したがってaction familyとforward値を揃えたまま、記憶表現と時間方向のgradient範囲を比較できる。
+
+\section{連続行動のdiffusion policy optimization}
+
+DPPO\cite{ren2025dppo}はdenoising chainを内側MDPとみなし、
+各Gaussian reverse transitionの尤度比へPPO clippingを適用する。
+最終actionの周辺尤度やchain全体のratio積は使用しない。
+
+\matchpoint
+belief set embeddingを通常のstate conditionの代わりに使えば、今回の連続行動方策へ直接適用できる。
+
+\difference
+DPPOの中心設定はbehavior cloning済みDiffusion Policyのfine-tuningであり、
+今回の全networkを環境報酬だけで学ぶfrom-scratch設定とは異なる。
+同論文のfrom-scratch実験でもGaussian policyより遅い。
+NCDPO\cite{yang2025ncdpo}はdenoising noiseをconditionとして保存し、
+最終action likelihoodから全denoising stepへbackpropすることでfrom-scratch効率を改善する候補だが、
+現時点ではpreprint/submissionである。
+
+\section{Model-free full-gradient belief replay}
+
+rollout時には信念粒子座標をPPO更新用の固定値として使わず、環境時刻$t$の
+ULA初期noise $z_t$と各stepのnoise $\epsilon_{t,1:L}$を保存する。
+episode初期時刻は専用energy $g_{\eta_0}(o_0,s)-\frac12\lVert s\rVert^2$、
+それ以降は観測energyと前時刻粒子に対する遷移energyのlog-mean-expを用いる。
+観測列$o_{0:t}$、実現済み行動列$a_{0:t-1}$、episode-start mask、報酬、
+old log-prob、advantageとreturnも保存dataとして固定する。PPO更新では現在の
+信念parameters $\eta$を用いて
+\begin{align}
+  r^\eta_{t,0}&=z_t,\\
+  r^\eta_{t,l}
+    &=r^\eta_{t,l-1}
+      +\alpha_l\nabla_sE_\eta(
+        r^\eta_{t,l-1};o_t,B^\eta_{t-1},a_{t-1})
+      +\sqrt{2\alpha_l}\epsilon_{t,l},\\
+  B^\eta_t
+    &=\left\{\left(
+      r^\eta_{t,L,i},
+      \nabla_sE_\eta(r^\eta_{t,L,i};o_t,B^\eta_{t-1},a_{t-1})
+    \right)\right\}_{i=1}^{K}
+  \label{eq:full-belief-replay}
+\end{align}
+を再parameterizeして再生する。全ULA stepと最後のscoreで計算graphを保持するため、
+policy/value lossは粒子trajectory、観測energy、遷移energyへ伝播する。
+環境の状態遷移や観測生成には微分せず、実現済み行動も固定dataとして扱うので、
+既知環境モデルを用いないmodel-free学習である。
+
+\texttt{full}では、episodeがrollout境界を越えた場合も未終了episode prefixの
+観測・行動・noiseを保持し、episode-startから対象loss時刻までcurrent parametersで
+全BPTTする。真のepisode resetだけが時間方向のgraph境界である。
+\texttt{tbptt\_1}では同一のforward再生を行いつつ、各環境時刻の入力だけ
+\begin{equation}
+  B^{\mathrm{in}}_{t-1}=\stopgrad(B^\eta_{t-1})
+  \label{eq:tbptt-one-related}
+\end{equation}
+とする。したがって時刻内の全ULA stepは両modeで微分され、同じnoiseに対する
+forward値も一致する。
+
+PPOではflattenした独立時刻minibatchではなくsequence minibatchを用い、
+各optimizer stepのcurrent parametersで再生する。optimizer更新後には未終了episode prefixから
+belief contextを再構築し、stale particleを次rolloutへ渡さない。
+\texttt{full}のactivation memoryを抑えるためnon-reentrant checkpoint
+\verb|torch.utils.checkpoint(..., use_reentrant=False)|を使う。これはbackward中に
+forwardを再計算するだけで、detachを挿入せず数学的な勾配を変更しない。
+productionでは論理minibatch 512遷移を、環境trajectory軸だけで4個の128遷移memory
+microbatchへ分ける。各lossを論理minibatch内の遷移比で重み付けしてgradientを加算し、
+gradient clippingとoptimizer stepは4回のbackward後に1回だけ行う。
+sequenceを時間方向に分割しないため、この省memory化はfull BPTTをTBPTTへ変えない。
+
+\section{実装した直接比較}
+
+\subsection{Light-DarkのN次元化}
+
+Light-Dark原典\cite{platt2010belief}は$x_t,u_t,o_t\in\mathbb R^2$、
+$x_{t+1}=x_t+u_t$という零process-noiseの一次系であり、観測noiseは第1座標に依存する。
+本実装はこれを
+\begin{equation}
+  x_t,u_t,o_t\in\mathbb R^N,\qquad
+  u_t\in[-1,1]^N,\qquad x_{t+1}=x_t+u_t,
+\end{equation}
+\begin{equation}
+  o_t\sim\mathcal N\!\left(x_t,
+  \left\{\frac{1}{2}(5-x_{t,1})^2+\sigma_{\min}^2\right\}I_N\right)
+\end{equation}
+へ拡張する。初期状態は$\mathcal N(2\mathbf 1,0.5^2I_N)$、目標は原点、
+step rewardは$-(0.5\lVert x_t\rVert_2^2+0.5\lVert u_t\rVert_2^2)$である。
+原典にない有界行動と目標半径0.25は、現在のGym型PPO実装へ合わせた変更である。
+設定の\texttt{dimension}で任意の$N$を指定でき、productionでは$N=5$を使う。
+
+\subsection{比較手法と実験行列}
+
+実行入口を\verb|sb-pomdp-compare|に統一し、次の6手法を実装した。
+\begin{center}
+\small
+\begin{tabular}{p{0.25\linewidth}p{0.35\linewidth}p{0.28\linewidth}}
+\hline
+method & 信念・入力 & action policy \\
+\hline
+\texttt{score\_transformer} & score粒子とTransformer（提案法） & categorical / diffusion \\
+\texttt{score\_deepsets} & 同じscore粒子とDeep Sets & categorical / diffusion \\
+\texttt{score\_gaussian} & score粒子とTransformer & tanh Gaussian（連続のみ） \\
+\texttt{observation\_mlp} & 現在の部分観測だけ & categorical / tanh Gaussian \\
+\texttt{gru} & 部分観測と直前行動、episode-prefix replay & categorical / diffusion（active比較） \\
+\texttt{oracle\_state} & 正規化した完全状態 & categorical / tanh Gaussian \\
+\hline
+\end{tabular}
+\end{center}
+
+実装済み6手法を4 taskすべてで走らせる候補は24組だが、\texttt{score\_gaussian}は
+離散CartPoleで提案法との差が定義できないため除外する。したがって実装全体の候補は
+23 method/task組であり、local設定では2 gradient modesを含む46 cellsを1 seed・1 PPO updateで
+smoke testする。これは成果物を含む実装経路の確認であり、性能比較ではない。
+active productionは\texttt{score\_transformer}と\texttt{gru}の2手法に限定し、
+4 tasks、2 gradient modes、各組5 seeds、合計
+$2\times(2\times4)\times5=80$ runsとする。active productionでscore beliefを持たない
+baselineは\texttt{gru}だけである。GRUの\texttt{full}はepisode開始からhidden recurrenceを
+rollout境界越しに再生し、\texttt{tbptt\_1}は各環境stepの入力hiddenをdetachする。
+両modeは同一forward値と異なるtemporal gradient範囲を持つ実際のablationである。
+
+\subsection{比較で固定する条件}
+
+全手法でtask、train/evaluation seed、environment step budget、rollout長、GAE、PPO clip、
+optimizer、終了処理、evaluation episode数を共有する。active比較の連続3 taskでは、
+score TransformerとGRUへ同じDiffusionPolicyを接続し、reverse step数、noise schedule、
+variance floor、denoising advantage重み、per-denoising-step PPO clippingを共有する。
+離散CartPoleでも同じcategorical headを使う。非activeな連続Gaussian系は同じ
+tanh-squashed Gaussian headとJacobian込みlog-probを使い、\texttt{score\_gaussian}との比較では
+belief encoderも固定する。
+productionでは全手法共通でAdamの学習率を$5\times10^{-5}$、PPO clip幅を$0.2$、
+gradient norm上限を$0.5$とする。approximate KLとclip fractionは診断用に記録するが、
+KL閾値によるearly stoppingやminibatch拒否は行わない。log ratioへの独自hard clampも置かない。
+entropy bonusの係数はdebug・productionともに0とし、比較目的を
+$-L_{\mathrm{policy}}+c_VL_{\mathrm{value}}$へ揃える。
+全手法でeffective minibatch 512とoptimizer更新回数を共通にし、score系の
+$4\times128$という物理分割は更新回数に数えない。物理分割はthroughputへ影響するため、
+wall-clockとpeak GPU memoryとともに明記する。
+GRUのPPO minibatchは固定長time chunkへ分けず、完全な時間軸を保って環境軸だけを分割する。
+optimizer step後は未終了episode prefixを更新後parametersで再生してonline hiddenを再構築する。
+評価は離散方策の\texttt{greedy}、diffusionの\texttt{mean\_chain}、
+Gaussianの\texttt{mean\_action}を決定論的規約とし、すべてで\texttt{stochastic}も記録する。
+ただしscore系では、決定論的なのはaction readoutだけであり、beliefの初期粒子とULA noiseはsampleする。
+したがって、これはagent全体を決定論的にした評価ではない。
+
+active productionの集約表はgradient modeと8 method/task組ごとの16行を保ち、
+各行にdeterministic action readoutとstochastic双方の
+seed平均・標準偏差・同一seed paired差を別列で記録する。前者には\texttt{greedy}、
+\texttt{mean\_chain}、\texttt{mean\_action}という規約差が含まれるため、action familyをまたぐ比較では
+stochastic列を共通指標として重視する。これら三つはmetric名ではなくaction readout名である。
+activeな連続比較は両手法とも\texttt{mean\_chain}であり、決定論的readoutも揃う。
+事前に一つのprimary metricを定めるなら、held-out episodeにおけるstochastic policyの最終returnを
+training seed間で集約した値を用いる。粒子・拡散手法は1 environment step当たりの計算が大きいため、
+environment stepsだけでなくwall-clock、peak GPU memory、parameter数も報告する。
+active comparisonのGRUは入力encoder幅$[348,185]$、hidden幅176とし、score Transformerと同じ
+policy/value headの後段へ接続する。parameter数は次の通りである。
+\begin{center}
+\small
+\begin{tabular}{lrrr}
+\hline
+task & score Transformer & GRU & 相対差 \\
+\hline
+CartPole & 347,462 & 347,060 & $-0.116\%$ \\
+Pendulum & 348,357 & 348,759 & $+0.115\%$ \\
+MountainCarContinuous & 348,229 & 348,411 & $+0.052\%$ \\
+Light-Dark ($N=5$) & 351,817 & 352,223 & $+0.115\%$ \\
+\hline
+\end{tabular}
+\end{center}
+最大絶対相対差は0.116\%である。共有hyperparameterとcapacity matchingは比較条件を揃えるが、
+手法別に十分tuningした比較ではない。local smokeの小型networkはこのcapacity matchingの対象外である。
+\texttt{oracle\_state}も有限予算で最適化する参照法であり、
+理論的上限ではない。
+local smokeではscore beliefを持たない\texttt{observation\_mlp}、\texttt{gru}、
+\texttt{oracle\_state}も両gradient modeで実行する。active productionに含めるのは
+このうち\texttt{gru}だけである。GRUではmodeがtemporal gradient範囲を変える。
+一方、feed-forwardな\texttt{observation\_mlp}と\texttt{oracle\_state}に対するmode labelは
+network計算を変えないlocal smoke上のcontrol反復である。
+
+学習時には、初期energy $g_0$、観測energy $f$、遷移energy $u$のpre-clip gradient norm、
+初期時刻/再帰時刻別のscoreとparticleのL2 norm、各区分のsample数、score/particleの
+non-finite数を記録する。これらは数値安定性とgradient flowの診断値であり、閾値による
+optimizer step拒否やprimary性能指標には用いない。
+
+\subsection{今回の行列に含めない比較}
+
+DPFRL-style particle PPO、DVRL、FORBES、LSTMは未実装である。
+特にDPFRLの原論文はA2Cであり、PPOへ移植した場合は原手法の再現ではなくadaptationと明記する必要がある。
+補助生成lossを用いるDVRL/FORBESも、環境報酬だけを用いる今回の学習信号とは条件が異なる。
+Light-Darkに5次元\texttt{Box}行動を追加するが、無限次元行動や多峰な最適行動分布まで
+網羅するものではなく、diffusionの一般的な優位性をこの比較だけでは検証できない。
+
+\section{新規性の境界と安全な主張}
+
+個々の構成要素について、score-based filter、Set Transformer pooling、particle belief RL、
+diffusion PPOはいずれも先行研究が存在する。特にCSF\cite{zeng2025csf}との重なりから、
+「particle setをTransformerで条件付けるscore filter」自体を新規とは主張できない。
+本実験で検証すべき組合せ上の差分は次である。
+\begin{enumerate}
+  \item 未知のaction-conditioned POMDPで、energy-defined score beliefを逐次更新すること。
+  \item likelihood/transition教師を使わず、policy returnからtask-orientedにbeliefとoperator policyを共同学習すること。
+  \item 同じbelief set conditionを離散Softmax policyと連続DDPM policyの双方へ接続すること。
+  \item 連続行動ではper-denoising-step PPOをfrom scratchで適用し、同じdiffusion headを持つGRUと比較すること。
+\end{enumerate}
+一方、補助的なfiltering lossやcalibration testなしには、学習scoreを
+「真のBayesian posterior score」または「正確なbelief」と断定しない。
+``task-oriented score-based latent belief''または``discriminative belief representation''が適切である。
+
+\sloppy
+\begin{thebibliography}{99}
+
+\bibitem{platt2010belief}
+Robert Platt Jr., Russ Tedrake, Leslie Kaelbling, Tomas Lozano-Perez,
+``Belief space planning assuming maximum likelihood observations,''
+Robotics: Science and Systems, 2010.
+Official: \url{https://groups.csail.mit.edu/robotics-center/public_papers/Platt10.pdf}.
+
+\bibitem{bao2024scorefilter}
+Feng Bao, Zezhong Zhang, Guannan Zhang,
+``A score-based filter for nonlinear data assimilation,''
+\emph{Journal of Computational Physics}, Vol.~514, 113207, 2024.
+DOI: \url{https://doi.org/10.1016/j.jcp.2024.113207};
+arXiv: \url{https://arxiv.org/abs/2306.09282}.
+
+\bibitem{ding2024ssls}
+Zhao Ding, Chenguang Duan, Yuling Jiao, Jerry Zhijian Yang, Cheng Yuan, Pingwen Zhang,
+``Nonlinear Assimilation with Score-based Sequential Langevin Sampling,'' 2024.
+arXiv: \url{https://arxiv.org/abs/2411.13443}.
+
+\bibitem{zeng2025csf}
+Zhijun Zeng, Weiye Gan, Junqing Chen, Zuoqiang Shi,
+``An Efficient Conditional Score-based Filter for High Dimensional Nonlinear Filtering Problems,'' 2025.
+arXiv: \url{https://arxiv.org/abs/2509.19816}.
+
+\bibitem{rozet2023sda}
+Fran\c{c}ois Rozet, Gilles Louppe,
+``Score-based Data Assimilation,'' NeurIPS, 2023.
+DOI: \url{https://doi.org/10.52202/075280-1763};
+official: \url{https://proceedings.neurips.cc/paper_files/paper/2023/hash/7f7fa581cc8a1970a4332920cdf87395-Abstract-Conference.html}.
+
+\bibitem{zaheer2017deepsets}
+Manzil Zaheer, Satwik Kottur, Siamak Ravanbakhsh, Barnab\'as P\'oczos,
+Ruslan Salakhutdinov, Alexander J. Smola,
+``Deep Sets,'' NeurIPS, 2017.
+Official: \url{https://proceedings.neurips.cc/paper/2017/hash/f22e4747da1aa27e363d86d40ff442fe-Abstract.html};
+arXiv: \url{https://arxiv.org/abs/1703.06114}.
+
+\bibitem{lee2019settransformer}
+Juho Lee, Yoonho Lee, Jungtaek Kim, Adam Kosiorek, Seungjin Choi, Yee Whye Teh,
+``Set Transformer: A Framework for Attention-based Permutation-Invariant Neural Networks,''
+ICML, 2019.
+Official: \url{https://proceedings.mlr.press/v97/lee19d.html};
+arXiv: \url{https://arxiv.org/abs/1810.00825}.
+
+\bibitem{garnelo2018cnp}
+Marta Garnelo, Dan Rosenbaum, Christopher Maddison, Tiago Ramalho, David Saxton,
+Murray Shanahan, Yee Whye Teh, Danilo Rezende, S. M. Ali Eslami,
+``Conditional Neural Processes,'' ICML, 2018.
+Official: \url{https://proceedings.mlr.press/v80/garnelo18a.html};
+arXiv: \url{https://arxiv.org/abs/1807.01613}.
+
+\bibitem{kim2019anp}
+Hyunjik Kim, Andriy Mnih, Jonathan Schwarz, Marta Garnelo, S. M. Ali Eslami,
+Dan Rosenbaum, Oriol Vinyals, Yee Whye Teh,
+``Attentive Neural Processes,'' ICLR, 2019.
+arXiv: \url{https://arxiv.org/abs/1901.05761}.
+
+\bibitem{lu2021deeponet}
+Lu Lu, Pengzhan Jin, Guofei Pang, Zhongqiang Zhang, George Em Karniadakis,
+``Learning nonlinear operators via DeepONet based on the universal approximation theorem of operators,''
+\emph{Nature Machine Intelligence}, Vol.~3, pp.~218--229, 2021.
+DOI: \url{https://doi.org/10.1038/s42256-021-00302-5}.
+
+\bibitem{ma2020dpfrl}
+Xiao Ma, Peter Karkus, David Hsu, Wee Sun Lee, Nan Ye,
+``Discriminative Particle Filter Reinforcement Learning for Complex Partial Observations,''
+ICLR, 2020.
+Official: \url{https://openreview.net/forum?id=HJl8_eHYvS};
+arXiv: \url{https://arxiv.org/abs/2002.09884}.
+
+\bibitem{igl2018dvrl}
+Maximilian Igl, Luisa Zintgraf, Tuan Anh Le, Frank Wood, Shimon Whiteson,
+``Deep Variational Reinforcement Learning for POMDPs,'' ICML, 2018.
+Official: \url{https://proceedings.mlr.press/v80/igl18a.html};
+arXiv: \url{https://arxiv.org/abs/1806.02426}.
+
+\bibitem{chen2022forbes}
+Xiaoyu Chen, Yao Mark Mu, Ping Luo, Shengbo Li, Jianyu Chen,
+``Flow-based Recurrent Belief State Learning for POMDPs,'' ICML, 2022.
+Official: \url{https://proceedings.mlr.press/v162/chen22q.html};
+arXiv: \url{https://arxiv.org/abs/2205.11051}.
+
+\bibitem{ni2022recurrent}
+Tianwei Ni, Benjamin Eysenbach, Ruslan Salakhutdinov,
+``Recurrent Model-Free RL Can Be a Strong Baseline for Many POMDPs,'' ICML, 2022.
+Official: \url{https://proceedings.mlr.press/v162/ni22a.html};
+arXiv: \url{https://arxiv.org/abs/2110.05038}.
+
+\bibitem{ren2025dppo}
+Allen Z. Ren, Justin Lidard, Lars L. Ankile, Anthony Simeonov, Pulkit Agrawal,
+Anirudha Majumdar, Benjamin Burchfiel, Hongkai Dai, Max Simchowitz,
+``Diffusion Policy Policy Optimization,'' ICLR, 2025.
+Official: \url{https://proceedings.iclr.cc/paper_files/paper/2025/hash/c0749c39aaff9e9e4c91f7118bf21b1e-Abstract-Conference.html};
+arXiv: \url{https://arxiv.org/abs/2409.00588};
+code: \url{https://github.com/irom-princeton/dppo}.
+
+\bibitem{yang2025ncdpo}
+Ningyuan Yang, Jiaxuan Gao, Feng Gao, Yi Wu, Chao Yu,
+``Fine-tuning Diffusion Policies with Backpropagation Through Diffusion Timesteps,'' 2025.
+arXiv: \url{https://arxiv.org/abs/2505.10482}.
+
+\end{thebibliography}
+
+\end{document}

@@ -1,0 +1,27 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Experiment outputs are intentionally kept out of source control.
+results/*
+!results/.gitkeep
+
+# This local file currently contains credentials and is not a valid OpenSSH config.
+ssh-config
+
+# Per-submission Genkai comparison campaign identifier.
+config/campaign-id*.txt
+
+# LaTeX build products
+docs/*.aux
+docs/*.log
+docs/*.out
+docs/*.fdb_latexmk
+docs/*.fls
+docs/*.synctex.gz
+docs/*.toc

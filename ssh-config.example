@@ -1,0 +1,6 @@
+Host genkai
+    HostName genkai.hpc.kyushu-u.ac.jp
+    User kuXX
+    IdentityFile ~/.ssh/genkai_id_ed25519
+    IdentitiesOnly yes
+

@@ -1,0 +1,367 @@
+
+% ===============================================
+%  記法ルール
+% ・すべてオプション引数で書く
+% ・初期引数を指定するか、指定されてない場合はIF文で分岐する
+% ===============================================
+
+
+% =============
+% 使用パッケージ
+%==============
+
+\usepackage{luatexja}
+
+\usepackage{pdflscape}
+
+\usepackage{latexsym}
+\usepackage{amssymb}
+\usepackage{amsfonts}
+\usepackage{amsmath}
+\usepackage{amsthm}
+\usepackage{mathrsfs}
+\usepackage{caption}
+\usepackage{multicol}
+\usepackage{multirow}
+
+
+\usepackage{xcolor}
+\usepackage{thm-restate}
+\usepackage{bbm}
+
+
+% ==========
+% エラーコマンド
+% ==========
+
+\newcommand{\argerr}[1]{
+    \PackageError{mycommand}
+        {No argument}
+        {The command "#1" needs two arguments.}
+}
+
+% ==========
+% かっこ系
+%===========
+
+\NewDocumentCommand{\inner}
+{ooo}
+{
+    \IfValueF{#2}{
+        \argerr{inner}
+    }
+    \IfNoValueTF{#3}{
+        \left\langle #1, #2 \right\rangle
+    }{
+        \left\langle #1, #2 \right\rangle _{#3}
+    }
+}
+
+\NewDocumentCommand{\pr}
+{o}
+{
+    \IfNoValueTF{#1}{
+        \argerr{pr}
+    }{\left( {#1} \right)}
+}
+
+\NewDocumentCommand{\br}
+{o}
+{
+    \IfNoValueTF{#1}{
+        \argerr{br}
+    }{\left[ {#1} \right]}
+}
+
+\NewDocumentCommand{\interval}
+{oo}
+{
+    \IfNoValueTF{#2}{
+        \argerr{interval}
+    }{\left[#1, #2 \right)}
+}
+
+
+\NewDocumentCommand{\semiinterval}
+{oo}
+{
+    \IfNoValueTF{#2}{
+        \argerr{semiinterval}
+    }{\left[#1, #2 \right)}
+}
+
+\newcommand{\ivl}{\interval}
+\newcommand{\sivl}{\semiinterval}
+
+
+\NewDocumentCommand{\abs}
+{o o}
+{
+    \IfValueF{#1}{
+        \argerr{abs}
+    }
+    \IfNoValueTF{#2}{
+        \left| #1 \right|
+    }{
+        \left| #1 \right|_{#2}
+    }
+}
+
+\NewDocumentCommand{\norm}
+{o o}
+{
+    \IfValueF{#1}{
+        \argerr{norm}
+    }
+    \IfNoValueTF{#2}{
+        \left\| #1 \right\|
+    }{
+        \left\| #1 \right\|_{#2}
+    }
+}
+
+
+\NewDocumentCommand{\fl}
+{o o}
+{
+    \IfValueF{#1}{
+        \argerr{fl}
+    }
+    \left\lfloor #1 \right\rfloor
+}
+
+
+% ==========s
+% その他
+%===========
+
+
+\NewDocumentCommand{\intset}
+{o o}
+{
+    \IfValueF{#2}{
+        \argerr{intset}
+    }
+    \left\{ #1 \; \middle| \; #2 \right\}
+}
+
+\NewDocumentCommand{\extset}
+{o}
+{
+    \IfValueF{#1}{
+        \argerr{extset}
+    }
+    \left\{ #1 \right\}
+}
+
+\newcommand{\iset}{\intset}
+\newcommand{\eset}{\extset}
+
+\newcommand{\aw}[1]{\quad\text{a.e.} #1}
+
+\newcommand{\complex}{\mathbb{C}}
+\newcommand{\cpx}{\mathbb{C}}
+\newcommand{\real}{\mathbb{R}}
+\newcommand{\nat}{\mathbb{N}}
+\newcommand{\banach}{\mathbb{B}}
+\newcommand{\hilb}{\mathbb{H}}
+
+\NewDocumentCommand{\func}
+{oo}
+{
+    \IfValueF{#1}{
+        \argerr{func}
+    }
+    \NewDocumentCommand{#1}{o}{
+        \IfValueTF{##1}{
+            #2\pr[##1]
+        }{
+            #2
+        }
+    }
+}
+
+
+\DeclareMathOperator{\dom}{Dom}
+
+\newcommand{\novalue}{Error:No Value}
+
+\NewDocumentCommand{\integral}
+{oooo}
+{
+    \IfValueF{#1}{
+        \PackageError{mycommand}
+        {No argument}
+        {The command "integralp" needs an argument.}
+    }
+    \IfNoValueTF{#2}{
+        {\int {#1}}
+    }{
+        \IfNoValueTF{#3}{
+            {\int {#2} \rmd {#1}}
+        }{
+            \IfNoValueTF{#4}{
+                {\int_{#2} {#3} \rmd {#1}}
+            }{
+                {\int_{#2}^{#3} {#4} \rmd {#1}}
+            }
+        }
+    }
+}
+
+\NewDocumentCommand{\mintegral}
+{oooo}
+{
+    \IfValueF{#1}{
+        \PackageError{mycommand}
+        {No argument}
+        {The command "integralp" needs an argument.}
+    }
+    \IfNoValueTF{#2}{
+        {\int {#1}}
+    }{
+        \IfNoValueTF{#3}{
+            {\int {#2} {#1}}
+        }{
+            \IfNoValueTF{#4}{
+                {\int_{#2} {#3} {#1}}
+            }{
+                {\int_{#2}^{#3} {#4} {#1}}
+            }
+        }
+    }
+}
+
+
+\NewDocumentCommand{\fr}
+{oo}
+{
+    \IfValueF{#1}{
+        \PackageError{mycommand}
+        {No argument}
+        {The command "fr" needs two arguments.}
+    }
+    \IfNoValueTF{#2}{
+        \frac{1}{#1}
+    }{
+        \frac{#1}{#2}
+    }
+}
+
+\NewDocumentCommand{\pfr}
+{oo}
+{
+    \IfValueF{#1}{
+        \PackageError{mycommand}
+        {No argument}
+        {The command "pfr" needs two arguments.}
+    }
+    \IfNoValueTF{#2}{
+        \frac{\partial}{\partial #1}
+    }{
+        \frac{\partial #1}{\partial #2}
+    }
+}
+
+\NewDocumentCommand{\dfr}
+{oo}
+{
+    \IfValueF{#1}{
+        \PackageError{mycommand}
+        {No argument}
+        {The command "dfr" needs two arguments.}
+    }
+    \IfNoValueTF{#2}{
+        \frac{\mathrm{d}}{\mathrm{d} #1}
+    }{
+        \frac{\mathrm{d} #1}{\mathrm{d} #2}
+    }
+}
+
+\NewDocumentEnvironment{eq}{+b}{
+  \begin{equation}
+  \begin{aligned}
+    #1  
+  \end{aligned}
+  \end{equation}
+}{}
+
+\NewDocumentEnvironment{eq*}{+b}{
+  \begin{equation*}
+  \begin{aligned}
+    #1  
+  \end{aligned}
+  \end{equation*}
+}{}
+
+
+
+\newcommand{\defiff}{\stackrel{\mathrm{def}}{\iff}}
+
+\newcommand{\operator}[1]{\mathcal{#1}}
+
+\newcommand{\hippo}{\mathrm{hippo}}
+\newcommand{\rmd}{\mathrm{d}}
+\newcommand{\rmP}{\mathrm{P}}
+
+\newcommand{\id}{\mathrm{id}}
+
+
+\newcommand{\conj}[1]{\overline{#1}}
+
+
+\DeclareMathOperator{\sign}{sign}
+\DeclareMathOperator{\sgn}{sgn}
+
+\DeclareMathOperator{\regret}{\mathrm{regret}}
+\DeclareMathOperator{\Regret}{\mathrm{Regret}}
+\DeclareMathOperator{\pRegret}{\overline{\mathrm{Regret}}}
+
+\newcommand{\Exp}{\mathbb{E}}
+\newcommand{\ind}{\mathbbm{1}}
+\newcommand{\argmax}{\mathop{\rm arg~max}\limits}
+\newcommand{\argmin}{\mathop{\rm arg~min}\limits}
+
+% ==========
+% 定理環境
+%===========
+
+\theoremstyle{definition}
+\newtheorem{thm}{Theorem}
+\newtheorem{defi}{Definition}
+\newtheorem{prop}{Proposition}
+\newtheorem{lem}{Lemma}
+\newtheorem{cor}{Corollary}
+\newtheorem{rem}{Remark}
+\newtheorem{axiom}{Axiom}
+
+\newcommand{\prf}[1]{
+\begin{proof}
+    \quad\par
+    #1
+\end{proof}
+}
+
+\newcommand{\TODO}[1]{
+{ \color{red} {#1} } 
+}
+
+
+\newcommand{\cred}[1]{\textcolor{red}{#1}}
+
+\usepackage{graphicx}
+
+\newcommand{\revpartial}{%
+  \mathpalette\reversedpartialaux\relax
+}
+\newcommand{\reversedpartialaux}[2]{%
+  \reflectbox{$#1\partial$}%
+}
+
+
+%==========
+% 色
+%===========
+
+\newcommand{\red}[1]{\textcolor{red}{#1}}
+\newcommand{\bred}[1]{\textbf{\textcolor{red}{#1}}}

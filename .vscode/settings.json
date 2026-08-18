@@ -1,0 +1,31 @@
+{
+    "latex-workshop.latex.tools": [
+        {
+            "name": "lualatex",
+            "command": "lualatex",
+            "args": [
+                "-synctex=1",
+                "-interaction=nonstopmode",
+                "-file-line-error",
+                "%DOC%"
+            ]
+        }
+    ],
+    "latex-workshop.latex.recipes": [
+        {
+            "name": "lualatex x2",
+            "tools": ["lualatex", "lualatex"]
+        }
+    ],
+    "files.exclude": {
+        "**/.git": true,
+        "**/.svn": true,
+        "**/.hg": true,
+        "**/.DS_Store": true,
+        "**/Thumbs.db": true,
+        "**/c:\\Users\\Atsushi\\workspace\\Notebooks\\categoried\\RL\\pomdp.aux": true,
+        "**/c:\\Users\\Atsushi\\workspace\\Notebooks\\categoried\\RL\\pomdp.log": true,
+        "**/c:\\Users\\Atsushi\\workspace\\Notebooks\\categoried\\RL\\pomdp.gz": true,
+        "**/c:\\Users\\Atsushi\\workspace\\Notebooks\\categoried\\RL\\pomdp.out": true
+    }
+}

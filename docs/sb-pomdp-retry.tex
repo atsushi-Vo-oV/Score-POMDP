@@ -1,0 +1,144 @@
+\documentclass{article}
+\usepackage{mysty}
+
+
+\begin{document}
+
+\section{POMDP with Infinite Action and States}
+
+
+スコアベースモデルを参考に信念更新の代わりに、次を学習する。
+
+\[
+    r_{0,0}, \dots, r_{0,K-1} \sim \mathcal{N}(0, I)
+\]
+\[
+    \epsilon_{l,k} \sim \mathcal{N}(0, I)
+\]
+\[
+    r_{lk} = r_{l - 1, k} + \alpha_t \mathfrak{s}_t(r_{l-1, k}) + \sqrt{2 \alpha_l} \epsilon_{l, k}
+\]
+\[
+    s_{t,k} = r_{Lk}
+\]
+実装では初期時刻専用のMLPを用い、初期スコアを次で定義する。
+\[
+    \mathfrak{s}_{0}(s)
+    = \nabla_s \pr[g_{\theta_0}(o_0,s) - \frac{1}{2}\lVert s\rVert^2],
+    \qquad
+    g_{\theta_0}(o,s)=\mathrm{MLP}_{\theta_0}(o,s).
+\]
+ここで、$g_{\theta_0}$は通常時の観測energy $f_{\theta_f}$ とパラメータを共有しない。
+$-\lVert s\rVert^2/2$は学習パラメータへの正則化ではなく、初期密度の裾とlatent
+scaleを固定する標準Gaussian基準密度のlog densityである。
+関数族を制限しない理想化では、この二次項を$g_{\theta_0}$へ吸収した再parameterizationも可能である。
+しかし有限幅MLPが非有界なlatent空間全体で同じ二次tailを正確に表すとは限らず、実装上は
+normalizableな裾とscaleを明示的に保証するため分離して残す。
+\[
+    \mathfrak{s}_{t+1}(s') 
+    = \nabla_{s'} \pr[f_{\theta_f}(o_{t+1}, s', a_t) + \mathrm{logsumexp}_k \pr[u_{\theta_u}(s', s_{t, k}, a_t)]]
+\]
+さらに、時刻\(t\)での方策を次で定義。
+\[
+    a_t = \argmax_{a} \pi_{\theta_{\pi}}(a | \mathfrak{s}_t)
+\]
+実装上、このargmaxは離散方策の評価時にのみ用いる。学習時の離散行動はcategorical方策から
+sampleする。連続行動では周辺密度のargmaxを計算せず、DDPM reverse chainをsampleして行動を決める。
+決定論的評価では初期noiseを0として各reverse Gaussianの条件付き平均を順に通す
+\texttt{mean\_chain}を使う。これはreturn等のmetricではなくaction readoutの名前であり、
+周辺平均やMAPと等しいとは限らない。
+ここで、各関数は次のようにする。
+\[
+    f_{\theta_{f}}(o', s', a) = \mathrm{MLP}_{\theta_{f}}(o', s', a)
+\]
+\[
+    u_{\theta_{u}}(s', s, a) = \mathrm{MLP}_{\theta_{u}}(s', s, a)
+\]
+\[
+    \pi_{\theta_{\pi}}(a | \mathfrak{s}_t) = \mathrm{Operator}_{\theta_{\pi}}[\mathfrak{s}_t](a)
+\]
+
+ここで、アーキテクチャは以下とする。
+
+\begin{eq}
+    & \pr[(s_{t,0}, \mathfrak{s}_t(s_{t, 0})), \dots, (s_{t,0}, \mathfrak{s}_t(s_{t, K-1}))]
+    \\
+    \to & \mathrm{TransformerEncoder}
+    \\
+    \to & \mathrm{Pool}_k
+    \\
+    \to & \mathrm{MLP}(*, a)
+\end{eq}
+
+active比較は\texttt{score\_transformer}とGRUの2手法とする。連続3 taskでは両手法へ
+同一のDiffusionPolicyを接続し、reverse step数、noise schedule、variance floor、
+denoising advantage重み、per-denoising-step PPO、\texttt{mean\_chain} readoutを共通にする。
+離散CartPoleでも同一構成のcategorical headを使う。GRUの入力は部分観測と正規化した
+直前行動であり、後段のpolicy/value headは提案法と共通にする。
+
+両手法で時間方向の\texttt{full}と\texttt{tbptt\_1}を比較する。score beliefの
+\texttt{full}は未終了episodeの保存noiseと入力prefixをrollout境界越しに再生し、
+GRUの\texttt{full}は観測・直前行動prefixからhiddenをepisode開始より再生する。
+\texttt{tbptt\_1}はどちらも各環境stepへ入るbelief/hiddenだけをdetachする。
+したがって各手法内では両modeのforward値は同一で、時間方向のgradient範囲だけが異なる。
+
+比較時はentropy係数を0とする。productionのGRUは入力encoder幅$[348,185]$、hidden幅176とし、
+4 taskでの提案法とのparameter数の最大絶対相対差を0.116\%に合わせる。
+primary performance metricには、held-out episodeにおけるstochastic policyの最終returnを
+training seed間で集約した値を用いる。数値診断として、初期energy $g_0$、観測energy $f$、
+遷移energy $u$のpre-clip gradient norm、initial/recursive score・particle norm、sample数、
+non-finite数をログへ保存する。
+
+GAEのepisode終了indicator $d_t$は、既定では真の終端とhorizon打ち切り（truncation）を区別せず
+どちらも1とし、次状態のbootstrapを止める。この規約は両手法・両modeで完全に共通なので内部比較の
+公平性は保たれるが、絶対returnとvalue学習はtruncation-bootstrap実装と直接比較できない。
+opt-inの設定\texttt{ppo.bootstrap\_on\_truncation}を真にすると、truncationしたstepに限り
+$\gamma V(s_T)$をGAEのdelta項へ加える（Pardoらの方式）。$s_T$はauto-reset wrapperが捨てる
+打ち切り直後の真の観測である。既定は偽であり、値の異なるrunを同一の集計へ混在させない。
+なお共通規約であることは手続き上の公平性を保証するだけで、打ち切りbiasの負担が両表現で
+等しいことは意味しない。GRUのhiddenは制約のないrecurrent vectorなので経過stepを暗黙に
+数えられるが、score beliefの条件は状態上の事後粒子とそのscoreだけで時間channelを持たない。
+
+Light-Darkの報酬は、遷移\emph{前}の状態と行動に課金する二次コストと、終了stepのgoal bonus
+$B$からなる。
+\[
+    r_t = -\pr[0.5 \lVert x_t \rVert^2 + 0.5 \lVert u_t \rVert^2]
+        + B \cdot \mathbf{1}\{\lVert x_{t+1} \rVert \le 0.25\}
+\]
+既定は$B=0$である。力学$x' = x + u$は決定論的なので事後平均は行動履歴の和だけで追跡でき、
+観測の価値は不確実性の縮小、すなわちgoal到達確率にしか現れない。$B=0$ではその到達確率へ
+報酬が付かないため、production条件（$N=5$、light at $x[0]=5$、初期
+$\mathcal{N}(2 \cdot \mathbf{1}, 0.5^2 I)$、horizon 30）では光へ寄る情報収集が厳密劣後する
+（実測でdead reckoningの平均returnが$-31.8$、光で自己位置同定してから原点へ戻る方策が$-87.9$）。
+したがって既定パラメータのLight-Dark結果をbelief品質の証拠として読んではならない。
+情報収集を最適化するにはconfigの\texttt{goal\_bonus}を損益分岐（$65$--$85$）より十分大きい値
+（目安100以上）へ設定するが、これは報酬定義そのものの変更であり、既定値で実行した既存campaignとは
+混在させられない。
+
+
+\begin{enumerate}
+    \item 言語はPythonでOK
+    \item タスクは最低3種類以上はお願い。この実験内容に適したモデルでお願い。
+    \item 九大スパコンのgenkaiが使えます。そちらを実験環境としてください。ssh 接続用のconfig情報はプロジェクト直下のssh-configに書いてあります。
+    \item jobの投下は絶対にしないで下さい。
+    \item なお行動の出力について、、有限行動ならSoftmax出力ベース、無限次元行動なら拡散モデルベースを想定しています。
+    \item PPOでの完全モデルフリー学習を想定しています。無限行動の際には適切にPPO系のものをとってきてほしい。その内容についてのtexはdocs内に用意しておいて。
+    \item 質問があれば教えて。
+    \item ついでに、関連研究をいくつかまとめてほしい。特に、今回の方策の作用素学習アーキテクチャは何かとかぶってるはずだから、調べてほしい。
+\end{enumerate}
+
+コード管理について、
+\begin{enumerate}
+    \item ソースコードはすべて./src内にお願いします。
+    \item まず学習実験を開始するスクリプトを作成し、超小規模・GPUなしでこのPC上でプログラムが正しいことを確認してください。
+    \item その後、genkai-スパコン用のjobファイルを作成して下さい。こちらは学習開始のスクリプトを動かす、という内容にして簡略化して下さい。
+    \item jobファイルはDEBUG用job・本番用jobの2つを作成してください。Debug用のjobファイルをユーザーが実行します。
+    \item ハイパーパラメータについては、超小規模localモデル・本番用モデルの2つに分けて下さい。なお、genkaiでのDEBUG用jobでは本番用モデルを使用してください。
+    \item ここで、それぞれの設定値を、./configディレクトリ内のjsonファイルとしてまとめて下さい。
+    \item DEBUG実行が終わったら、正しく動いていることの確認をお願いします。その後本番サーバーで実験を行います。
+    \item 実験結果はログ出力に加えて、csv, numpy配列も作成し、保存しておいてください。また実験に際し保存して負い阿呆が良いものがあればそちらもお願いします。設定値なども保存しておいて下さい。
+    \item 最後に、実験結果のデータすべてをこちらのPCに持ってきて、./resultsディレクトリ内において下さい。なお、実験の日時のタイムスタンプのサブディレクトリを作成し、その中に配置してください。
+\end{enumerate}
+
+
+\end{document}

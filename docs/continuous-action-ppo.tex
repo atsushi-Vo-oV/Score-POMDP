@@ -1,0 +1,578 @@
+\documentclass[a4paper,11pt]{article}
+\usepackage{mysty}
+\usepackage[margin=24mm]{geometry}
+\usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage[hidelinks,unicode]{hyperref}
+
+\hypersetup{
+  pdftitle={信念集合で条件付けた連続行動拡散方策とDPPO型PPO目的},
+  pdfauthor={Belief-Score-Based-Model}
+}
+\floatname{algorithm}{アルゴリズム}
+\algrenewcommand\algorithmicrequire{\textbf{入力:}}
+\algrenewcommand\algorithmicensure{\textbf{出力:}}
+\algrenewcommand\algorithmicfor{\textbf{for}}
+\algrenewcommand\algorithmicdo{\textbf{do}}
+\algrenewcommand\algorithmicend{\textbf{end}}
+\algrenewcommand\algorithmicif{\textbf{if}}
+\algrenewcommand\algorithmicthen{\textbf{then}}
+\newcommand{\stopgrad}{\operatorname{stopgrad}}
+\newcommand{\clip}{\operatorname{clip}}
+\newcommand{\Normal}{\mathcal{N}}
+\newcommand{\old}{\mathrm{old}}
+\newcommand{\env}{\mathrm{env}}
+\newcommand{\den}{\mathrm{den}}
+\setlength{\emergencystretch}{3em}
+
+\title{信念集合で条件付けた連続行動拡散方策と\\DPPO型PPO目的}
+\author{Belief-Score-Based-Model 実験仕様}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+本稿は、スコアで表した粒子信念を条件として連続行動を生成するDDPM方策と、
+その各逆拡散遷移へPPOを適用する学習目的を定義する。
+最終行動の周辺尤度は一般に計算不能であるため、DPPO\cite{ren2025dppo}と同様に
+逆拡散過程を内側のMDPとして展開し、各Gaussian遷移の尤度比を個別にclipする。
+一方、本実験はデモンストレーションによる事前学習を用いないfrom-scratch設定であり、
+標準DPPOの主設定とは異なる。信念energyは、rollout時に保存したGaussian noiseから
+現在parametersでULAとbelief recurrenceを再parameterizeしてend-to-endに更新する。
+本稿ではepisode全体へ逆伝播する\texttt{full}と、環境時刻境界だけを切る
+\texttt{tbptt\_1}を区別して実装対象を明示する。active productionでは、
+score-belief TransformerとGRUの双方へ同一のDiffusionPolicyとPPO目的を接続し、
+action familyを揃えて表現・記憶機構だけを比較する。
+\end{abstract}
+
+\section{記法と信念条件}
+
+環境時刻を$t$、観測を$o_t$、環境報酬を$r_t$、連続行動を
+$a_t\in\mathcal A\subset\mathbb R^{d_a}$とする。
+信念は$K_b$個の粒子と、その位置で評価したscoreの集合
+\begin{equation}
+  B_t=\left\{\left(s_{t,i},q_{t,i}\right)\right\}_{i=1}^{K_b},
+  \qquad q_{t,i}=\mathfrak{s}_t(s_{t,i})\in\mathbb R^{d_s}
+  \label{eq:belief-set}
+\end{equation}
+で近似する。粒子順序に依存しないSet Transformer encoderとpoolingを用いて
+\begin{equation}
+  c_t=E_\phi(B_t)
+  =\operatorname{Pool}\!\left(
+    \operatorname{SetTransformer}_\phi
+    \bigl([s_{t,i},q_{t,i}]_{i=1}^{K_b}\bigr)
+  \right)\in\mathbb R^{d_c}
+  \label{eq:belief-encoding}
+\end{equation}
+を作る。criticと拡散方策はともに$c_t$で条件付ける。
+単一行動を生成する場合を記述するが、$a_t$を
+$H_a\times d_a$次元のaction chunkに置き換えても数式は同じである。
+
+active比較のGRUでは、部分観測と正規化した直前行動を入力して
+\begin{equation}
+  h_t=\operatorname{GRU}_{\omega}([o_t,a_{t-1}],h_{t-1}),
+  \qquad c_t=W_ch_t
+  \label{eq:gru-condition}
+\end{equation}
+を作る。式\eqref{eq:belief-encoding}と式\eqref{eq:gru-condition}の後段には、
+同一構成のcriticとDiffusionPolicyを接続する。reverse step数、noise schedule、
+variance floor、denoising advantage重み、per-step PPO clippingも共通である。
+したがって連続taskのactive比較はdiffusion対Gaussianではなく、
+score-belief表現対GRU記憶の比較である。離散CartPoleでは両者に同じcategorical headを使う。
+
+\section{信念条件付きDDPM方策}
+
+\subsection{forward processとreverse process}
+
+拡散step数を$N$とし、$\beta_n\in(0,1)$、
+$\alpha_n=1-\beta_n$、$\bar\alpha_n=\prod_{j=1}^{n}\alpha_j$と置く。
+正規化済み行動$x^0$に対するforward processは
+\begin{align}
+  q(x^n\mid x^{n-1})
+    &=\Normal\!\left(\sqrt{\alpha_n}x^{n-1},\beta_n I\right),\\
+  q(x^n\mid x^0)
+    &=\Normal\!\left(\sqrt{\bar\alpha_n}x^0,
+      (1-\bar\alpha_n)I\right)
+  \label{eq:forward-ddpm}
+\end{align}
+である。方策として使うreverse chainは
+\begin{equation}
+  x_t^N\sim\Normal(0,I),\qquad
+  p_\theta(x_t^{n-1}\mid x_t^n,c_t)
+  =\Normal\!\left(\mu_\theta(x_t^n,n,c_t),\sigma_n^2 I\right),
+  \quad n=N,\ldots,1,
+  \label{eq:reverse-kernel}
+\end{equation}
+とする。noise-prediction parameterizationでは
+\begin{equation}
+  \mu_\theta(x^n,n,c)
+  =\frac{1}{\sqrt{\alpha_n}}
+    \left(
+      x^n-\frac{\beta_n}{\sqrt{1-\bar\alpha_n}}
+      \epsilon_\theta(x^n,n,c)
+    \right).
+  \label{eq:ddpm-mean}
+\end{equation}
+実装ではposterior varianceに下限$\sigma_{\min}^2>0$を設ける。
+これは最終stepを含む各遷移のGaussian log-densityを有限に保ち、
+学習中の探索を確保するためである。
+
+環境へ渡す有界行動は、既知の決定論的変換
+\begin{equation}
+  a_t=T(x_t^0)
+  =\tanh(x_t^0)\odot\frac{a_{\max}-a_{\min}}{2}
+   +\frac{a_{\max}+a_{\min}}{2}
+  \label{eq:action-transform}
+\end{equation}
+で作る。PPOで評価する確率変数は、変換後の周辺分布ではなく
+式\eqref{eq:reverse-kernel}の各内部遷移である。
+
+\subsection{拡散過程を内側MDPとして扱う}
+
+環境時刻$t$ごとに、$n=N,N-1,\ldots,1$の$N$個の内側遷移を置く。
+内側状態、内側行動、報酬をそれぞれ
+\begin{equation}
+  \bar s_{t,n}=(c_t,x_t^n),\qquad
+  \bar a_{t,n}=x_t^{n-1},\qquad
+  \bar r_{t,n}=
+  \begin{cases}
+    0,&n>1,\\
+    r_t,&n=1
+  \end{cases}
+  \label{eq:augmented-mdp}
+\end{equation}
+とする。したがって各内側方策
+$p_\theta(x_t^{n-1}\mid x_t^n,c_t)$は明示的なGaussian likelihoodを持つ。
+最終行動の周辺密度
+\begin{equation}
+  \pi_\theta(x_t^0\mid c_t)
+  =\int p(x_t^N)\prod_{n=1}^{N}
+    p_\theta(x_t^{n-1}\mid x_t^n,c_t)\,
+    \mathrm{d}x_t^{1:N}
+  \label{eq:intractable-marginal}
+\end{equation}
+は計算せず、trajectory上で観測された各遷移をPPO sampleとして使う。
+
+\section{DPPO型clipped PPO目的}
+
+\subsection{各denoising transitionの尤度比}
+
+rollout時のparametersを$(\theta_{\old},\phi_{\old})$とする。
+保存したreverse chain $(x_t^n,x_t^{n-1})$とold log-density、および
+式\eqref{eq:belief-replay}でcurrent parametersから再構成する$c_t(\phi)$に対し、
+各stepのlog ratioを
+\begin{align}
+  \ell_{t,n}(\theta,\phi)
+    &=\log p_\theta(x_t^{n-1}\mid x_t^n,c_t(\phi)),\\
+  \rho_{t,n}(\theta,\phi)
+    &=\exp\!\left(
+      \ell_{t,n}(\theta,\phi)-\ell_{t,n}(\theta_{\old},\phi_{\old})
+    \right)
+  \label{eq:step-ratio}
+\end{align}
+と定める。重要なのは、\textbf{各stepのratioを個別にclipする}ことである。
+式\eqref{eq:intractable-marginal}のratioも、
+$\prod_n\rho_{t,n}$もPPO目的には使用しない。
+
+\subsection{環境GAE、critic、denoising advantage}
+
+criticは内側のnoisy actionには依存させず、環境時刻ごとに
+\begin{equation}
+  V_\psi(c_t)\simeq
+  \mathbb E\!\left[\sum_{j\geq0}\gamma_{\env}^j r_{t+j}\mid c_t\right]
+  \label{eq:critic}
+\end{equation}
+を推定する。episode終了indicatorを$d_t\in\{0,1\}$として
+\begin{align}
+  \delta_t
+    &=r_t+\gamma_{\env}(1-d_t)V_{\psi_{\old}}(c_{t+1})
+      -V_{\psi_{\old}}(c_t),\\
+  \widehat A_t^{\env}
+    &=\sum_{j=0}^{T-t-1}(\gamma_{\env}\lambda)^j
+      \left(\prod_{m=0}^{j-1}(1-d_{t+m})\right)\delta_{t+j},\\
+  \widehat R_t
+    &=\widehat A_t^{\env}+V_{\psi_{\old}}(c_t)
+  \label{eq:gae}
+\end{align}
+とする。$d_t$は既定では真の終端とhorizon打ち切り（truncation）の両方で$1$であり、
+打ち切りを終端とみなす規約である。この規約は全手法・全modeで共通なので内部比較の公平性は
+保たれるが、絶対returnやvalue学習はtruncation-bootstrap実装と直接比較できない。
+設定\texttt{ppo.bootstrap\_on\_truncation}を真にすると、truncationした$t$に限り
+$\delta_t$へ$\gamma_{\env}V_{\psi_{\old}}(c_T)$を加える（Pardoら\cite{pardo2018timelimits}の方式）。
+$c_T$はauto-resetが捨てる打ち切り直後の真の観測から、実行した行動を条件として
+belief（baselineではGRU hidden）を1step進めた条件である。$d_t$自体は変えないので
+$\lambda$-returnの累積はepisode境界で切れたままであり、bootstrap項だけが増える。
+既定は偽で、投入済みcampaignと同一の挙動になる。この設定はvalue targetそのものを変えるため、
+値の異なるrunを同一の集計・比較へ混在させてはならない。
+
+規約が全手法で共通であることは、同一の目的関数を最適化しているという手続き上の公平性を
+保証するだけであり、打ち切りbiasの負担が両表現で等しいことまでは意味しない。
+式\eqref{eq:gru-condition}の$h_t$は制約のないrecurrent vectorであり、観測と直前行動の
+prefixから経過stepを暗黙に数えてhorizon依存のvalueをfitできる。一方、
+式\eqref{eq:belief-set}の$B_t$は状態上の事後粒子とそのscoreの集合に限られ、
+時間channelを持たない（本実験のどのtaskの部分観測にも時刻は含まれない）。
+したがって既定規約下でのvalue学習と絶対returnの解釈には、この非対称性を明示して
+織り込む必要がある。内側stepには同じ環境advantageを複製し、
+\begin{equation}
+  \widehat A_{t,n}^{\den}
+  =\gamma_{\den}^{n-1}\widehat A_t^{\env},
+  \qquad 0<\gamma_{\den}\leq1
+  \label{eq:denoise-advantage}
+\end{equation}
+と重み付けする。$n=N$が最初で最もnoisyな遷移なので、
+$\gamma_{\den}<1$では最初のstepほど強くdownweightされ、$n=1$の最終stepの重みは1になる。
+
+PPOのsurrogateとvalue lossは
+\begin{align}
+  L_{\mathrm{clip}}(\theta,\phi)
+  &=\frac{1}{TN}\sum_{t,n}
+    \min\!\left\{
+      \rho_{t,n}\widehat A_{t,n}^{\den},
+      \clip(\rho_{t,n},1-\varepsilon,1+\varepsilon)
+      \widehat A_{t,n}^{\den}
+    \right\},\\
+  L_V(\psi,\phi)
+  &=\frac{1}{2T}\sum_t
+    \left(V_\psi(c_t(\phi))-\widehat R_t\right)^2,\\
+  L_{\mathrm{total}}
+  &=-L_{\mathrm{clip}}+c_VL_V-c_H\mathcal H
+  \label{eq:ppo-total}
+\end{align}
+である。$L_{\mathrm{clip}}$が方策更新項、$L_V$がcriticのvalue regression、
+$\mathcal H$が方策entropyである。これらは標準的なPPOの三要素であるが、
+本比較実験ではdebug・productionともに$c_H=0$とし、entropy bonusを最適化項から除外する。
+activeな連続比較は両手法とも固定scheduleのDiffusionPolicyであり、最適化する目的は
+$-L_{\mathrm{clip}}+c_VL_V$で共通である。
+実装ではPPOのclipped objectiveと
+gradient norm clippingを用いる。approximate KLとclip fractionは診断値として記録するだけで、
+更新の打ち切りやminibatchの拒否には使用しない。またlog ratioに独自のhard clampを置かず、
+式\eqref{eq:step-ratio}とPPO clipをそのまま用いる。
+標準ULAのdriftや状態を変えるscore/particle clampもmain設定では0（無効）とする。
+pilotで不安定性が出た場合は、まず学習率とULA step sizeを明示的に再設定する。
+
+\section{再parameterizeしたbelief recurrenceの全微分}
+
+\subsection{明示noiseによる再生}
+
+信念energyのparametersを$\eta=(\eta_0,\eta_f,\eta_u)$とする。初期時刻専用の
+energy networkは通常時の観測・遷移energyとはparametersを共有せず、実装するpotentialは
+\begin{equation}
+  E_\eta(s;o_t,B_{t-1},a_{t-1})=
+  \begin{cases}
+    g_{\eta_0}(o_0,s)-\frac12\lVert s\rVert^2,
+      & \text{episode初期時刻},\\
+    f_{\eta_f}(o_t,s,a_{t-1})
+      +\operatorname{logmeanexp}_{s^-\in B_{t-1}}
+        u_{\eta_u}(s,s^-,a_{t-1}),
+      & \text{それ以外}
+  \end{cases}
+  \label{eq:belief-energy-piecewise}
+\end{equation}
+とする。
+$-\lVert s\rVert^2/2$はparameter regularizationではなく、初期密度の裾とlatent
+scaleを固定する標準Gaussian基準密度のlog densityである。
+無制限の関数族ならこの項を$g_{\eta_0}$へ吸収する再parameterizationは可能だが、
+有限幅MLPが非有界なlatent空間全体で同じ二次tailを正確に表す保証はない。
+そのため実装ではnormalizableな裾とlatent scaleを明示する基準項として分離する。
+rollout時には粒子座標をPPO更新用の
+固定入力として保存するのではなく、各環境時刻$t$についてULA初期noise
+$z_{t,i}\sim\Normal(0,I)$と各stepのnoise
+$\epsilon_{t,l,i}\sim\Normal(0,I)$を保存する。PPO更新時には観測列、
+実現済み行動列、episode-start mask、およびこれらのnoiseを固定し、
+現在の$\eta$から
+\begin{align}
+  r^{\eta}_{t,0,i}
+    &=z_{t,i},\\
+  g^\eta_{t,l,i}
+    &=\nabla_s E_\eta\!\left(
+      r^\eta_{t,l-1,i};o_t,B^\eta_{t-1},a_{t-1}
+    \right),\\
+  r^\eta_{t,l,i}
+    &=r^\eta_{t,l-1,i}
+      +\alpha_l g^\eta_{t,l,i}
+      +\sqrt{2\alpha_l}\,\epsilon_{t,l,i},
+      \qquad l=1,\ldots,L,\\
+  s^\eta_{t,i}
+    &=r^\eta_{t,L,i},\qquad
+  q^\eta_{t,i}
+    =\nabla_s E_\eta\!\left(
+      s^\eta_{t,i};o_t,B^\eta_{t-1},a_{t-1}
+    \right),\\
+  B^\eta_t
+    &=\{(s^\eta_{t,i},q^\eta_{t,i})\}_{i=1}^{K_b},
+    \qquad c^\eta_t=E_\phi(B^\eta_t)
+  \label{eq:belief-replay}
+\end{align}
+を順に再計算する。全ULA stepと最後のscore計算で
+\verb|create_graph=True|を使うため、PPO/value lossから粒子生成経路、
+初期energy、観測energy、遷移energyへpathwise gradientが流れる。noiseの分布はparametersに依存しないので、
+保存noise自体は微分しない。
+
+PPOが固定dataとして扱うのは$o_t$、実現済み$a_{t-1}$、$r_t$、終了mask、
+old log-prob、advantageとreturnである。環境状態遷移や観測生成を再現するモデルは使わず、
+環境へは微分しない。この意味で学習はmodel-freeでありながら、agent内部の
+belief recurrenceには全勾配を流す。
+
+\subsection{\texttt{full}と\texttt{tbptt\_1}}
+
+\texttt{full}では、rollout開始時にepisodeが継続中なら、そのepisodeの開始から
+rollout境界までの観測、実現済み行動、noiseからなるprefixも保持する。
+各PPO minibatchでepisode-startから対象loss時刻まで式\eqref{eq:belief-replay}を
+現在parametersで再生し、真のepisode resetだけでgraphを切る。
+したがってrandomにflattenした環境時刻を独立sampleとして扱ってはならず、
+時間順のsequence minibatchを用いる。
+
+\texttt{tbptt\_1}は同じforward再生を用いるが、各環境時刻の冒頭だけ
+\begin{equation}
+  B^{\mathrm{in}}_{t-1}=\stopgrad(B^\eta_{t-1})
+  \label{eq:tbptt-one}
+\end{equation}
+とする。現在時刻内の$L$個のULA stepと最後のscore計算はdetachしない。
+よって両modeは同じnoiseとparametersに対して同一の粒子・action distributionを返し、
+違いは時間方向のgradient範囲だけである。
+
+optimizer stepの後には、それまでの未終了episode prefixを更新後parametersで再生し、
+次rolloutのbelief contextを再構築する。これにより、更新前parametersで作った
+stale particleを次rolloutへ持ち越さない。PPOの複数epochでも計算graphを使い回さず、
+各optimizer stepのcurrent parametersでsequenceを再生する。
+
+\texttt{full}のgraph memoryはepisode長に比例するため、実装では
+non-reentrant activation checkpoint
+\verb|torch.utils.checkpoint(..., use_reentrant=False)|を用いる。
+backward時にforward activationを再計算するだけなので、detachやno-gradによる近似と異なり、
+数学的な勾配は変えない。計算量は増えるためwall-clockとpeak GPU memoryをmode別に記録する。
+さらにapproximate KL、clip fraction、global gradient normに加え、初期energy $g_0$、
+観測energy $f$、遷移energy $u$それぞれのpre-clip gradient normを監視する。
+初期時刻と再帰時刻を分けたscore/particleのL2 norm、各区分のparticle数、
+score/particleのnon-finite数も記録する。これらは診断値であり、閾値によるoptimizer stepの
+拒否には使わない。
+
+productionでは論理PPO minibatchを$512=4\times128$遷移のまま保ち、
+score beliefのsequence再生だけを、時間方向を切らずに$128$遷移ずつ4回処理する。
+各memory microbatchの平均lossを$1/4$倍してbackwardし、4回分のgradientを加算した後に
+gradient clippingとoptimizer stepをそれぞれ1回だけ行う。したがって、浮動小数点の加算順による
+微小差を除けば512遷移の平均lossに対する更新と同じであり、
+\texttt{full}と\texttt{tbptt\_1}の時間方向のgradient境界も変えない。
+
+GRUにも同じ時間範囲の二条件を実装する。\texttt{full}では、rollout開始時にepisodeが
+継続中なら観測・直前行動からなるepisode prefixを保持し、current parametersで
+episode開始から式\eqref{eq:gru-condition}を再生する。rollout境界ではgraphを切らず、
+真のepisode resetだけを境界とする。\texttt{tbptt\_1}では同じ入力列とparametersを用いるが、
+各環境時刻の冒頭で
+\begin{equation}
+  h^{\mathrm{in}}_{t-1}=\stopgrad(h_{t-1})
+  \label{eq:gru-tbptt-one}
+\end{equation}
+とする。両modeのhidden、方策分布、valueというforward値は同一であり、差は時間方向の
+gradient範囲だけである。GRUのPPO minibatchは固定長time chunkへ切らず、完全な時間軸を
+保ったまま環境軸だけを分割する。optimizer step後は未終了episode prefixを更新後parametersで
+再生し、次rollout用のonline hiddenを再構築する。
+
+\section{学習アルゴリズム}
+
+\begin{algorithm}[H]
+\small
+\caption{Belief-conditioned DDPM policyのDPPO型from-scratch学習}
+\label{alg:training}
+\begin{algorithmic}[1]
+\Require 並列環境、rollout長$T$、粒子数$K_b$、ULA step数$L$、拡散step数$N$、gradient mode
+\Ensure 更新済み信念energy、set encoder、denoiser、critic
+\State 全networkをランダム初期化し、episode初期粒子を設定する
+\For{各PPO iteration}
+  \State rollout用parametersをold policyとして固定する
+  \For{$t=0,\ldots,T-1$}
+    \State $z_{t,1:K_b},\epsilon_{t,1:L,1:K_b}$を生成・保存してULAを$L$ step実行する
+    \State $q_{t,i}=\nabla_sE_{\eta_{\old}}(s;\cdot)|_{s=\bar s_{t,i}}$と$c_t$を計算する
+    \State $x_t^N\sim\Normal(0,I)$を生成する
+    \For{$n=N,N-1,\ldots,1$}
+      \State $x_t^{n-1}\sim p_{\theta_{\old}}(\cdot\mid x_t^n,c_t)$
+      \State $(x_t^n,x_t^{n-1},\ell^{\old}_{t,n})$を保存する
+    \EndFor
+    \State $a_t=T(x_t^0)$を環境へ渡し、$o_t,a_t,r_t,d_t,V_{\psi_{\old}}(c_t)$を保存する
+  \EndFor
+  \State 式\eqref{eq:gae}で$\widehat A_t^{\env},\widehat R_t$を計算し、advantageを正規化する
+  \For{各PPO epochと論理sequence minibatch}
+    \State gradientを初期化する
+    \For{4個のmemory microbatch（各128遷移）}
+      \State episode-startから保存noiseで式\eqref{eq:belief-replay}をcurrent parametersで再生する
+      \If{gradient modeが\texttt{tbptt\_1}}
+        \State 各環境時刻の入力beliefだけ式\eqref{eq:tbptt-one}でdetachする
+      \EndIf
+      \State 全保存遷移のnew log-probと式\eqref{eq:step-ratio}の$\rho_{t,n}$を計算する
+      \State 式\eqref{eq:ppo-total}のlossを$1/4$倍し、checkpoint付きbackpropagationで加算する
+    \EndFor
+    \State 加算gradientを1回clipし、optimizer stepを1回行う
+  \EndFor
+  \State 未終了episode prefixをcurrent parametersで再生し、次rolloutのcontextを再構築する
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\section{行動選択：argmaxを使わない}
+
+式\eqref{eq:intractable-marginal}の密度を直接評価できないため、通常の拡散方策では
+\begin{equation}
+  \argmax_a\pi_\theta(a\mid B_t)
+  \label{eq:invalid-argmax}
+\end{equation}
+を計算できない。学習中は必ず逆拡散chainをsampleして
+$a_t\sim\pi_\theta(\cdot\mid B_t)$とする。
+
+評価時の再現可能な決定論的規約として、本実装は
+\begin{equation}
+  x_t^N=0,\qquad
+  x_t^{n-1}=\mu_\theta(x_t^n,n,c_t),\qquad
+  a_t=T(x_t^0)
+  \label{eq:mean-chain}
+\end{equation}
+という\textbf{mean-chain}を使う。これは各conditional Gaussianの平均を順に通す規約であり、
+周辺分布の平均やMAPと等しいとは限らない。報告時には
+stochastic evaluationとmean-chain evaluationを区別する。
+さらにscore系では、mean-chainにしてもbeliefの初期粒子とULA noiseはsampleされる。
+したがって「決定論的」はaction readoutだけを指し、agent全体の軌跡が確定するという意味ではない。
+\texttt{mean\_chain}はreturn等の性能指標ではなく、このaction readout規約の名前である。
+tanh Gaussianを使う非active ablationの\texttt{mean\_action}も同様に、pre-tanh Gaussian平均を
+tanhとaction scaleへ通すreadout名であり、metricではない。activeな連続比較は
+score TransformerとGRUの双方が\texttt{mean\_chain}を使うため、deterministic readoutも揃う。
+それでも事前に一つのprimary metricを選ぶなら、探索を含む学習方策そのものを評価するため、
+held-out episodeにおけるstochastic evaluationの最終returnをtraining seed間で集約した値を用いる。
+
+\section{標準DPPOとの差とlimitations}
+
+\subsection{from-scratch設定}
+
+RenらのDPPO\cite{ren2025dppo}の中心設定は、デモンストレーションでbehavior cloningした
+Diffusion PolicyをRLでfine-tuneするものである。早期denoising stepを凍結し、
+最後の$N'<N$ stepだけ更新する設計も事前学習を前提とする。
+本実験では、信念energy、encoder、denoiser、criticをすべてランダム初期化し、
+全denoising stepを環境報酬だけから学習する。DPPOの付録ではfrom-scratch実験もあるが、
+Gaussian PPOより学習が遅く、10-step diffusionでwall-clockが約6倍と報告されている。
+したがって本手法は「DPPOそのもの」ではなく、
+\textbf{DPPO型のper-denoising-step PPOをfrom scratchで用いる手法}と記述する。
+
+\subsection{主な制約}
+
+\begin{enumerate}
+  \item \textbf{sample efficiency:}
+    環境1 stepを$N$個の内側stepへ展開するため、Gaussian PPOより計算量が大きい。
+    デモなしの複雑なtaskでは探索が成立しない可能性がある。
+  \item \textbf{recurrent gradientの計算量:}
+    \texttt{full}はepisode-startから全ULA stepを再計算するため、時間、粒子数、ULA step数に対して
+    高コストである。\texttt{tbptt\_1}は時間方向を切るablationであり、full-gradientの代替結果として
+    混同せずmode別に報告する。
+  \item \textbf{beliefの非同定性:}
+    PPO報酬だけでは$f_\eta,u_\eta$が真の観測尤度・遷移密度になる保証はない。
+    得られるものは制御に有用なtask-oriented latent beliefである。
+  \item \textbf{variance floorと有界化:}
+    $\sigma_{\min}$が小さすぎるとratioが不安定になり、大きすぎると最終行動が過度にランダムになる。
+    $\tanh$の飽和率も記録する必要がある。
+  \item \textbf{周辺尤度とMAPの欠如:}
+    per-step PPOは拡張MDP上のsurrogateである。最終actionの周辺KLやMAPを直接制御しない。
+  \item \textbf{denoising index:}
+    保存chainを$(x^N,x^{N-1},\ldots,x^0)$の順に並べる場合、
+    advantage重みは$(\gamma_{\den}^{N-1},\ldots,\gamma_{\den}^{0})$の順でなければならない。
+    逆順にするとnoisy stepを強調してしまう。
+  \item \textbf{比較の必要性:}
+    実装上は、同じscore Transformerを持つ\texttt{score\_gaussian}に加え、
+    observation MLPとoracle-stateのtanh Gaussian PPOも同じenvironment-step budgetで比較できる。
+    ただしactive productionは\texttt{score\_transformer}とGRUに限定し、他の実装は
+    local smokeで経路だけを確認する。activeな連続比較ではGRUにも提案法と同じDiffusionPolicy、
+    per-denoising-step PPO、schedule、advantage重み、\texttt{mean\_chain} readoutを用いる。
+    productionのparameter数も最大0.116\%差へ合わせるが、各手法を個別に十分tuningした比較ではない。
+  \item \textbf{action dimension:}
+    PendulumとMountainCarの1次元\texttt{Box}に加え、5次元Light-Darkを比較する。
+    ただし無限次元行動や多峰なaction distributionに対するdiffusionの利点までは検証しない。
+  \item \textbf{Light-Darkの報酬設計:}
+    Light-Darkの報酬は遷移\emph{前}の状態と行動に課金する二次コストと、終了stepの
+    goal bonusからなる:
+    \[
+      r_t=-\left(c_x\lVert x_t\rVert^2+c_u\lVert u_t\rVert^2\right)
+        +B\,\mathbf 1\!\left\{\lVert x_{t+1}\rVert\leq r_g\right\},
+    \]
+    既定は$c_x=c_u=0.5$、$r_g=0.25$、$B=0$である。力学$x'=x+u$は決定論的なので事後平均は
+    行動履歴の和だけで追跡でき、観測の価値は不確実性の縮小、すなわちgoal到達確率にしか現れない。
+    $B=0$ではその到達確率へ報酬が付かないため、production条件（$N=5$、light at $x[0]=5$、
+    初期$\Normal(2\cdot\mathbf 1,0.5^2I)$、horizon 30）では光へ寄る情報収集が厳密劣後する。
+    実測では dead reckoning の平均returnが$-31.8$（goal到達率$0.03$）、光で自己位置同定してから
+    原点へ戻る方策が$-87.9$（到達率$0.90$）であった。
+    したがって\textbf{既定パラメータのLight-Dark結果をbelief品質の証拠として読んではならない}。
+    情報収集を最適化するには損益分岐の$65$--$85$を十分に上回る$B$（目安$100$以上）を
+    \texttt{environment.tasks.light\_dark.goal\_bonus}へ設定するが、これは報酬定義そのものの
+    変更であり、既定値で実行した既存campaignとは混在させられない。
+\end{enumerate}
+
+\section{実装と報告のチェック項目}
+
+\begin{description}
+  \item[拡散chain] $N$、$\beta$ schedule、$\sigma_{\min}$、$\gamma_{\den}$、単一行動かchunkか。
+  \item[PPO] $\gamma_{\env}$、$\lambda$、clip幅、epoch、論理minibatch、memory microbatch、gradient accumulation、gradient clip、診断用KL。
+  \item[信念] 粒子数、ULA step数・step size、particle/score clip、保存noise、gradient mode。
+  \item[評価] action readoutのmean-chain/mean-action、共通指標のstochastic、episode数、seed、action saturation率。
+  \item[計算量] 環境step数に加えてmode別wall-clock、peak GPU memory、denoising transition数。
+  \item[比較] activeなscore Transformer/GRUの共通action headとparameter数、非activeなscore Gaussian、observation MLP、oracle-state、Deep Sets。
+  \item[診断] $g_0/f/u$のpre-clip gradient norm、initial/recursive score・particle norm、sample数、non-finite数。
+\end{description}
+
+実装済み6手法のlocal smokeは、実行可能な23 method/task組とgradient mode 2種類からなる
+46 cellsを1 seed・1 PPO updateで確認する。一方、active productionの比較行列は
+\texttt{score\_transformer}とGRUの2手法$\times$4 tasks$\times$gradient mode 2種類
+$\times$5 seedsの合計80 runsとし、集約表はmodeとmethod/taskの組ごとに16行を保持する。
+active productionでscore beliefを持たないbaselineはGRUだけである。GRUも両mode labelで実行し、
+\texttt{full}ではepisode prefixをrollout境界越しに再生し、\texttt{tbptt\_1}では各環境stepの
+入力hiddenをdetachする。したがって両modeは同一forward・異なるtemporal gradient範囲を持つ、
+score beliefと対応したGRU ablationである。
+
+productionのGRUは入力encoder幅を$[348,185]$、hidden幅を176とする。
+共通policy/value headを含むparameter数は次の通りで、最大絶対相対差は0.116\%である。
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+task & score Transformer & GRU & 相対差 \\
+\midrule
+CartPole & 347,462 & 347,060 & $-0.116\%$ \\
+Pendulum & 348,357 & 348,759 & $+0.115\%$ \\
+MountainCarContinuous & 348,229 & 348,411 & $+0.052\%$ \\
+Light-Dark ($N=5$) & 351,817 & 352,223 & $+0.115\%$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+local設定は経路確認用の小型networkであり、このcapacity matchingの対象外である。
+
+\begin{thebibliography}{9}
+\bibitem{ren2025dppo}
+Allen Z. Ren, Justin Lidard, Lars L. Ankile, Anthony Simeonov, Pulkit Agrawal,
+Anirudha Majumdar, Benjamin Burchfiel, Hongkai Dai, Max Simchowitz,
+``Diffusion Policy Policy Optimization,'' ICLR, 2025.
+\url{https://proceedings.iclr.cc/paper_files/paper/2025/hash/c0749c39aaff9e9e4c91f7118bf21b1e-Abstract-Conference.html};
+\url{https://arxiv.org/abs/2409.00588}.
+
+\bibitem{schulman2017ppo}
+John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, Oleg Klimov,
+``Proximal Policy Optimization Algorithms,'' 2017.
+\url{https://arxiv.org/abs/1707.06347}.
+
+\bibitem{pardo2018timelimits}
+Fabio Pardo, Arash Tavakoli, Vitaly Levdik, Petar Kormushev,
+``Time Limits in Reinforcement Learning,'' ICML, 2018.
+\url{https://proceedings.mlr.press/v80/pardo18a.html};
+\url{https://arxiv.org/abs/1712.00378}.
+
+\bibitem{schulman2016gae}
+John Schulman, Philipp Moritz, Sergey Levine, Michael Jordan, Pieter Abbeel,
+``High-Dimensional Continuous Control Using Generalized Advantage Estimation,''
+ICLR, 2016. \url{https://arxiv.org/abs/1506.02438}.
+
+\bibitem{ho2020ddpm}
+Jonathan Ho, Ajay Jain, Pieter Abbeel,
+``Denoising Diffusion Probabilistic Models,'' NeurIPS, 2020.
+\url{https://proceedings.neurips.cc/paper/2020/hash/4c5bcfec8584af0d967f1ab10179ca4b-Abstract.html}.
+
+\bibitem{yang2025ncdpo}
+Ningyuan Yang, Jiaxuan Gao, Feng Gao, Yi Wu, Chao Yu,
+``Fine-tuning Diffusion Policies with Backpropagation Through Diffusion Timesteps,'' 2025.
+\url{https://arxiv.org/abs/2505.10482}.
+\end{thebibliography}
+
+\end{document}

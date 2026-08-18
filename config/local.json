@@ -1,0 +1,92 @@
+{
+  "experiment": {
+    "name": "score-belief-pomdp",
+    "label": "local-comparison-smoke",
+    "tasks": [
+      "masked_cartpole",
+      "masked_pendulum",
+      "masked_mountain_car_continuous",
+      "light_dark"
+    ],
+    "seeds": [0],
+    "device": "cpu",
+    "deterministic": true,
+    "output_dir": "results",
+    "eval_episodes": 1,
+    "eval_interval_updates": 1,
+    "checkpoint_interval_updates": 1,
+    "log_interval_updates": 1
+  },
+  "environment": {
+    "tasks": {
+      "masked_cartpole": {
+        "horizon": 8,
+        "observation_noise_std": 0.02
+      },
+      "masked_pendulum": {
+        "horizon": 8,
+        "observation_noise_std": 0.02
+      },
+      "masked_mountain_car_continuous": {
+        "horizon": 8,
+        "observation_noise_std": 0.02
+      },
+      "light_dark": {
+        "horizon": 8,
+        "observation_noise_std": 0.05,
+        "dimension": 3
+      }
+    }
+  },
+  "model": {
+    "num_particles": 4,
+    "langevin_steps": 1,
+    "langevin_step_size": 0.03,
+    "particle_clip": 0.0,
+    "score_clip": 0.0,
+    "energy_hidden": [16],
+    "d_model": 16,
+    "num_heads": 2,
+    "num_transformer_layers": 1,
+    "transformer_ff_dim": 32,
+    "dropout": 0.0,
+    "policy_hidden": [16],
+    "diffusion_steps": 2,
+    "diffusion_beta_start": 0.05,
+    "diffusion_beta_end": 0.15,
+    "diffusion_min_std": 0.1,
+    "diffusion_advantage_discount": 0.95,
+    "encoder_kind": "transformer",
+    "continuous_policy_kind": "diffusion",
+    "belief_gradient_mode": "full"
+  },
+  "ppo": {
+    "total_steps": 16,
+    "num_envs": 2,
+    "rollout_steps": 8,
+    "epochs": 1,
+    "minibatch_size": 8,
+    "sequence_microbatch_size": 8,
+    "learning_rate": 0.0003,
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "clip_coef": 0.2,
+    "value_coef": 0.5,
+    "entropy_coef": 0.0,
+    "max_grad_norm": 0.5,
+    "normalize_advantage": true
+  },
+  "comparison": {
+    "belief_gradient_modes": ["full", "tbptt_1"],
+    "methods": [
+      "score_transformer",
+      "score_deepsets",
+      "score_gaussian",
+      "observation_mlp",
+      "gru",
+      "oracle_state"
+    ],
+    "gru_encoder_hidden": [66, 16],
+    "gru_hidden_dim": 13
+  }
+}
