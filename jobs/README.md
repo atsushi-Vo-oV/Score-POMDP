@@ -78,6 +78,26 @@ evaluation episode. The production network, action head, K=32 particles, L=8
 Langevin steps, rollout length 128, logical minibatch 512, and sequence
 microbatch 128 remain unchanged.
 
+### Combined debug + pilot in one submission
+
+`jobs/genkai_debug_then_pilot.sh` requests one B node (4 full GPUs) for two
+hours and chains both validation steps into a single job. Phase 1 runs the same
+16-condition short debug as `genkai_debug_short.sh` (28-minute internal
+watchdog); any shard failure fails the job and skips phase 2. Phase 2 spends
+the remaining wall time (minus a 6-minute teardown margin) running the
+calibration shard 11 (`full/score_transformer/MountainCar`, seed 10) through
+the segmented production path on one GPU, with campaign id `<id>-pilot` and
+`SB_POMDP_PILOT_SEGMENT_UPDATES` (default 10) updates requested.
+
+```bash
+pjsub -x "SB_POMDP_CAMPAIGN_ID=debug-pilot-$(date -u +%Y%m%dT%H%M%SZ)" jobs/genkai_debug_then_pilot.sh
+```
+
+A pilot stopped by the wall-time budget exits 0: the committed-update count
+printed in the job output is the speed measurement, and the pilot shard stays
+resumable under the same campaign id, shard index, and source. Only a debug
+failure or a pilot crash before the budget produces a nonzero exit.
+
 ### Experimental benefits and limitations
 
 - Benefit: every active task, method, and temporal-gradient mode traverses the
