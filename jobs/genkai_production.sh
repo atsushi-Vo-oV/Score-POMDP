@@ -17,6 +17,12 @@ export PYTHONPATH="$PROJECT_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 export OMP_NUM_THREADS=16
 EXPECTED_PRODUCTION_SHARDS=80
 
+CONFIG_PATH="${SB_POMDP_CONFIG:-config/production.json}"
+if [[ ! "$CONFIG_PATH" =~ ^config/[A-Za-z0-9_.-]+\.json$ ]] || [[ ! -f "$CONFIG_PATH" ]]; then
+  echo "SB_POMDP_CONFIG must name an existing config/*.json file: $CONFIG_PATH" >&2
+  exit 2
+fi
+
 if [[ -n "${PJM_BULKNUM:-}" ]]; then
   echo "Bulk submission is disabled; use the shell campaign launcher." >&2
   exit 2
@@ -43,7 +49,7 @@ SEGMENT_UPDATES="${SB_POMDP_SEGMENT_UPDATES:-}"
 # One independent gradient-mode/method/task/seed shard per normal job.
 # Independent result roots avoid concurrent writes to one manifest or CSV.
 COMMON_ARGUMENTS=(
-  --config config/production.json
+  --config "$CONFIG_PATH"
   --bulk-index "$SHARD_INDEX"
   --campaign-id "$CAMPAIGN_ID"
   --override "experiment.output_dir=results/campaigns/$CAMPAIGN_ID"

@@ -98,6 +98,13 @@ printed in the job output is the speed measurement, and the pilot shard stays
 resumable under the same campaign id, shard index, and source. Only a debug
 failure or a pilot crash before the budget produces a nonzero exit.
 
+`SB_POMDP_CONFIG` (default `config/production.json`) switches the master config
+for both phases — pass `config/pre_experiment.json` to validate and pilot the
+small pre-experiment matrix. The wrapper also samples `nvidia-smi` every 30
+seconds into `logs/gpu-usage/<campaign-id>.csv` (PJM statistics do not record
+GPU utilization) and prints a per-GPU mean/max utilization and peak-memory
+summary at the end of the job output.
+
 ### Experimental benefits and limitations
 
 - Benefit: every active task, method, and temporal-gradient mode traverses the

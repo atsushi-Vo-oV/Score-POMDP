@@ -17,6 +17,12 @@ export PYTHONPATH="$PROJECT_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 export OMP_NUM_THREADS="${SB_POMDP_OMP_NUM_THREADS:-16}"
 EXPECTED_DEBUG_SHARDS=16
 
+CONFIG_PATH="${SB_POMDP_CONFIG:-config/production.json}"
+if [[ ! "$CONFIG_PATH" =~ ^config/[A-Za-z0-9_.-]+\.json$ ]] || [[ ! -f "$CONFIG_PATH" ]]; then
+  echo "SB_POMDP_CONFIG must name an existing config/*.json file: $CONFIG_PATH" >&2
+  exit 2
+fi
+
 if [[ -n "${PJM_BULKNUM:-}" ]]; then
   echo "Bulk submission is disabled; submit this script with one explicit shard." >&2
   exit 2
@@ -73,7 +79,7 @@ fi
 # configured list.  The resolved config is unaffected because the comparison
 # driver always rewrites experiment.seeds with the selected seed.
 python3.11 -m sb_pomdp.compare \
-  --config config/production.json \
+  --config "$CONFIG_PATH" \
   --gradient-modes "$GRADIENT_MODE" \
   --methods "$METHOD" \
   --tasks "$TASK" \

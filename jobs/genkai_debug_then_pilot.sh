@@ -38,7 +38,56 @@ if [[ ! "$PILOT_SEGMENT_UPDATES" =~ ^[1-9][0-9]*$ ]]; then
   echo "SB_POMDP_PILOT_SEGMENT_UPDATES must be a positive integer." >&2
   exit 2
 fi
+CONFIG_PATH="${SB_POMDP_CONFIG:-config/production.json}"
+if [[ ! "$CONFIG_PATH" =~ ^config/[A-Za-z0-9_.-]+\.json$ ]] || [[ ! -f "$CONFIG_PATH" ]]; then
+  echo "SB_POMDP_CONFIG must name an existing config/*.json file: $CONFIG_PATH" >&2
+  exit 2
+fi
+export SB_POMDP_CONFIG="$CONFIG_PATH"
+echo "config: $CONFIG_PATH"
 START_EPOCH=$(date +%s)
+
+# Background GPU sampler: one CSV row per GPU every 30 s for the whole job.
+# PJM statistics do not record GPU utilization, so this is the only record of
+# whether the training actually keeps the GPUs busy and how much memory it uses.
+GPU_LOG_DIR="$PROJECT_ROOT/logs/gpu-usage"
+GPU_LOG="$GPU_LOG_DIR/${CAMPAIGN_ID}.csv"
+GPU_SAMPLER_PID=""
+if command -v nvidia-smi >/dev/null 2>&1; then
+  mkdir -p "$GPU_LOG_DIR"
+  ( while true; do
+      nvidia-smi \
+        --query-gpu=timestamp,index,utilization.gpu,utilization.memory,memory.used,memory.total \
+        --format=csv,noheader
+      sleep 30
+    done >>"$GPU_LOG" 2>/dev/null ) &
+  GPU_SAMPLER_PID=$!
+  echo "GPU sampler running (pid $GPU_SAMPLER_PID) -> $GPU_LOG"
+else
+  echo "nvidia-smi unavailable; GPU usage will not be recorded." >&2
+fi
+
+report_gpu_usage() {
+  if [[ -n "$GPU_SAMPLER_PID" ]]; then
+    kill "$GPU_SAMPLER_PID" 2>/dev/null || true
+    wait "$GPU_SAMPLER_PID" 2>/dev/null || true
+  fi
+  if [[ -s "$GPU_LOG" ]]; then
+    echo "=== GPU usage summary (per GPU: samples, mean/max util %, max mem MiB) ==="
+    awk -F', ' '
+      { gsub(/ %| MiB/, "");
+        idx=$2; n[idx]++; util[idx]+=$3;
+        if ($3+0 > maxu[idx]) maxu[idx]=$3+0;
+        if ($5+0 > maxm[idx]) maxm[idx]=$5+0;
+        total=$6 }
+      END { for (i in n)
+        printf "GPU %s: samples=%d mean_util=%.1f%% max_util=%d%% max_mem=%d/%d MiB\n",
+               i, n[i], util[i]/n[i], maxu[i], maxm[i], total }
+    ' "$GPU_LOG" | sort
+    echo "full samples: $GPU_LOG"
+  fi
+}
+trap report_gpu_usage EXIT
 
 echo "=== phase 1: short debug (16 shards) campaign=$CAMPAIGN_ID ==="
 if ! SB_POMDP_CAMPAIGN_ID="$CAMPAIGN_ID" bash jobs/genkai_debug_short.sh; then

@@ -103,7 +103,10 @@ def test_debug_matches_production_compute_environment() -> None:
         "#PJM -L rscgrp=b-batch",
         "#PJM -L gpu=1",
         "module load cuda/12.2.2 cudnn/8.9.7 nccl/2.22.3 pytorch-cuda/2.3.1-12.2.2",
-        "--config config/production.json",
+        # The master config is switchable per submission but must default to the
+        # production config so existing commands keep their exact behaviour.
+        'CONFIG_PATH="${SB_POMDP_CONFIG:-config/production.json}"',
+        '--config "$CONFIG_PATH"',
     )
     for line in shared_lines:
         assert line in debug
