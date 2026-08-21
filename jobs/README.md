@@ -103,7 +103,31 @@ for both phases — pass `config/pre_experiment.json` to validate and pilot the
 small pre-experiment matrix. The wrapper also samples `nvidia-smi` every 30
 seconds into `logs/gpu-usage/<campaign-id>.csv` (PJM statistics do not record
 GPU utilization) and prints a per-GPU mean/max utilization and peak-memory
-summary at the end of the job output.
+summary at the end of the job output. Note: the wrapper's pilot shard index
+(default 11) is interpreted against the ACTIVE config's matrix — with the
+3-seed pre-experiment config, index 11 is `full/score_transformer/light_dark`
+seed 11, not the production MountainCar shard; pass
+`SB_POMDP_PILOT_SEGMENT_UPDATES`/edit `PILOT_SHARD_INDEX` accordingly.
+
+## Pre-experiment campaign (48 shards, no chains)
+
+`config/pre_experiment.json` is the 3-seed (10-12), 100-update, small
+matched-model matrix: 2 modes x 2 methods x 4 tasks x 3 seeds = 48 shards,
+bulk-index order mode -> method -> task -> seed (full/score 1-12, full/gru
+13-24, tbptt_1/score 25-36, tbptt_1/gru 37-48; verified against
+`sb-pomdp-compare --validate-only --bulk-index N`). At the measured
+pre-experiment speed (~10 min/update for full/score) every shard fits well
+inside one 168-hour job, so the launcher submits independent normal jobs only:
+
+```bash
+bash jobs/submit_pre_campaign.sh --dry-run <campaign-id>   # inspect all 48 pjsub commands
+bash jobs/submit_pre_campaign.sh <campaign-id>             # submit all 48
+bash jobs/submit_pre_campaign.sh --seed-offset 0 <id>      # only seeds 10 (16 shards)
+```
+
+Aggregate a finished campaign with
+`sb-pomdp-aggregate --config config/pre_experiment.json --expected-shards 48`
+(via `sb-pomdp-fetch --expected-shards 48` first).
 
 ### Experimental benefits and limitations
 
