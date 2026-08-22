@@ -1,12 +1,14 @@
 #!/bin/bash
 #PJM -L rscgrp=b-batch
 #PJM -L gpu=1
-#PJM -L elapse=168:00:00
+#PJM -L elapse=12:00:00
 #PJM -j
 #PJM -S
 
 # full / gru / masked_cartpole / seed 10
 # Submit from the repository root: pjsub jobs/two_task_full/shard07_gru_cartpole.sh
+# Short elapse request for earlier backfill scheduling; if the wall
+# time runs out mid-run, resubmit this same file to resume.
 # Fixed campaign id + segmented updates: resubmitting this exact file resumes
 # from checkpoints/latest.pt; a completed shard exits 0 without touching
 # artifacts. Do not edit the campaign id between submissions of the same set.

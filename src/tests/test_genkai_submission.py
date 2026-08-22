@@ -220,9 +220,18 @@ def test_two_task_full_job_set_is_consistent() -> None:
         "shard10_gru_lightdark.sh",
     ]
     expected_indices = {"shard01": "1", "shard04": "4", "shard07": "7", "shard10": "10"}
+    # Short elapse requests are deliberate: they backfill earlier than 168 h
+    # asks, and segmented per-update checkpoints make wall-time stops resumable.
+    expected_elapse = {
+        "shard01": "48:00:00",
+        "shard04": "48:00:00",
+        "shard07": "12:00:00",
+        "shard10": "12:00:00",
+    }
     for path in scripts:
         text = path.read_text(encoding="utf-8")
         prefix = path.name.split("_")[0]
+        assert f"#PJM -L elapse={expected_elapse[prefix]}" in text
         assert f'export SB_POMDP_SHARD_INDEX={expected_indices[prefix]}\n' in text
         assert 'export SB_POMDP_CONFIG="config/two_task_full.json"' in text
         assert 'export SB_POMDP_CAMPAIGN_ID="two-task-full-v1"' in text
