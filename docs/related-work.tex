@@ -203,6 +203,43 @@ actor networkへ組み込み、A2Cでend-to-end学習する。粒子は真のsta
 DPFRLはimportance weightとsoft resamplingを用い、beliefは平均とmoment generating function featuresで
 要約する。今回には明示的重み・resamplingがなく、energy score＋ULAとSet Transformer poolingを用いる。
 
+\subsection{PF-RNN}
+
+MaらのParticle Filter Recurrent Neural Networks（PF-RNN）\cite{ma2020pfrnn}は、
+RNNのhidden stateを重み付きparticle集合へ置き換え、学習されたtransitionと
+observation-conditioned更新、微分可能なsoft resamplingでbelief近似を保持する。
+生成的観測モデルや観測再構成lossを持たないdiscriminative（モデルフリー）学習であり、
+DPFRLの直接の前身にあたる。
+
+\matchpoint
+「hiddenを単一ベクトルでなく粒子集合として持つ」「粒子更新をタスク損失だけで
+end-to-endに学習する」という2点が今回と同じ設計判断である。GRU/LSTMの単一hiddenに
+対する粒子表現の優位を系列予測・localizationで示しており、本研究のbelief set表現の
+動機付けを補強する。
+
+\difference
+PF-RNNの粒子はimportance weightとresamplingで管理されるRNN stateであり、
+更新はgated recurrenceに従う。今回の粒子はenergyのscoreに沿うULAで毎時刻
+生成し直され、重み・resampling・gated recurrenceのいずれも持たない。
+またPF-RNNの主評価は系列予測・分類であり、PPOによる制御学習ではない。
+
+\subsection{微分可能particle filterの系譜（状態推定のみ）}
+
+JonschkowskiらのDifferentiable Particle Filters\cite{jonschkowski2018dpf}と
+KarkusらのParticle Filter Networks\cite{karkus2018pfnet}は、
+transition・観測尤度をネットワークで表しresamplingまで含めて微分可能にした
+状態推定器を教師あり（真の状態ラベル）で学習する。QMDP-Net\cite{karkus2017qmdpnet}は
+filteringとQMDP planningを一つの微分可能networkへ埋め込む。
+
+\matchpoint
+「filterの構成要素を学習対象にする」発想の源流であり、今回のenergy MLP
+$f, u$の学習可能化はこの系譜のscore-based版と位置付けられる。
+
+\difference
+これらは真の状態や専門家軌跡による教師信号を要し、報酬のみからの
+モデルフリー学習ではない。今回の比較行列に含めない理由もこの教師信号要件にある。
+なお、DVRLの基盤であるSMCのELBO化はAESMC\cite{le2018aesmc}に整理されている。
+
 \subsection{DVRL}
 
 Deep Variational Reinforcement Learning（DVRL）\cite{igl2018dvrl}は、
@@ -515,6 +552,29 @@ Xiao Ma, Peter Karkus, David Hsu, Wee Sun Lee, Nan Ye,
 ICLR, 2020.
 Official: \url{https://openreview.net/forum?id=HJl8_eHYvS};
 arXiv: \url{https://arxiv.org/abs/2002.09884}.
+
+\bibitem{ma2020pfrnn}
+Xiao Ma, Peter Karkus, David Hsu, Wee Sun Lee,
+``Particle Filter Recurrent Neural Networks,'' AAAI, 2020.
+
+\bibitem{jonschkowski2018dpf}
+Rico Jonschkowski, Divyam Rastogi, Oliver Brock,
+``Differentiable Particle Filters: End-to-End Learning with Algorithmic Priors,''
+Robotics: Science and Systems (RSS), 2018.
+
+\bibitem{karkus2018pfnet}
+Peter Karkus, David Hsu, Wee Sun Lee,
+``Particle Filter Networks with Application to Visual Localization,''
+Conference on Robot Learning (CoRL), 2018.
+
+\bibitem{karkus2017qmdpnet}
+Peter Karkus, David Hsu, Wee Sun Lee,
+``QMDP-Net: Deep Learning for Planning under Partial Observability,''
+NeurIPS, 2017.
+
+\bibitem{le2018aesmc}
+Tuan Anh Le, Maximilian Igl, Tom Rainforth, Tom Jin, Frank Wood,
+``Auto-Encoding Sequential Monte Carlo,'' ICLR, 2018.
 
 \bibitem{igl2018dvrl}
 Maximilian Igl, Luisa Zintgraf, Tuan Anh Le, Frank Wood, Shimon Whiteson,
