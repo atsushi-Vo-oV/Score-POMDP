@@ -1,0 +1,104 @@
+{
+  "experiment": {
+    "name": "score-belief-pomdp",
+    "label": "tune-lr250-ent",
+    "tasks": [
+      "masked_cartpole",
+      "masked_pendulum",
+      "masked_mountain_car_continuous",
+      "light_dark"
+    ],
+    "seeds": [
+      10,
+      11,
+      12
+    ],
+    "device": "cuda",
+    "deterministic": false,
+    "output_dir": "results",
+    "eval_episodes": 10,
+    "eval_interval_updates": 25,
+    "checkpoint_interval_updates": 25,
+    "log_interval_updates": 1
+  },
+  "environment": {
+    "tasks": {
+      "masked_cartpole": {
+        "horizon": 500,
+        "observation_noise_std": 0.05
+      },
+      "masked_pendulum": {
+        "horizon": 200,
+        "observation_noise_std": 0.05
+      },
+      "masked_mountain_car_continuous": {
+        "horizon": 999,
+        "observation_noise_std": 0.01
+      },
+      "light_dark": {
+        "horizon": 30,
+        "observation_noise_std": 0.05,
+        "dimension": 5
+      }
+    }
+  },
+  "model": {
+    "num_particles": 16,
+    "langevin_steps": 4,
+    "langevin_step_size": 0.02,
+    "particle_clip": 0.0,
+    "score_clip": 0.0,
+    "energy_hidden": [
+      48,
+      48
+    ],
+    "d_model": 64,
+    "num_heads": 4,
+    "num_transformer_layers": 1,
+    "transformer_ff_dim": 128,
+    "dropout": 0.0,
+    "policy_hidden": [
+      96,
+      96
+    ],
+    "diffusion_steps": 5,
+    "diffusion_beta_start": 0.01,
+    "diffusion_beta_end": 0.2,
+    "diffusion_min_std": 0.05,
+    "diffusion_advantage_discount": 0.95,
+    "encoder_kind": "transformer",
+    "continuous_policy_kind": "diffusion",
+    "belief_gradient_mode": "full"
+  },
+  "ppo": {
+    "total_steps": 204800,
+    "num_envs": 16,
+    "rollout_steps": 128,
+    "epochs": 4,
+    "minibatch_size": 512,
+    "sequence_microbatch_size": 128,
+    "learning_rate": 0.00025,
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "clip_coef": 0.2,
+    "value_coef": 0.5,
+    "entropy_coef": 0.01,
+    "max_grad_norm": 0.5,
+    "normalize_advantage": true
+  },
+  "comparison": {
+    "belief_gradient_modes": [
+      "full",
+      "tbptt_1"
+    ],
+    "methods": [
+      "score_transformer",
+      "gru"
+    ],
+    "gru_encoder_hidden": [
+      234,
+      90
+    ],
+    "gru_hidden_dim": 43
+  }
+}
