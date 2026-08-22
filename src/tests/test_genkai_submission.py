@@ -192,6 +192,45 @@ def test_production_job_script_has_valid_bash_syntax() -> None:
     )
 
 
+def test_every_job_script_recursively_has_valid_bash_syntax() -> None:
+    # Job sets live in subdirectories of jobs/ (one file per submission);
+    # cover them all so a new set cannot ship with a syntax error.
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is unavailable on this platform")
+    scripts = sorted((_PROJECT_ROOT / "jobs").rglob("*.sh"))
+    assert scripts, "no job scripts found under jobs/"
+    for path in scripts:
+        subprocess.run(
+            [bash, "-n", str(path)],
+            cwd=_PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+
+def test_two_task_full_job_set_is_consistent() -> None:
+    set_dir = _PROJECT_ROOT / "jobs" / "two_task_full"
+    scripts = sorted(set_dir.glob("*.sh"))
+    assert [path.name for path in scripts] == [
+        "shard01_score_cartpole.sh",
+        "shard04_score_lightdark.sh",
+        "shard07_gru_cartpole.sh",
+        "shard10_gru_lightdark.sh",
+    ]
+    expected_indices = {"shard01": "1", "shard04": "4", "shard07": "7", "shard10": "10"}
+    for path in scripts:
+        text = path.read_text(encoding="utf-8")
+        prefix = path.name.split("_")[0]
+        assert f'export SB_POMDP_SHARD_INDEX={expected_indices[prefix]}\n' in text
+        assert 'export SB_POMDP_CONFIG="config/two_task_full.json"' in text
+        assert 'export SB_POMDP_CAMPAIGN_ID="two-task-full-v1"' in text
+        assert "export SB_POMDP_SEGMENT_UPDATES=200" in text
+        assert "exec bash jobs/genkai_production.sh" in text
+        assert "#PJM -L gpu=1" in text
+
+
 def test_shell_campaign_launcher_dry_run_submits_one_seed_in_parallel() -> None:
     bash = shutil.which("bash")
     if bash is None:
