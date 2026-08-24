@@ -86,6 +86,7 @@ resume・集計の一致判定はこれらのキーを追加しても壊れま�
 | `observation_mlp` | 現在の部分観測だけを MLP へ入力 | categorical / tanh-squashed Gaussian |
 | `gru` | 部分観測と正規化した直前行動。episode prefixを再生するGRU | categorical / diffusion（active比較では提案法と同一head） |
 | `oracle_state` | simulator の正規化した完全状態を MLP へ入力 | categorical / tanh-squashed Gaussian |
+| `particle_filter` | 部分観測と直前行動。K 個の学習 anchor 仮説粒子 + 観測適合度重み + soft 床（決定論的 PF 型、PF-RNN/DPFRL 系譜） | categorical / diffusion（active 比較と同一 head） |
 
 6手法の実装は残していますが、現在のproduction比較は `score_transformer` と `gru` の2手法に
 絞っています。4タスク、belief勾配の `full` / `tbptt_1`、各5 seedsを実行するため、行列は
@@ -94,6 +95,21 @@ resume・集計の一致判定はこれらのキーを追加しても壊れま�
 detachします。したがって両modeは同じforward値を持ちますが、同一設定の反復ではなく時間方向の
 gradient範囲を比較する条件です。`score_gaussian` は離散CartPoleでは提案法との差が
 消えるため、将来6手法比較を再有効化する場合も連続3タスクだけが対象です。
+
+### particle_filter baseline の位置付け
+
+`particle_filter` は PF-RNN / DPFRL 系譜の discriminative（モデルフリー）particle
+filter 比較手法である。古典 PF の確率的な遷移サンプリングと resampling は、
+検証済みの prefix 再生・recondition・resume 機構が「保存入力の決定論的関数」で
+あることを要求するため、次の決定論的緩和へ置き換えている: (1) K 個の学習
+anchor embedding が初期観測から K 本の仮説粒子軌道を張り、観測条件付き遷移 MLP
+で伝搬する、(2) resampling は前重みへの一様床混合 `alpha*w + (1-alpha)/K`
+（PF-RNN の soft resampling の期待値）とし、重み崩壊を決定論的に防ぐ。観測適合
+度 MLP が古典的尤度の役割で log 重みへ加算され、毎ステップ正規化される。方策・
+価値の条件は重み付き粒子特徴の平均であり、policy/value head・PPO・full/tbptt_1
+の意味論は active 比較と完全共有する。two-task 設定での parameter 数は
+`pf_hidden=[52,124]`, `pf_particle_dim=16`, K=16 で score_transformer との最大
+相対差 0.085% に一致させている。
 
 ## ローカル比較
 

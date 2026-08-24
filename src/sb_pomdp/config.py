@@ -68,7 +68,15 @@ _LIGHT_DARK_TASK_KEYS = (
 )
 
 _COMPARISON_KEYS = frozenset(
-    {"methods", "belief_gradient_modes", "gru_encoder_hidden", "gru_hidden_dim"}
+    {
+        "methods",
+        "belief_gradient_modes",
+        "gru_encoder_hidden",
+        "gru_hidden_dim",
+        "pf_hidden",
+        "pf_particle_dim",
+        "pf_soft_alpha",
+    }
 )
 BELIEF_GRADIENT_MODES = frozenset({"full", "tbptt_1"})
 COMPARISON_METHODS = frozenset(
@@ -79,6 +87,7 @@ COMPARISON_METHODS = frozenset(
         "observation_mlp",
         "gru",
         "oracle_state",
+        "particle_filter",
     }
 )
 
@@ -135,6 +144,13 @@ _PPO_KEYS = frozenset(
 # nothing else - when a new key has to stay comparable with the campaign.
 _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
     "ppo": {"bootstrap_on_truncation": False},
+    # The particle-filter baseline arrived after the first campaigns; legacy
+    # resolved configs compare equal at these inert defaults.
+    "comparison": {
+        "pf_hidden": [64],
+        "pf_particle_dim": 8,
+        "pf_soft_alpha": 0.9,
+    },
 }
 
 
@@ -498,6 +514,15 @@ def _validate_comparison(
         "comparison.gru_encoder_hidden",
     )
     _integer(section["gru_hidden_dim"], "comparison.gru_hidden_dim")
+    _positive_integer_list(section["pf_hidden"], "comparison.pf_hidden")
+    _integer(section["pf_particle_dim"], "comparison.pf_particle_dim")
+    pf_soft_alpha = section["pf_soft_alpha"]
+    if (
+        isinstance(pf_soft_alpha, bool)
+        or not isinstance(pf_soft_alpha, (int, float))
+        or not 0.0 < float(pf_soft_alpha) <= 1.0
+    ):
+        raise ConfigError("comparison.pf_soft_alpha must be a number in (0, 1]")
     return section
 
 

@@ -19,7 +19,7 @@ from sb_pomdp.train_baselines import (
 )
 
 TASK = "masked_cartpole"
-METHODS = ("observation_mlp", "gru", "oracle_state")
+METHODS = ("observation_mlp", "gru", "oracle_state", "particle_filter")
 
 
 def _tiny_two_update_config(tmp_path: Path, *, horizon: int = 3) -> ExperimentConfig:
@@ -42,6 +42,8 @@ def _tiny_two_update_config(tmp_path: Path, *, horizon: int = 3) -> ExperimentCo
             "model.diffusion_steps": 1,
             "comparison.gru_encoder_hidden": [4],
             "comparison.gru_hidden_dim": 4,
+            "comparison.pf_hidden": [4],
+            "comparison.pf_particle_dim": 3,
             "ppo.total_steps": 8,
             "ppo.num_envs": 1,
             "ppo.rollout_steps": 4,
@@ -107,7 +109,7 @@ def test_segmented_baseline_resume_matches_uninterrupted_training(
     assert not (resumed_artifacts.path / "evaluation.csv").exists()
     assert first_checkpoint["format_version"] == BASELINE_CHECKPOINT_FORMAT_VERSION
     assert first_checkpoint["trainer_state"]["format_version"] == 1
-    if method == "gru":
+    if method in ("gru", "particle_filter"):
         assert first_checkpoint["trainer_state"]["recurrent_histories"][0]["inputs"]
     else:
         assert first_checkpoint["trainer_state"]["recurrent_histories"] == []

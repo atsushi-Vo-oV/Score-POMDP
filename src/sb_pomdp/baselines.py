@@ -23,7 +23,7 @@ from torch.distributions import Categorical, Independent, Normal
 from .networks import make_mlp
 from .policies import DiffusionPolicy, PolicySample, TanhGaussianPolicy
 
-BaselineKind = Literal["observation", "oracle_state", "gru"]
+BaselineKind = Literal["observation", "oracle_state", "gru", "particle_filter"]
 ActionKind = Literal["discrete", "continuous"]
 TemporalGradientMode = Literal["full", "tbptt_1"]
 
@@ -676,6 +676,312 @@ class GRUActorCritic(nn.Module):
         )
 
 
+class ParticleFilterActorCritic(nn.Module):
+    """Deterministic particle-filter-style recurrent PPO baseline.
+
+    The belief is a set of ``K`` latent hypothesis particles with normalised
+    log-weights, updated discriminatively from observations and previous
+    actions only (no generative model, no reconstruction loss), following the
+    PF-RNN/DPFRL lineage.  Two stochastic components of a classical particle
+    filter are replaced by deterministic relaxations so that the recurrence is
+    an exact function of its stored inputs (which is what the shared
+    prefix-replay, reconditioning, and resume machinery requires):
+
+    * transition sampling: ``K`` learned anchor embeddings seed ``K`` distinct
+      deterministic hypothesis trajectories through an observation-conditioned
+      transition network, instead of drawing transition noise per particle;
+    * resampling: the previous weights are mixed with a uniform floor,
+      ``alpha * w + (1 - alpha) / K`` (the expectation of PF-RNN's soft
+      resampling), which deterministically prevents weight collapse.
+
+    The observation-compatibility network plays the classical likelihood role:
+    its output is added to the running log-weights, which are re-normalised
+    every step.  The policy/value condition is the weight-averaged particle
+    feature, projected to the shared head width.  The public API mirrors
+    :class:`GRUActorCritic` exactly; the packed hidden state is
+    ``[1, batch, K * (particle_dim + 1)]`` holding particles and log-weights.
+    """
+
+    input_source: Literal["observation"] = "observation"
+
+    def __init__(
+        self,
+        observation_dim: int,
+        *,
+        action_kind: ActionKind,
+        num_particles: int,
+        particle_dim: int,
+        hidden_dims: Sequence[int],
+        soft_alpha: float = 0.9,
+        policy_condition_dim: int | None = None,
+        head_hidden_dims: Sequence[int] = (),
+        continuous_policy_kind: Literal["gaussian", "diffusion"] = "gaussian",
+        diffusion_steps: int = 10,
+        diffusion_beta_start: float = 0.01,
+        diffusion_beta_end: float = 0.2,
+        diffusion_min_std: float = 0.05,
+        discrete_actions: int | None = None,
+        action_low: Sequence[float] | None = None,
+        action_high: Sequence[float] | None = None,
+    ) -> None:
+        super().__init__()
+        if observation_dim <= 0:
+            raise ValueError("observation_dim must be positive")
+        if (
+            isinstance(num_particles, bool)
+            or not isinstance(num_particles, int)
+            or num_particles < 2
+        ):
+            raise ValueError("num_particles must be an integer of at least two")
+        if isinstance(particle_dim, bool) or not isinstance(particle_dim, int) or particle_dim <= 0:
+            raise ValueError("particle_dim must be a positive integer")
+        if not 0.0 < float(soft_alpha) <= 1.0:
+            raise ValueError("soft_alpha must lie in (0, 1]")
+        widths = _validate_hidden_dims(hidden_dims)
+        self.observation_dim = observation_dim
+        self.num_particles = num_particles
+        self.particle_dim = particle_dim
+        self.soft_alpha = float(soft_alpha)
+        self.recurrent_layers = 1
+
+        self.anchors = nn.Parameter(torch.randn(num_particles, particle_dim) * 0.1)
+        self.initial_net = make_mlp(observation_dim + particle_dim, widths, particle_dim)
+        self.transition_net = make_mlp(particle_dim + observation_dim, widths, particle_dim)
+        self.weight_net = make_mlp(particle_dim + observation_dim, widths, 1)
+        self.feature_net = nn.Sequential(
+            make_mlp(particle_dim, widths[:-1], widths[-1]), nn.SiLU()
+        )
+        condition_dim = widths[-1] if policy_condition_dim is None else policy_condition_dim
+        if condition_dim <= 0:
+            raise ValueError("policy_condition_dim must be positive")
+        self.policy_condition_dim = condition_dim
+        self.condition_projection: nn.Module = (
+            nn.Identity()
+            if widths[-1] == condition_dim
+            else nn.Linear(widths[-1], condition_dim)
+        )
+        self.heads = _PolicyValueHeads(
+            condition_dim,
+            action_kind=action_kind,
+            discrete_actions=discrete_actions,
+            action_low=action_low,
+            action_high=action_high,
+            hidden_dims=head_hidden_dims,
+            continuous_policy_kind=continuous_policy_kind,
+            diffusion_steps=diffusion_steps,
+            diffusion_beta_start=diffusion_beta_start,
+            diffusion_beta_end=diffusion_beta_end,
+            diffusion_min_std=diffusion_min_std,
+        )
+
+    @property
+    def action_kind(self) -> ActionKind:
+        return self.heads.action_kind
+
+    @property
+    def continuous_policy_kind(self) -> Literal["gaussian", "diffusion"]:
+        return self.heads.continuous_policy_kind
+
+    @property
+    def recurrent_hidden_dim(self) -> int:
+        return self.num_particles * (self.particle_dim + 1)
+
+    def initial_hidden(
+        self,
+        batch_size: int,
+        *,
+        device: torch.device | str | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> torch.Tensor:
+        """Return the pre-episode packed state.
+
+        Its value is irrelevant to any output: every episode's first step
+        carries ``episode_starts`` and rebuilds particles from the first input,
+        so zeros act purely as a shape-compatible placeholder, exactly like the
+        GRU's zero hidden state.
+        """
+
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        parameter = next(self.parameters())
+        return torch.zeros(
+            self.recurrent_layers,
+            batch_size,
+            self.recurrent_hidden_dim,
+            device=parameter.device if device is None else device,
+            dtype=parameter.dtype if dtype is None else dtype,
+        )
+
+    def _unpack(self, hidden: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        batch = hidden.shape[1]
+        packed = hidden[0].reshape(batch, self.num_particles, self.particle_dim + 1)
+        return packed[..., : self.particle_dim], packed[..., self.particle_dim]
+
+    def _pack(self, particles: torch.Tensor, log_weights: torch.Tensor) -> torch.Tensor:
+        packed = torch.cat((particles, log_weights.unsqueeze(-1)), dim=-1)
+        return packed.reshape(1, particles.shape[0], self.recurrent_hidden_dim)
+
+    def _filter_step(
+        self,
+        inputs: torch.Tensor,
+        particles: torch.Tensor,
+        log_weights: torch.Tensor,
+        episode_start: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        batch = inputs.shape[0]
+        tiled_inputs = inputs.unsqueeze(1).expand(batch, self.num_particles, inputs.shape[-1])
+        starts = episode_start.bool().view(batch, 1, 1)
+
+        anchor_inputs = torch.cat(
+            (tiled_inputs, self.anchors.unsqueeze(0).expand(batch, -1, -1)), dim=-1
+        )
+        initial_particles = self.initial_net(anchor_inputs)
+        propagated = self.transition_net(torch.cat((particles, tiled_inputs), dim=-1))
+        new_particles = torch.where(starts, initial_particles, propagated)
+
+        uniform = torch.full_like(log_weights, 1.0 / self.num_particles)
+        previous_weights = torch.where(
+            starts.view(batch, 1),
+            uniform,
+            torch.softmax(log_weights, dim=-1),
+        )
+        floored = self.soft_alpha * previous_weights + (1.0 - self.soft_alpha) / self.num_particles
+        compatibility = self.weight_net(
+            torch.cat((new_particles, tiled_inputs), dim=-1)
+        ).squeeze(-1)
+        new_log_weights = torch.log_softmax(floored.log() + compatibility, dim=-1)
+
+        weights = new_log_weights.exp().unsqueeze(-1)
+        pooled = (weights * self.feature_net(new_particles)).sum(dim=1)
+        return self.condition_projection(pooled), new_particles, new_log_weights
+
+    def _validate_sequence_inputs(
+        self,
+        observations: torch.Tensor,
+        initial_hidden: torch.Tensor,
+        episode_starts: torch.Tensor,
+    ) -> None:
+        if observations.ndim != 3 or observations.shape[-1] != self.observation_dim:
+            raise ValueError(
+                "observations must have shape "
+                f"[time, batch, {self.observation_dim}], got {tuple(observations.shape)}"
+            )
+        time, batch, _ = observations.shape
+        expected_hidden = (self.recurrent_layers, batch, self.recurrent_hidden_dim)
+        if tuple(initial_hidden.shape) != expected_hidden:
+            raise ValueError(
+                f"initial_hidden must have shape {expected_hidden}, got {tuple(initial_hidden.shape)}"
+            )
+        if tuple(episode_starts.shape) != (time, batch):
+            raise ValueError(
+                f"episode_starts must have shape {(time, batch)}, got {tuple(episode_starts.shape)}"
+            )
+
+    def encode_sequence(
+        self,
+        observations: torch.Tensor,
+        initial_hidden: torch.Tensor,
+        episode_starts: torch.Tensor,
+        *,
+        temporal_gradient_mode: TemporalGradientMode = "full",
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Encode ``[T, B, I]`` inputs with per-environment episode resets.
+
+        ``full`` keeps the particle/weight graph connected from the start of
+        each episode; ``tbptt_1`` detaches the incoming packed state at every
+        environment-time boundary while producing identical forward values.
+        """
+
+        self._validate_sequence_inputs(observations, initial_hidden, episode_starts)
+        if temporal_gradient_mode not in {"full", "tbptt_1"}:
+            raise ValueError("temporal_gradient_mode must be 'full' or 'tbptt_1'")
+        hidden = initial_hidden
+        outputs: list[torch.Tensor] = []
+        for time_index in range(observations.shape[0]):
+            if temporal_gradient_mode == "tbptt_1":
+                hidden = hidden.detach()
+            particles, log_weights = self._unpack(hidden)
+            features, particles, log_weights = self._filter_step(
+                observations[time_index],
+                particles,
+                log_weights,
+                episode_starts[time_index],
+            )
+            hidden = self._pack(particles, log_weights)
+            outputs.append(features)
+        return torch.stack(outputs, dim=0), hidden
+
+    def step(
+        self,
+        observation: torch.Tensor,
+        hidden: torch.Tensor,
+        episode_start: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Encode one vector-environment step using the same path as BPTT."""
+
+        if observation.ndim != 2:
+            raise ValueError("a recurrent step observation must have shape [batch, observation]")
+        features, next_hidden = self.encode_sequence(
+            observation.unsqueeze(0),
+            hidden,
+            episode_start.unsqueeze(0),
+        )
+        return features[0], next_hidden
+
+    def act_step(
+        self,
+        observation: torch.Tensor,
+        hidden: torch.Tensor,
+        episode_start: torch.Tensor,
+        *,
+        deterministic: bool,
+        generator: torch.Generator | None = None,
+    ) -> tuple[PolicySample, torch.Tensor, torch.Tensor]:
+        features, next_hidden = self.step(observation, hidden, episode_start)
+        sample = self.heads.sample_policy(
+            features,
+            deterministic=deterministic,
+            generator=generator,
+        )
+        return sample, self.heads.value(features), next_hidden
+
+    def evaluate_sequence(
+        self,
+        observations: torch.Tensor,
+        actions: torch.Tensor,
+        initial_hidden: torch.Tensor,
+        episode_starts: torch.Tensor,
+        *,
+        pre_tanh_actions: torch.Tensor | None = None,
+        diffusion_chains: torch.Tensor | None = None,
+        temporal_gradient_mode: TemporalGradientMode = "full",
+    ) -> RecurrentActorCriticEvaluation:
+        """Replay a rollout without flattening time, preserving BPTT."""
+
+        features, final_hidden = self.encode_sequence(
+            observations,
+            initial_hidden,
+            episode_starts,
+            temporal_gradient_mode=temporal_gradient_mode,
+        )
+        evaluation = self.heads.evaluate_actions(
+            features,
+            actions,
+            pre_tanh_actions=pre_tanh_actions,
+            diffusion_chains=diffusion_chains,
+        )
+        return RecurrentActorCriticEvaluation(
+            log_prob=evaluation.log_prob,
+            entropy=evaluation.entropy,
+            value=evaluation.value,
+            final_hidden=final_hidden,
+        )
+
+
+RECURRENT_BASELINE_TYPES = (GRUActorCritic, ParticleFilterActorCritic)
+RecurrentBaseline = GRUActorCritic | ParticleFilterActorCritic
+
+
 def make_baseline_actor_critic(
     kind: BaselineKind,
     *,
@@ -695,7 +1001,10 @@ def make_baseline_actor_critic(
     diffusion_beta_start: float = 0.01,
     diffusion_beta_end: float = 0.2,
     diffusion_min_std: float = 0.05,
-) -> FeedForwardBaselineActorCritic | GRUActorCritic:
+    pf_num_particles: int = 16,
+    pf_particle_dim: int = 8,
+    pf_soft_alpha: float = 0.9,
+) -> FeedForwardBaselineActorCritic | RecurrentBaseline:
     """Build one comparison model from environment dimensions and bounds."""
 
     common = {
@@ -709,6 +1018,21 @@ def make_baseline_actor_critic(
         return ObservationActorCritic(observation_dim, **common)
     if kind == "oracle_state":
         return OracleStateActorCritic(state_dim, **common)
+    if kind == "particle_filter":
+        return ParticleFilterActorCritic(
+            observation_dim,
+            **common,
+            num_particles=pf_num_particles,
+            particle_dim=pf_particle_dim,
+            soft_alpha=pf_soft_alpha,
+            policy_condition_dim=policy_condition_dim,
+            head_hidden_dims=head_hidden_dims,
+            continuous_policy_kind=continuous_policy_kind,
+            diffusion_steps=diffusion_steps,
+            diffusion_beta_start=diffusion_beta_start,
+            diffusion_beta_end=diffusion_beta_end,
+            diffusion_min_std=diffusion_min_std,
+        )
     if kind == "gru":
         return GRUActorCritic(
             observation_dim,
@@ -727,13 +1051,16 @@ def make_baseline_actor_critic(
 
 
 __all__ = [
+    "RECURRENT_BASELINE_TYPES",
     "ActorCriticEvaluation",
     "BaselineKind",
     "FeedForwardBaselineActorCritic",
     "GRUActorCritic",
     "ObservationActorCritic",
     "OracleStateActorCritic",
+    "ParticleFilterActorCritic",
     "RecurrentActorCriticEvaluation",
+    "RecurrentBaseline",
     "SquashedDiagonalGaussian",
     "TemporalGradientMode",
     "make_baseline_actor_critic",

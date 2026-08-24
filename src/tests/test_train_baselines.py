@@ -24,7 +24,7 @@ TASKS = (
     "masked_mountain_car_continuous",
     "light_dark",
 )
-METHODS = ("observation_mlp", "gru", "oracle_state")
+METHODS = ("observation_mlp", "gru", "oracle_state", "particle_filter")
 
 
 @pytest.mark.parametrize("method", METHODS)
@@ -109,7 +109,7 @@ def test_one_update_baseline_writes_complete_artifacts(
         "greedy"
         if task == "masked_cartpole"
         else "mean_chain"
-        if method == "gru"
+        if method in ("gru", "particle_filter")
         else "mean_action"
     )
     assert [row["mode"] for row in rows] == [deterministic_mode, "stochastic"]

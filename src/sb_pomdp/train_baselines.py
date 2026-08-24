@@ -22,8 +22,9 @@ import torch
 
 from .artifacts import SeedArtifacts
 from .baselines import (
+    RECURRENT_BASELINE_TYPES,
     FeedForwardBaselineActorCritic,
-    GRUActorCritic,
+    RecurrentBaseline,
     TemporalGradientMode,
     make_baseline_actor_critic,
 )
@@ -54,8 +55,8 @@ from .train import (
     truncated_step_indices,
 )
 
-BaselineMethod = Literal["observation_mlp", "gru", "oracle_state"]
-BASELINE_METHODS = frozenset({"observation_mlp", "gru", "oracle_state"})
+BaselineMethod = Literal["observation_mlp", "gru", "oracle_state", "particle_filter"]
+BASELINE_METHODS = frozenset({"observation_mlp", "gru", "oracle_state", "particle_filter"})
 # The baseline trainer keeps its own checkpoint dialect.  Its trainer_state has a
 # different shape from the score trainer's, so the two identifiers must never
 # collide: feeding either trainer the other's checkpoint has to fail loudly
@@ -155,31 +156,45 @@ def _make_model(
     model_config: dict[str, Any],
     comparison_config: dict[str, Any],
     device: torch.device,
-) -> FeedForwardBaselineActorCritic | GRUActorCritic:
+) -> FeedForwardBaselineActorCritic | RecurrentBaseline:
     spec = environment.action_spec
     input_dim = environment.observation_dim
-    kind: Literal["observation", "oracle_state", "gru"]
+    kind: Literal["observation", "oracle_state", "gru", "particle_filter"]
     if method == "observation_mlp":
         kind = "observation"
     elif method == "oracle_state":
         kind = "oracle_state"
+    elif method == "particle_filter":
+        kind = "particle_filter"
+        input_dim += spec.feature_dim
     else:
         kind = "gru"
         input_dim += spec.feature_dim
 
+    shared_head_kwargs = {
+        "policy_condition_dim": int(model_config["d_model"]),
+        "head_hidden_dims": model_config["policy_hidden"],
+        "continuous_policy_kind": model_config["continuous_policy_kind"],
+        "diffusion_steps": int(model_config["diffusion_steps"]),
+        "diffusion_beta_start": float(model_config["diffusion_beta_start"]),
+        "diffusion_beta_end": float(model_config["diffusion_beta_end"]),
+        "diffusion_min_std": float(model_config["diffusion_min_std"]),
+    }
     recurrent_kwargs: dict[str, Any] = {}
     hidden_dims = model_config["policy_hidden"]
     if method == "gru":
         hidden_dims = comparison_config["gru_encoder_hidden"]
         recurrent_kwargs = {
             "recurrent_hidden_dim": int(comparison_config["gru_hidden_dim"]),
-            "policy_condition_dim": int(model_config["d_model"]),
-            "head_hidden_dims": model_config["policy_hidden"],
-            "continuous_policy_kind": model_config["continuous_policy_kind"],
-            "diffusion_steps": int(model_config["diffusion_steps"]),
-            "diffusion_beta_start": float(model_config["diffusion_beta_start"]),
-            "diffusion_beta_end": float(model_config["diffusion_beta_end"]),
-            "diffusion_min_std": float(model_config["diffusion_min_std"]),
+            **shared_head_kwargs,
+        }
+    elif method == "particle_filter":
+        hidden_dims = comparison_config["pf_hidden"]
+        recurrent_kwargs = {
+            "pf_num_particles": int(model_config["num_particles"]),
+            "pf_particle_dim": int(comparison_config["pf_particle_dim"]),
+            "pf_soft_alpha": float(comparison_config["pf_soft_alpha"]),
+            **shared_head_kwargs,
         }
 
     model = make_baseline_actor_critic(
@@ -211,13 +226,13 @@ def _current_inputs(
     if method == "oracle_state":
         return _oracle_batch(batch, device)
     observation_tensor = torch.as_tensor(observation, dtype=torch.float32, device=device)
-    if method == "gru":
+    if method in ("gru", "particle_filter"):
         return torch.cat((observation_tensor, previous_action), dim=-1)
     return observation_tensor
 
 
 def _truncation_bootstrap_values(
-    model: FeedForwardBaselineActorCritic | GRUActorCritic,
+    model: FeedForwardBaselineActorCritic | RecurrentBaseline,
     method: BaselineMethod,
     *,
     infos: Sequence[Mapping[str, Any]],
@@ -248,12 +263,12 @@ def _truncation_bootstrap_values(
         )
     else:
         inputs = final_step_features(infos, indices, name="final_observation", device=device)
-        if method == "gru":
+        if method in ("gru", "particle_filter"):
             inputs = torch.cat(
                 (inputs, action_features.detach().index_select(0, selector)), dim=-1
             )
     with torch.no_grad():
-        if isinstance(model, GRUActorCritic):
+        if isinstance(model, RECURRENT_BASELINE_TYPES):
             if hidden is None:
                 raise RuntimeError("the recurrent baseline is missing its rollout hidden state")
             final_hidden = hidden.detach().index_select(1, selector).clone()
@@ -339,7 +354,7 @@ def _finish_metrics(
 
 
 def _optimise_minibatch(
-    model: FeedForwardBaselineActorCritic | GRUActorCritic,
+    model: FeedForwardBaselineActorCritic | RecurrentBaseline,
     optimizer: torch.optim.Optimizer,
     *,
     new_log_prob: torch.Tensor,
@@ -435,7 +450,7 @@ def _update_feedforward(
 
 
 def _replay_recurrent_prefix(
-    model: GRUActorCritic,
+    model: RecurrentBaseline,
     prefix: RecurrentReplayPrefix,
     *,
     temporal_gradient_mode: TemporalGradientMode,
@@ -475,7 +490,7 @@ def _replay_recurrent_prefix(
 
 
 def replay_recurrent_sequence(
-    model: GRUActorCritic,
+    model: RecurrentBaseline,
     rollout: BaselineRollout,
     environment_indices: torch.Tensor,
     *,
@@ -520,7 +535,7 @@ def replay_recurrent_sequence(
 
 @torch.no_grad()
 def _recondition_recurrent_hidden(
-    model: GRUActorCritic,
+    model: RecurrentBaseline,
     histories: list[RecurrentReplayHistory],
     *,
     input_template: torch.Tensor,
@@ -543,7 +558,7 @@ def _recondition_recurrent_hidden(
 
 
 def _update_recurrent(
-    model: GRUActorCritic,
+    model: RecurrentBaseline,
     optimizer: torch.optim.Optimizer,
     rollout: BaselineRollout,
     model_config: dict[str, Any],
@@ -661,7 +676,7 @@ def _update_recurrent(
 
 @torch.no_grad()
 def evaluate_baseline(
-    model: FeedForwardBaselineActorCritic | GRUActorCritic,
+    model: FeedForwardBaselineActorCritic | RecurrentBaseline,
     *,
     method: BaselineMethod,
     task: str,
@@ -699,7 +714,7 @@ def evaluate_baseline(
             )
             hidden = (
                 model.initial_hidden(1, device=device)
-                if isinstance(model, GRUActorCritic)
+                if isinstance(model, RECURRENT_BASELINE_TYPES)
                 else None
             )
             episode_start = torch.ones(1, dtype=torch.bool, device=device)
@@ -719,12 +734,12 @@ def evaluate_baseline(
                         dtype=torch.float32,
                         device=device,
                     )
-                elif method == "gru":
+                elif method in ("gru", "particle_filter"):
                     inputs = torch.cat((observation_tensor, previous_action), dim=-1)
                 else:
                     inputs = observation_tensor
 
-                if isinstance(model, GRUActorCritic):
+                if isinstance(model, RECURRENT_BASELINE_TYPES):
                     assert hidden is not None
                     sample, _, hidden = model.act_step(
                         inputs,
@@ -1228,12 +1243,12 @@ def train_baseline_single(
     episode_starts = torch.ones(batch.size, dtype=torch.bool, device=device)
     hidden = (
         model.initial_hidden(batch.size, device=device)
-        if isinstance(model, GRUActorCritic)
+        if isinstance(model, RECURRENT_BASELINE_TYPES)
         else None
     )
     recurrent_histories = (
         [RecurrentReplayHistory() for _ in range(batch.size)]
-        if isinstance(model, GRUActorCritic)
+        if isinstance(model, RECURRENT_BASELINE_TYPES)
         else []
     )
 
@@ -1271,11 +1286,11 @@ def train_baseline_single(
             update=start_update,
             rollout_batch_size=rollout_batch_size,
             recurrent_input_dim=(
-                model.observation_dim if isinstance(model, GRUActorCritic) else None
+                model.observation_dim if isinstance(model, RECURRENT_BASELINE_TYPES) else None
             ),
             device=device,
         )
-        if isinstance(model, GRUActorCritic):
+        if isinstance(model, RECURRENT_BASELINE_TYPES):
             # The committed segment ended with a reconditioned hidden state, so
             # the resumed one replays the retained prefixes through the very same
             # helper instead of restoring a separately stored tensor.
@@ -1360,7 +1375,7 @@ def train_baseline_single(
         episode_rows: list[dict[str, Any]] = []
         model.eval()
         recurrent_prefixes: tuple[RecurrentReplayPrefix, ...] = ()
-        if isinstance(model, GRUActorCritic):
+        if isinstance(model, RECURRENT_BASELINE_TYPES):
             prefix_input_template = _current_inputs(
                 method,
                 observation,
@@ -1381,7 +1396,7 @@ def train_baseline_single(
             input_steps.append(inputs.detach())
             episode_start_steps.append(episode_starts.detach())
             with torch.no_grad():
-                if isinstance(model, GRUActorCritic):
+                if isinstance(model, RECURRENT_BASELINE_TYPES):
                     assert hidden is not None
                     sample, old_value, hidden = model.act_step(
                         inputs,
@@ -1427,7 +1442,7 @@ def train_baseline_single(
             reward_steps.append(torch.as_tensor(reward, dtype=torch.float32, device=device))
             done_steps.append(done_tensor)
 
-            if isinstance(model, GRUActorCritic):
+            if isinstance(model, RECURRENT_BASELINE_TYPES):
                 for environment_index, history in enumerate(recurrent_histories):
                     history.append(inputs, episode_starts, environment_index)
                     if bool(done[environment_index]):
@@ -1484,7 +1499,7 @@ def train_baseline_single(
             )
         with torch.no_grad():
             bootstrap_inputs = _current_inputs(method, observation, batch, previous_action, device)
-            if isinstance(model, GRUActorCritic):
+            if isinstance(model, RECURRENT_BASELINE_TYPES):
                 assert hidden is not None
                 bootstrap_features, _ = model.step(bootstrap_inputs, hidden, episode_starts)
                 last_value = model.heads.value(bootstrap_features)
@@ -1523,7 +1538,7 @@ def train_baseline_single(
             recurrent_prefixes=recurrent_prefixes,
         )
         model.train()
-        if isinstance(model, GRUActorCritic):
+        if isinstance(model, RECURRENT_BASELINE_TYPES):
             temporal_gradient_mode: TemporalGradientMode = model_config["belief_gradient_mode"]
             ppo_metrics = _update_recurrent(
                 model,
@@ -1623,7 +1638,7 @@ def train_baseline_single(
                 "greedy"
                 if first_environment.action_spec.is_discrete
                 else "mean_chain"
-                if isinstance(model, GRUActorCritic)
+                if isinstance(model, RECURRENT_BASELINE_TYPES)
                 and model.continuous_policy_kind == "diffusion"
                 else "mean_action"
             )
