@@ -23,7 +23,7 @@ from torch.distributions import Categorical, Independent, Normal
 from .networks import make_mlp
 from .policies import DiffusionPolicy, PolicySample, TanhGaussianPolicy
 
-BaselineKind = Literal["observation", "oracle_state", "gru", "particle_filter"]
+BaselineKind = Literal["observation", "oracle_state", "gru", "rnn", "particle_filter"]
 ActionKind = Literal["discrete", "continuous"]
 TemporalGradientMode = Literal["full", "tbptt_1"]
 
@@ -471,7 +471,11 @@ class OracleStateActorCritic(FeedForwardBaselineActorCritic):
 
 
 class GRUActorCritic(nn.Module):
-    """Observation-only recurrent PPO baseline with a time-major BPTT API."""
+    """Observation-only recurrent PPO baseline with a time-major BPTT API.
+
+    ``recurrent_cell`` selects the recurrence: the default gated GRU, or the
+    gate-free Elman RNN (``tanh``), which isolates what gating itself buys.
+    """
 
     input_source: Literal["observation"] = "observation"
 
@@ -483,6 +487,7 @@ class GRUActorCritic(nn.Module):
         hidden_dims: Sequence[int],
         recurrent_hidden_dim: int,
         recurrent_layers: int = 1,
+        recurrent_cell: Literal["gru", "rnn"] = "gru",
         policy_condition_dim: int | None = None,
         head_hidden_dims: Sequence[int] = (),
         continuous_policy_kind: Literal["gaussian", "diffusion"] = "gaussian",
@@ -499,11 +504,25 @@ class GRUActorCritic(nn.Module):
             raise ValueError("observation_dim must be positive")
         if recurrent_hidden_dim <= 0 or recurrent_layers <= 0:
             raise ValueError("recurrent dimensions must be positive")
+        if recurrent_cell not in ("gru", "rnn"):
+            raise ValueError("recurrent_cell must be 'gru' or 'rnn'")
         self.observation_dim = observation_dim
         self.recurrent_hidden_dim = recurrent_hidden_dim
         self.recurrent_layers = recurrent_layers
+        self.recurrent_cell: Literal["gru", "rnn"] = recurrent_cell
         self.observation_encoder, encoded_dim = _feature_encoder(observation_dim, hidden_dims)
-        self.gru = nn.GRU(encoded_dim, recurrent_hidden_dim, num_layers=recurrent_layers)
+        # The attribute keeps its historical name so existing GRU checkpoints
+        # load unchanged; each cell stores its own native parameter layout.
+        self.gru: nn.GRU | nn.RNN = (
+            nn.GRU(encoded_dim, recurrent_hidden_dim, num_layers=recurrent_layers)
+            if recurrent_cell == "gru"
+            else nn.RNN(
+                encoded_dim,
+                recurrent_hidden_dim,
+                num_layers=recurrent_layers,
+                nonlinearity="tanh",
+            )
+        )
         condition_dim = recurrent_hidden_dim if policy_condition_dim is None else policy_condition_dim
         if condition_dim <= 0:
             raise ValueError("policy_condition_dim must be positive")
@@ -1033,10 +1052,11 @@ def make_baseline_actor_critic(
             diffusion_beta_end=diffusion_beta_end,
             diffusion_min_std=diffusion_min_std,
         )
-    if kind == "gru":
+    if kind in ("gru", "rnn"):
         return GRUActorCritic(
             observation_dim,
             **common,
+            recurrent_cell=kind,
             recurrent_hidden_dim=recurrent_hidden_dim,
             recurrent_layers=recurrent_layers,
             policy_condition_dim=policy_condition_dim,

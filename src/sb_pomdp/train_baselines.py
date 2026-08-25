@@ -55,8 +55,8 @@ from .train import (
     truncated_step_indices,
 )
 
-BaselineMethod = Literal["observation_mlp", "gru", "oracle_state", "particle_filter"]
-BASELINE_METHODS = frozenset({"observation_mlp", "gru", "oracle_state", "particle_filter"})
+BaselineMethod = Literal["observation_mlp", "gru", "rnn", "oracle_state", "particle_filter"]
+BASELINE_METHODS = frozenset({"observation_mlp", "gru", "rnn", "oracle_state", "particle_filter"})
 # The baseline trainer keeps its own checkpoint dialect.  Its trainer_state has a
 # different shape from the score trainer's, so the two identifiers must never
 # collide: feeding either trainer the other's checkpoint has to fail loudly
@@ -159,13 +159,16 @@ def _make_model(
 ) -> FeedForwardBaselineActorCritic | RecurrentBaseline:
     spec = environment.action_spec
     input_dim = environment.observation_dim
-    kind: Literal["observation", "oracle_state", "gru", "particle_filter"]
+    kind: Literal["observation", "oracle_state", "gru", "rnn", "particle_filter"]
     if method == "observation_mlp":
         kind = "observation"
     elif method == "oracle_state":
         kind = "oracle_state"
     elif method == "particle_filter":
         kind = "particle_filter"
+        input_dim += spec.feature_dim
+    elif method == "rnn":
+        kind = "rnn"
         input_dim += spec.feature_dim
     else:
         kind = "gru"
@@ -186,6 +189,12 @@ def _make_model(
         hidden_dims = comparison_config["gru_encoder_hidden"]
         recurrent_kwargs = {
             "recurrent_hidden_dim": int(comparison_config["gru_hidden_dim"]),
+            **shared_head_kwargs,
+        }
+    elif method == "rnn":
+        hidden_dims = comparison_config["rnn_encoder_hidden"]
+        recurrent_kwargs = {
+            "recurrent_hidden_dim": int(comparison_config["rnn_hidden_dim"]),
             **shared_head_kwargs,
         }
     elif method == "particle_filter":
@@ -226,7 +235,7 @@ def _current_inputs(
     if method == "oracle_state":
         return _oracle_batch(batch, device)
     observation_tensor = torch.as_tensor(observation, dtype=torch.float32, device=device)
-    if method in ("gru", "particle_filter"):
+    if method in ("gru", "rnn", "particle_filter"):
         return torch.cat((observation_tensor, previous_action), dim=-1)
     return observation_tensor
 
@@ -263,7 +272,7 @@ def _truncation_bootstrap_values(
         )
     else:
         inputs = final_step_features(infos, indices, name="final_observation", device=device)
-        if method in ("gru", "particle_filter"):
+        if method in ("gru", "rnn", "particle_filter"):
             inputs = torch.cat(
                 (inputs, action_features.detach().index_select(0, selector)), dim=-1
             )
@@ -734,7 +743,7 @@ def evaluate_baseline(
                         dtype=torch.float32,
                         device=device,
                     )
-                elif method in ("gru", "particle_filter"):
+                elif method in ("gru", "rnn", "particle_filter"):
                     inputs = torch.cat((observation_tensor, previous_action), dim=-1)
                 else:
                     inputs = observation_tensor

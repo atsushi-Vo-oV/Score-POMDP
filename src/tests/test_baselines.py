@@ -414,6 +414,7 @@ def test_gru_sequence_evaluation_shapes_and_gradients(action_kind: str) -> None:
         ("observation", ObservationActorCritic, "observation"),
         ("oracle_state", OracleStateActorCritic, "oracle_state"),
         ("gru", GRUActorCritic, "observation"),
+        ("rnn", GRUActorCritic, "observation"),
     ],
 )
 def test_baseline_factory(kind: str, expected_type: type, input_source: str) -> None:
@@ -429,6 +430,57 @@ def test_baseline_factory(kind: str, expected_type: type, input_source: str) -> 
 
     assert isinstance(model, expected_type)
     assert model.input_source == input_source
+
+
+def test_rnn_kind_uses_an_elman_cell_with_identical_recurrent_semantics() -> None:
+    torch.manual_seed(3)
+    model = make_baseline_actor_critic(
+        "rnn",
+        observation_dim=2,
+        state_dim=4,
+        action_kind="discrete",
+        hidden_dims=[8],
+        discrete_actions=2,
+        recurrent_hidden_dim=7,
+    )
+    assert isinstance(model, GRUActorCritic)
+    assert isinstance(model.gru, torch.nn.RNN)
+    assert model.recurrent_cell == "rnn"
+
+    observations = torch.randn(5, 3, 2)
+    episode_starts = torch.zeros(5, 3, dtype=torch.bool)
+    episode_starts[0] = True
+    episode_starts[2, 1] = True
+    hidden = model.initial_hidden(3)
+    full_features, full_hidden = model.encode_sequence(
+        observations, hidden, episode_starts, temporal_gradient_mode="full"
+    )
+    one_features, one_hidden = model.encode_sequence(
+        observations, hidden, episode_starts, temporal_gradient_mode="tbptt_1"
+    )
+    torch.testing.assert_close(full_features, one_features)
+    torch.testing.assert_close(full_hidden, one_hidden)
+
+    stepped = []
+    step_hidden = model.initial_hidden(3)
+    for time_index in range(observations.shape[0]):
+        features, step_hidden = model.step(
+            observations[time_index], step_hidden, episode_starts[time_index]
+        )
+        stepped.append(features)
+    torch.testing.assert_close(torch.stack(stepped), full_features)
+
+
+def test_gru_constructor_rejects_an_unknown_recurrent_cell() -> None:
+    with pytest.raises(ValueError, match="recurrent_cell"):
+        GRUActorCritic(
+            2,
+            action_kind="discrete",
+            hidden_dims=[4],
+            recurrent_hidden_dim=3,
+            discrete_actions=2,
+            recurrent_cell="lstm",  # type: ignore[arg-type]
+        )
 
 
 @pytest.mark.parametrize(

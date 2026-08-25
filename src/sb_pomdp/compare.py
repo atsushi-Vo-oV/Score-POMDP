@@ -40,7 +40,7 @@ from .train import (
 from .train_baselines import train_baseline_single
 
 SCORE_METHODS = frozenset({"score_transformer", "score_deepsets", "score_gaussian"})
-BASELINE_METHODS = frozenset({"observation_mlp", "gru", "oracle_state", "particle_filter"})
+BASELINE_METHODS = frozenset({"observation_mlp", "gru", "rnn", "oracle_state", "particle_filter"})
 COMPARISON_SUMMARY_FIELDS = (
     "belief_gradient_mode",
     "method",
@@ -207,7 +207,7 @@ def _method_config(
     elif method == "score_deepsets":
         data["model"]["encoder_kind"] = "deep_sets"
         data["model"]["continuous_policy_kind"] = "diffusion"
-    elif method in ("gru", "particle_filter"):
+    elif method in ("gru", "rnn", "particle_filter"):
         data["model"]["encoder_kind"] = "transformer"
         data["model"]["continuous_policy_kind"] = "diffusion"
     elif method == "score_gaussian" or method in BASELINE_METHODS:

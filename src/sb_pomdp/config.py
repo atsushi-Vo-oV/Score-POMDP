@@ -73,6 +73,8 @@ _COMPARISON_KEYS = frozenset(
         "belief_gradient_modes",
         "gru_encoder_hidden",
         "gru_hidden_dim",
+        "rnn_encoder_hidden",
+        "rnn_hidden_dim",
         "pf_hidden",
         "pf_particle_dim",
         "pf_soft_alpha",
@@ -86,6 +88,7 @@ COMPARISON_METHODS = frozenset(
         "score_gaussian",
         "observation_mlp",
         "gru",
+        "rnn",
         "oracle_state",
         "particle_filter",
     }
@@ -144,12 +147,14 @@ _PPO_KEYS = frozenset(
 # nothing else - when a new key has to stay comparable with the campaign.
 _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
     "ppo": {"bootstrap_on_truncation": False},
-    # The particle-filter baseline arrived after the first campaigns; legacy
-    # resolved configs compare equal at these inert defaults.
+    # The particle-filter and Elman-RNN baselines arrived after the first
+    # campaigns; legacy resolved configs compare equal at these inert defaults.
     "comparison": {
         "pf_hidden": [64],
         "pf_particle_dim": 8,
         "pf_soft_alpha": 0.9,
+        "rnn_encoder_hidden": [64],
+        "rnn_hidden_dim": 32,
     },
 }
 
@@ -514,6 +519,11 @@ def _validate_comparison(
         "comparison.gru_encoder_hidden",
     )
     _integer(section["gru_hidden_dim"], "comparison.gru_hidden_dim")
+    _positive_integer_list(
+        section["rnn_encoder_hidden"],
+        "comparison.rnn_encoder_hidden",
+    )
+    _integer(section["rnn_hidden_dim"], "comparison.rnn_hidden_dim")
     _positive_integer_list(section["pf_hidden"], "comparison.pf_hidden")
     _integer(section["pf_particle_dim"], "comparison.pf_particle_dim")
     pf_soft_alpha = section["pf_soft_alpha"]
