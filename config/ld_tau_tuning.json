@@ -35,6 +35,7 @@
     "langevin_temperature": 1.0,
     "langevin_temperature_learnable": false,
     "langevin_warm_start": false,
+    "langevin_step_size_learnable": true,
     "particle_clip": 0.0,
     "score_clip": 0.0,
     "energy_hidden": [

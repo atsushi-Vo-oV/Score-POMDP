@@ -102,6 +102,7 @@ _MODEL_KEYS = frozenset(
         "langevin_temperature",
         "langevin_temperature_learnable",
         "langevin_warm_start",
+        "langevin_step_size_learnable",
         "particle_clip",
         "score_clip",
         "energy_hidden",
@@ -156,6 +157,7 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         "langevin_temperature": 1.0,
         "langevin_temperature_learnable": False,
         "langevin_warm_start": False,
+        "langevin_step_size_learnable": False,
     },
     # The particle-filter and Elman-RNN baselines arrived after the first
     # campaigns; legacy resolved configs compare equal at these inert defaults.
@@ -382,6 +384,10 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
         "model.langevin_temperature_learnable",
     )
     _boolean(section["langevin_warm_start"], "model.langevin_warm_start")
+    _boolean(
+        section["langevin_step_size_learnable"],
+        "model.langevin_step_size_learnable",
+    )
     for key in ("particle_clip", "score_clip"):
         _number(section[key], f"model.{key}", minimum=0.0)
     _positive_integer_list(section["energy_hidden"], "model.energy_hidden")

@@ -54,6 +54,11 @@ def score_from_potential(
 _LOG_TEMPERATURE_MIN = math.log(1e-3)
 _LOG_TEMPERATURE_MAX = math.log(4.0)
 
+# Bounds for the learned per-step log-step-size (drift) schedule; they keep the
+# discretised chain away from a frozen or numerically unstable regime.
+_LOG_STEP_SIZE_MIN = math.log(1e-4)
+_LOG_STEP_SIZE_MAX = math.log(0.5)
+
 
 class EnergyBelief(nn.Module):
     """Implements the recursive score field in ``sb-pomdp-retry.tex``.
@@ -68,7 +73,10 @@ class EnergyBelief(nn.Module):
 
     ``langevin_temperature`` tempers the ULA noise to sample ``exp(-E/tau)``;
     with ``langevin_temperature_learnable`` the per-step ``log tau`` schedule
-    becomes a trained parameter.  ``langevin_warm_start`` initialises the chain
+    becomes a trained parameter.  ``langevin_step_size_learnable`` likewise
+    turns the per-step drift schedule ``alpha_l`` into a trained parameter
+    initialised at the configured step size, overriding the ``step_size``
+    argument of the update.  ``langevin_warm_start`` initialises the chain
     of a recursive step at the previous particles instead of fresh noise, which
     turns the particle positions themselves into a memory carrier.
     """
@@ -85,6 +93,8 @@ class EnergyBelief(nn.Module):
         langevin_temperature: float = 1.0,
         langevin_temperature_learnable: bool = False,
         langevin_warm_start: bool = False,
+        langevin_step_size_learnable: bool = False,
+        langevin_step_size: float | None = None,
         langevin_steps: int | None = None,
     ) -> None:
         super().__init__()
@@ -107,6 +117,22 @@ class EnergyBelief(nn.Module):
             )
         else:
             self.langevin_log_temperature = None
+        if langevin_step_size_learnable:
+            if langevin_steps is None or int(langevin_steps) <= 0:
+                raise ValueError(
+                    "a learnable step-size schedule needs a positive langevin_steps"
+                )
+            if langevin_step_size is None or not float(langevin_step_size) > 0.0:
+                raise ValueError(
+                    "a learnable step-size schedule needs a positive langevin_step_size"
+                )
+            self.langevin_log_step_size: nn.Parameter | None = nn.Parameter(
+                torch.full(
+                    (int(langevin_steps),), math.log(float(langevin_step_size))
+                )
+            )
+        else:
+            self.langevin_log_step_size = None
         self.initial_energy = make_mlp(
             observation_dim + state_dim,
             hidden_dims,
@@ -490,6 +516,17 @@ class EnergyBelief(nn.Module):
                 _LOG_TEMPERATURE_MIN, _LOG_TEMPERATURE_MAX
             ).exp()
 
+        if self.langevin_log_step_size is None:
+            step_alphas = None
+        else:
+            if self.langevin_log_step_size.shape[0] != len(steps):
+                raise ValueError(
+                    "the learned step-size schedule length must equal the Langevin step count"
+                )
+            step_alphas = self.langevin_log_step_size.clamp(
+                _LOG_STEP_SIZE_MIN, _LOG_STEP_SIZE_MAX
+            ).exp()
+
         with torch.set_grad_enabled(track_grad):
             for step_index, alpha in enumerate(steps):
                 score = self._score_at_for_branch(
@@ -502,14 +539,19 @@ class EnergyBelief(nn.Module):
                     create_graph=track_grad,
                     detach_query=not track_grad,
                 )
-                noise_scale = (
-                    math.sqrt(2.0 * alpha * self.langevin_temperature)
-                    if step_temperatures is None
-                    else torch.sqrt(2.0 * alpha * step_temperatures[step_index])
-                )
+                alpha_value = alpha if step_alphas is None else step_alphas[step_index]
+                if step_alphas is None and step_temperatures is None:
+                    noise_scale = math.sqrt(2.0 * alpha * self.langevin_temperature)
+                else:
+                    temperature_value = (
+                        self.langevin_temperature
+                        if step_temperatures is None
+                        else step_temperatures[step_index]
+                    )
+                    noise_scale = torch.sqrt(2.0 * alpha_value * temperature_value)
                 particles = (
                     particles
-                    + alpha * score
+                    + alpha_value * score
                     + noise_scale * increments[:, step_index]
                 )
                 if self.particle_clip > 0:

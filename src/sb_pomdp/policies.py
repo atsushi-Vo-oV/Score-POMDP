@@ -345,6 +345,8 @@ class ScoreBeliefActorCritic(nn.Module):
         if self.continuous_policy_kind not in {"diffusion", "gaussian"}:
             raise ValueError(f"unsupported continuous policy: {self.continuous_policy_kind}")
         temperature_learnable = bool(model_config.get("langevin_temperature_learnable", False))
+        step_size_learnable = bool(model_config.get("langevin_step_size_learnable", False))
+        needs_schedule_length = temperature_learnable or step_size_learnable
         self.belief = EnergyBelief(
             observation_dim,
             state_dim,
@@ -355,8 +357,12 @@ class ScoreBeliefActorCritic(nn.Module):
             langevin_temperature=float(model_config.get("langevin_temperature", 1.0)),
             langevin_temperature_learnable=temperature_learnable,
             langevin_warm_start=bool(model_config.get("langevin_warm_start", False)),
+            langevin_step_size_learnable=step_size_learnable,
+            langevin_step_size=(
+                float(model_config["langevin_step_size"]) if step_size_learnable else None
+            ),
             langevin_steps=(
-                int(model_config["langevin_steps"]) if temperature_learnable else None
+                int(model_config["langevin_steps"]) if needs_schedule_length else None
             ),
         )
         if self.encoder_kind == "transformer":

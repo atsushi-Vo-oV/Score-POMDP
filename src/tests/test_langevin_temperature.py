@@ -154,6 +154,39 @@ def test_flagged_update_stays_a_deterministic_function_of_its_inputs() -> None:
     assert torch.allclose(rollout_particles, replayed_particles, atol=1e-6)
 
 
+def test_learnable_step_size_schedule_is_a_parameter_receiving_gradient() -> None:
+    torch.manual_seed(6)
+    model = _belief(
+        langevin_step_size_learnable=True,
+        langevin_step_size=0.05,
+        langevin_steps=4,
+    )
+    torch.manual_seed(6)
+    reference = _belief()
+    assert isinstance(model.langevin_log_step_size, torch.nn.Parameter)
+    assert model.langevin_log_step_size.shape == (4,)
+    assert torch.allclose(
+        model.langevin_log_step_size, torch.full((4,), math.log(0.05))
+    )
+    assert "langevin_log_step_size" in model.state_dict()
+    assert "langevin_log_step_size" not in reference.state_dict()
+
+    context = _context()
+    particles, _ = _run(model, context)
+    reference_particles, _ = _run(reference, context)
+    assert torch.allclose(particles, reference_particles, atol=1e-5)
+
+    tracked, _ = _run(model, context, track_grad=True)
+    (gradient,) = torch.autograd.grad(
+        tracked.sum(), model.langevin_log_step_size, allow_unused=False
+    )
+    assert torch.isfinite(gradient).all()
+    assert torch.count_nonzero(gradient) > 0
+
+    with pytest.raises(ValueError, match="schedule length"):
+        _run(model, _context(steps=3))
+
+
 def test_constructor_rejects_invalid_temperature_settings() -> None:
     with pytest.raises(ValueError):
         _belief(langevin_temperature=0.0)
@@ -161,6 +194,13 @@ def test_constructor_rejects_invalid_temperature_settings() -> None:
         _belief(langevin_temperature=-1.0)
     with pytest.raises(ValueError):
         _belief(langevin_temperature_learnable=True)
+    with pytest.raises(ValueError):
+        _belief(langevin_step_size_learnable=True, langevin_steps=4)
+    with pytest.raises(ValueError):
+        _belief(
+            langevin_step_size_learnable=True,
+            langevin_step_size=0.05,
+        )
 
 
 def test_actor_critic_forwards_the_flags_to_its_belief() -> None:
@@ -171,6 +211,7 @@ def test_actor_critic_forwards_the_flags_to_its_belief() -> None:
         "langevin_temperature": 0.1,
         "langevin_temperature_learnable": True,
         "langevin_warm_start": True,
+        "langevin_step_size_learnable": True,
         "particle_clip": 0.0,
         "score_clip": 0.0,
         "energy_hidden": [8],
@@ -195,6 +236,11 @@ def test_actor_critic_forwards_the_flags_to_its_belief() -> None:
     assert model.belief.langevin_temperature == pytest.approx(0.1)
     assert model.belief.langevin_log_temperature is not None
     assert model.belief.langevin_log_temperature.shape == (3,)
+    assert model.belief.langevin_log_step_size is not None
+    assert model.belief.langevin_log_step_size.shape == (3,)
+    assert torch.allclose(
+        model.belief.langevin_log_step_size, torch.full((3,), math.log(0.05))
+    )
 
 
 def test_config_schema_validates_the_temperature_keys() -> None:
@@ -203,15 +249,19 @@ def test_config_schema_validates_the_temperature_keys() -> None:
     assert resolved["model"]["langevin_temperature"] == 1.0
     assert resolved["model"]["langevin_temperature_learnable"] is False
     assert resolved["model"]["langevin_warm_start"] is False
+    assert resolved["model"]["langevin_step_size_learnable"] is False
     with pytest.raises(ConfigError):
         config.with_overrides({"model.langevin_temperature": 0.0})
     with pytest.raises(ConfigError):
         config.with_overrides({"model.langevin_warm_start": "yes"})
+    with pytest.raises(ConfigError):
+        config.with_overrides({"model.langevin_step_size_learnable": "yes"})
     accepted = config.with_overrides(
         {
             "model.langevin_temperature": 0.1,
             "model.langevin_temperature_learnable": True,
             "model.langevin_warm_start": True,
+            "model.langevin_step_size_learnable": True,
         }
     )
     assert accepted["model"]["langevin_temperature"] == pytest.approx(0.1)
