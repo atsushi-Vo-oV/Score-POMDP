@@ -49,6 +49,12 @@ def score_from_potential(
     return score
 
 
+# Bounds for the learned per-step log-temperature schedule; they stop the PPO
+# gradient from freezing the chain entirely or re-inflating it without limit.
+_LOG_TEMPERATURE_MIN = math.log(1e-3)
+_LOG_TEMPERATURE_MAX = math.log(4.0)
+
+
 class EnergyBelief(nn.Module):
     """Implements the recursive score field in ``sb-pomdp-retry.tex``.
 
@@ -59,6 +65,12 @@ class EnergyBelief(nn.Module):
     observation networks have independent parameters.  Log-mean-exp differs
     from log-sum-exp only by a score-independent constant and is stable across
     K.
+
+    ``langevin_temperature`` tempers the ULA noise to sample ``exp(-E/tau)``;
+    with ``langevin_temperature_learnable`` the per-step ``log tau`` schedule
+    becomes a trained parameter.  ``langevin_warm_start`` initialises the chain
+    of a recursive step at the previous particles instead of fresh noise, which
+    turns the particle positions themselves into a memory carrier.
     """
 
     def __init__(
@@ -70,6 +82,10 @@ class EnergyBelief(nn.Module):
         *,
         score_clip: float = 0.0,
         particle_clip: float = 0.0,
+        langevin_temperature: float = 1.0,
+        langevin_temperature_learnable: bool = False,
+        langevin_warm_start: bool = False,
+        langevin_steps: int | None = None,
     ) -> None:
         super().__init__()
         self.observation_dim = observation_dim
@@ -77,6 +93,20 @@ class EnergyBelief(nn.Module):
         self.action_feature_dim = action_feature_dim
         self.score_clip = float(score_clip)
         self.particle_clip = float(particle_clip)
+        if not float(langevin_temperature) > 0.0:
+            raise ValueError("langevin_temperature must be positive")
+        self.langevin_temperature = float(langevin_temperature)
+        self.langevin_warm_start = bool(langevin_warm_start)
+        if langevin_temperature_learnable:
+            if langevin_steps is None or int(langevin_steps) <= 0:
+                raise ValueError(
+                    "a learnable temperature schedule needs a positive langevin_steps"
+                )
+            self.langevin_log_temperature: nn.Parameter | None = nn.Parameter(
+                torch.full((int(langevin_steps),), math.log(self.langevin_temperature))
+            )
+        else:
+            self.langevin_log_temperature = None
         self.initial_energy = make_mlp(
             observation_dim + state_dim,
             hidden_dims,
@@ -442,6 +472,24 @@ class EnergyBelief(nn.Module):
         elif potential_branch not in {"initial", "recursive", "mixed"}:
             raise ValueError("potential_branch must be initial, recursive, or mixed")
 
+        if self.langevin_warm_start:
+            if incoming_particles.shape[1] != particles.shape[1]:
+                raise ValueError(
+                    "langevin_warm_start needs matching previous and current particle counts"
+                )
+            particles = torch.where(initial.view(-1, 1, 1), particles, incoming_particles)
+
+        if self.langevin_log_temperature is None:
+            step_temperatures = None
+        else:
+            if self.langevin_log_temperature.shape[0] != len(steps):
+                raise ValueError(
+                    "the learned temperature schedule length must equal the Langevin step count"
+                )
+            step_temperatures = self.langevin_log_temperature.clamp(
+                _LOG_TEMPERATURE_MIN, _LOG_TEMPERATURE_MAX
+            ).exp()
+
         with torch.set_grad_enabled(track_grad):
             for step_index, alpha in enumerate(steps):
                 score = self._score_at_for_branch(
@@ -454,10 +502,15 @@ class EnergyBelief(nn.Module):
                     create_graph=track_grad,
                     detach_query=not track_grad,
                 )
+                noise_scale = (
+                    math.sqrt(2.0 * alpha * self.langevin_temperature)
+                    if step_temperatures is None
+                    else torch.sqrt(2.0 * alpha * step_temperatures[step_index])
+                )
                 particles = (
                     particles
                     + alpha * score
-                    + math.sqrt(2.0 * alpha) * increments[:, step_index]
+                    + noise_scale * increments[:, step_index]
                 )
                 if self.particle_clip > 0:
                     particles = particles.clamp(-self.particle_clip, self.particle_clip)

@@ -26,6 +26,11 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # the post-campaign keys the normalizer fills in, at the values that reproduce the
 # campaign's behaviour exactly.
 _LEGACY_PPO_DEFAULTS: dict[str, object] = {"bootstrap_on_truncation": False}
+_LEGACY_MODEL_DEFAULTS: dict[str, object] = {
+    "langevin_temperature": 1.0,
+    "langevin_temperature_learnable": False,
+    "langevin_warm_start": False,
+}
 _LEGACY_COMPARISON_DEFAULTS: dict[str, object] = {
     "pf_hidden": [64],
     "pf_particle_dim": 8,
@@ -137,6 +142,7 @@ def _config_with_legacy_defaults() -> dict[str, object]:
 
     config = _valid_config()
     config["ppo"].update(_LEGACY_PPO_DEFAULTS)  # type: ignore[union-attr]
+    config["model"].update(_LEGACY_MODEL_DEFAULTS)  # type: ignore[union-attr]
     config["comparison"].update(_LEGACY_COMPARISON_DEFAULTS)  # type: ignore[union-attr]
     config["environment"]["tasks"]["light_dark"].update(  # type: ignore[index]
         _LEGACY_LIGHT_DARK_DEFAULTS

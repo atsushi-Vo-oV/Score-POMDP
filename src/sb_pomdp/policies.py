@@ -344,6 +344,7 @@ class ScoreBeliefActorCritic(nn.Module):
             raise ValueError(f"unsupported belief encoder: {self.encoder_kind}")
         if self.continuous_policy_kind not in {"diffusion", "gaussian"}:
             raise ValueError(f"unsupported continuous policy: {self.continuous_policy_kind}")
+        temperature_learnable = bool(model_config.get("langevin_temperature_learnable", False))
         self.belief = EnergyBelief(
             observation_dim,
             state_dim,
@@ -351,6 +352,12 @@ class ScoreBeliefActorCritic(nn.Module):
             model_config["energy_hidden"],
             score_clip=model_config["score_clip"],
             particle_clip=model_config["particle_clip"],
+            langevin_temperature=float(model_config.get("langevin_temperature", 1.0)),
+            langevin_temperature_learnable=temperature_learnable,
+            langevin_warm_start=bool(model_config.get("langevin_warm_start", False)),
+            langevin_steps=(
+                int(model_config["langevin_steps"]) if temperature_learnable else None
+            ),
         )
         if self.encoder_kind == "transformer":
             self.encoder: nn.Module = BeliefSetEncoder(

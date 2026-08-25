@@ -99,6 +99,9 @@ _MODEL_KEYS = frozenset(
         "num_particles",
         "langevin_steps",
         "langevin_step_size",
+        "langevin_temperature",
+        "langevin_temperature_learnable",
+        "langevin_warm_start",
         "particle_clip",
         "score_clip",
         "energy_hidden",
@@ -147,6 +150,13 @@ _PPO_KEYS = frozenset(
 # nothing else - when a new key has to stay comparable with the campaign.
 _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
     "ppo": {"bootstrap_on_truncation": False},
+    # Langevin tempering and warm starts arrived after the first campaigns; at
+    # these defaults the belief update is bit-identical to the original ULA.
+    "model": {
+        "langevin_temperature": 1.0,
+        "langevin_temperature_learnable": False,
+        "langevin_warm_start": False,
+    },
     # The particle-filter and Elman-RNN baselines arrived after the first
     # campaigns; legacy resolved configs compare equal at these inert defaults.
     "comparison": {
@@ -365,8 +375,13 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
         "diffusion_steps",
     ):
         _integer(section[key], f"model.{key}")
-    for key in ("langevin_step_size", "diffusion_min_std"):
+    for key in ("langevin_step_size", "langevin_temperature", "diffusion_min_std"):
         _positive_number(section[key], f"model.{key}")
+    _boolean(
+        section["langevin_temperature_learnable"],
+        "model.langevin_temperature_learnable",
+    )
+    _boolean(section["langevin_warm_start"], "model.langevin_warm_start")
     for key in ("particle_clip", "score_clip"):
         _number(section[key], f"model.{key}", minimum=0.0)
     _positive_integer_list(section["energy_hidden"], "model.energy_hidden")
