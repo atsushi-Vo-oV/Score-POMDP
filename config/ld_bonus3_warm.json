@@ -88,7 +88,8 @@
     ],
     "methods": [
       "score_transformer",
-      "score_alpha"
+      "score_alpha",
+      "score_deepsets"
     ],
     "gru_encoder_hidden": [
       234,

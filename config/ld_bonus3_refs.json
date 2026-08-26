@@ -91,7 +91,8 @@
       "score_alpha",
       "gru",
       "rnn",
-      "particle_filter"
+      "particle_filter",
+      "score_deepsets"
     ],
     "gru_encoder_hidden": [
       234,

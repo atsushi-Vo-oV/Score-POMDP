@@ -12,10 +12,16 @@ seed 10、full)。
 ## 構成
 
 - `ld_bonus3_warm.json`(warm belief: warm start + τ0.1 + α_l 学習):
-  index 1 = score_transformer、4 = score_alpha(campaign ld-bonus3-warm-v1)
-- `ld_bonus3_refs.json`(cold belief 参照5手法):
+  index 1 = score_transformer、4 = score_alpha、**7 = score_deepsets**
+  (campaign ld-bonus3-warm-v1)
+- `ld_bonus3_refs.json`(cold belief 参照):
   index 1 = score_transformer、4 = score_alpha、7 = gru、10 = rnn、
-  13 = particle_filter(campaign ld-bonus3-refs-v1)
+  13 = particle_filter、**16 = score_deepsets**(campaign ld-bonus3-refs-v1)
+
+score_deepsets は encoder 梯子の中段(alpha_pool ⊂ deep_sets ⊂ transformer)。
+methods リストへの**末尾追加**なので既存 index(走行中 shards 含む)は不変。
+alpha 優位が続いた場合に「attention を外した効果」と「後段非線形・score
+入力を外した効果」を分離する。
 
 DEBUG ゲートは不要(全機構はゲート通過済み、変更は報酬定数のみ)。
 CartPole 側は bonus と無関係なので、走行中の two-task-alpha-warm-v1 の
