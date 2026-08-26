@@ -134,3 +134,91 @@ class DeepSetsBeliefEncoder(nn.Module):
             )
         tokens = self.element_encoder(torch.cat((particles, scores), dim=-1))
         return self.pooled_encoder(tokens.mean(dim=1))
+
+
+class AlphaPoolBeliefEncoder(nn.Module):
+    """Mean-pool per-particle trunk features with a strictly linear tail.
+
+    Each pooled output coordinate is the Monte Carlo estimate of a linear
+    functional ``<psi_j, b>`` of the belief, so any downstream *linear* map of
+    the output is itself a belief-linear functional (the alpha-vector reading).
+    No post-pooling network is applied on purpose: convexity in the belief may
+    only be introduced by an explicit max/log-sum-exp head.  ``use_scores``
+    optionally appends the score vectors to the trunk input; the default keeps
+    particle positions only, which removes the observation-feature shortcut
+    channel through the score field.
+    """
+
+    def __init__(
+        self,
+        state_dim: int,
+        d_model: int,
+        feedforward_dim: int,
+        *,
+        use_scores: bool = False,
+    ) -> None:
+        super().__init__()
+        if state_dim <= 0 or d_model <= 0 or feedforward_dim <= 0:
+            raise ValueError("alpha-pool dimensions must be positive")
+        self.state_dim = state_dim
+        self.use_scores = bool(use_scores)
+        input_dim = (2 if self.use_scores else 1) * state_dim
+        self.trunk = nn.Sequential(
+            nn.Linear(input_dim, feedforward_dim),
+            nn.LayerNorm(feedforward_dim),
+            nn.SiLU(),
+            nn.Linear(feedforward_dim, d_model),
+            nn.SiLU(),
+        )
+
+    def forward(self, particles: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:
+        if particles.shape != scores.shape:
+            raise ValueError("particles and scores must have identical shapes")
+        if particles.ndim != 3 or particles.shape[-1] != self.state_dim:
+            raise ValueError(
+                f"expected [batch, particles, {self.state_dim}], got {tuple(particles.shape)}"
+            )
+        inputs = (
+            torch.cat((particles, scores), dim=-1) if self.use_scores else particles
+        )
+        return self.trunk(inputs).mean(dim=1)
+
+
+class AlphaLSEHead(nn.Module):
+    """Tempered log-sum-exp over linear pieces: a learned PWLC belief functional.
+
+    Fed with mean-pooled trunk features ``Psi(b)``, every piece
+    ``W[o, m] . Psi(b) + c[o, m]`` is a linear functional of the belief and the
+    tempered log-sum-exp over the ``m`` axis is its smooth maximum, so each
+    output realises ``max_m <alpha_{o,m}, b>`` in the alpha-vector sense.
+    ``temperature -> 0`` recovers the hard maximum; the smooth version keeps a
+    gradient on every piece, avoiding the dead-piece failure of hard max.
+    """
+
+    def __init__(
+        self,
+        condition_dim: int,
+        outputs: int,
+        pieces: int,
+        temperature: float,
+        *,
+        init_gain: float = 1.0,
+    ) -> None:
+        super().__init__()
+        if condition_dim <= 0 or outputs <= 0 or pieces <= 0:
+            raise ValueError("alpha head dimensions must be positive")
+        if not float(temperature) > 0.0:
+            raise ValueError("alpha head temperature must be positive")
+        self.outputs = int(outputs)
+        self.pieces = int(pieces)
+        self.temperature = float(temperature)
+        self.linear = nn.Linear(condition_dim, self.outputs * self.pieces)
+        nn.init.orthogonal_(self.linear.weight, gain=init_gain)
+        nn.init.zeros_(self.linear.bias)
+
+    def forward(self, condition: torch.Tensor) -> torch.Tensor:
+        values = self.linear(condition)
+        values = values.view(*values.shape[:-1], self.outputs, self.pieces)
+        return self.temperature * torch.logsumexp(
+            values / self.temperature, dim=-1
+        )

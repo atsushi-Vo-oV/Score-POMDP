@@ -86,6 +86,7 @@ COMPARISON_METHODS = frozenset(
         "score_transformer",
         "score_deepsets",
         "score_gaussian",
+        "score_alpha",
         "observation_mlp",
         "gru",
         "rnn",
@@ -119,6 +120,10 @@ _MODEL_KEYS = frozenset(
         "diffusion_advantage_discount",
         "encoder_kind",
         "continuous_policy_kind",
+        "policy_head_kind",
+        "alpha_pieces",
+        "alpha_temperature",
+        "alpha_use_scores",
         "belief_gradient_mode",
     }
 )
@@ -158,6 +163,10 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         "langevin_temperature_learnable": False,
         "langevin_warm_start": False,
         "langevin_step_size_learnable": False,
+        "policy_head_kind": "mlp",
+        "alpha_pieces": 16,
+        "alpha_temperature": 1.0,
+        "alpha_use_scores": False,
     },
     # The particle-filter and Elman-RNN baselines arrived after the first
     # campaigns; legacy resolved configs compare equal at these inert defaults.
@@ -431,13 +440,23 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
     if section["d_model"] % section["num_heads"] != 0:
         raise ConfigError("model.d_model must be divisible by model.num_heads")
     encoder_kind = _nonempty_string(section["encoder_kind"], "model.encoder_kind")
-    if encoder_kind not in {"transformer", "deep_sets"}:
-        raise ConfigError("model.encoder_kind must be transformer or deep_sets")
+    if encoder_kind not in {"transformer", "deep_sets", "alpha_pool"}:
+        raise ConfigError(
+            "model.encoder_kind must be transformer, deep_sets, or alpha_pool"
+        )
     continuous_policy_kind = _nonempty_string(
         section["continuous_policy_kind"], "model.continuous_policy_kind"
     )
     if continuous_policy_kind not in {"diffusion", "gaussian"}:
         raise ConfigError("model.continuous_policy_kind must be diffusion or gaussian")
+    policy_head_kind = _nonempty_string(
+        section["policy_head_kind"], "model.policy_head_kind"
+    )
+    if policy_head_kind not in {"mlp", "alpha_lse"}:
+        raise ConfigError("model.policy_head_kind must be mlp or alpha_lse")
+    _integer(section["alpha_pieces"], "model.alpha_pieces")
+    _positive_number(section["alpha_temperature"], "model.alpha_temperature")
+    _boolean(section["alpha_use_scores"], "model.alpha_use_scores")
     belief_gradient_mode = _nonempty_string(
         section["belief_gradient_mode"], "model.belief_gradient_mode"
     )

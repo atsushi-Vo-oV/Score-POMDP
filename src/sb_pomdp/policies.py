@@ -12,7 +12,13 @@ from torch.distributions import Categorical, Independent, Normal
 from torch.nn import functional
 
 from .belief import EnergyBelief
-from .networks import BeliefSetEncoder, DeepSetsBeliefEncoder, make_mlp
+from .networks import (
+    AlphaLSEHead,
+    AlphaPoolBeliefEncoder,
+    BeliefSetEncoder,
+    DeepSetsBeliefEncoder,
+    make_mlp,
+)
 
 
 class SinusoidalStepEmbedding(nn.Module):
@@ -340,10 +346,15 @@ class ScoreBeliefActorCritic(nn.Module):
         self.action_kind = action_kind
         self.encoder_kind = str(model_config.get("encoder_kind", "transformer"))
         self.continuous_policy_kind = str(model_config.get("continuous_policy_kind", "diffusion"))
-        if self.encoder_kind not in {"transformer", "deep_sets"}:
+        self.policy_head_kind = str(model_config.get("policy_head_kind", "mlp"))
+        if self.encoder_kind not in {"transformer", "deep_sets", "alpha_pool"}:
             raise ValueError(f"unsupported belief encoder: {self.encoder_kind}")
         if self.continuous_policy_kind not in {"diffusion", "gaussian"}:
             raise ValueError(f"unsupported continuous policy: {self.continuous_policy_kind}")
+        if self.policy_head_kind not in {"mlp", "alpha_lse"}:
+            raise ValueError(f"unsupported policy head: {self.policy_head_kind}")
+        alpha_pieces = int(model_config.get("alpha_pieces", 16))
+        alpha_temperature = float(model_config.get("alpha_temperature", 1.0))
         temperature_learnable = bool(model_config.get("langevin_temperature_learnable", False))
         step_size_learnable = bool(model_config.get("langevin_step_size_learnable", False))
         needs_schedule_length = temperature_learnable or step_size_learnable
@@ -374,6 +385,13 @@ class ScoreBeliefActorCritic(nn.Module):
                 feedforward_dim=model_config["transformer_ff_dim"],
                 dropout=model_config["dropout"],
             )
+        elif self.encoder_kind == "alpha_pool":
+            self.encoder = AlphaPoolBeliefEncoder(
+                state_dim=state_dim,
+                d_model=model_config["d_model"],
+                feedforward_dim=model_config["transformer_ff_dim"],
+                use_scores=bool(model_config.get("alpha_use_scores", False)),
+            )
         else:
             self.encoder = DeepSetsBeliefEncoder(
                 state_dim=state_dim,
@@ -382,26 +400,42 @@ class ScoreBeliefActorCritic(nn.Module):
                 dropout=model_config["dropout"],
             )
         condition_dim = model_config["d_model"]
-        self.value_head = make_mlp(
-            condition_dim,
-            model_config["policy_hidden"],
-            1,
-        )
+        if self.policy_head_kind == "alpha_lse":
+            # A convex (PWLC) value functional; with the alpha_pool encoder the
+            # value is exactly a smooth max of belief-linear functionals.
+            self.value_head: nn.Module = AlphaLSEHead(
+                condition_dim, 1, alpha_pieces, alpha_temperature
+            )
+        else:
+            self.value_head = make_mlp(
+                condition_dim,
+                model_config["policy_hidden"],
+                1,
+            )
         if action_kind == "discrete":
             if not discrete_actions:
                 raise ValueError("a discrete policy requires a positive action count")
-            self.categorical_head: nn.Module | None = make_mlp(
-                condition_dim,
-                model_config["policy_hidden"],
-                discrete_actions,
-            )
-            final_categorical_layer = next(
-                layer
-                for layer in reversed(list(self.categorical_head.modules()))
-                if isinstance(layer, nn.Linear)
-            )
-            nn.init.orthogonal_(final_categorical_layer.weight, gain=0.01)
-            nn.init.zeros_(final_categorical_layer.bias)
+            if self.policy_head_kind == "alpha_lse":
+                self.categorical_head: nn.Module | None = AlphaLSEHead(
+                    condition_dim,
+                    discrete_actions,
+                    alpha_pieces,
+                    alpha_temperature,
+                    init_gain=0.01,
+                )
+            else:
+                self.categorical_head = make_mlp(
+                    condition_dim,
+                    model_config["policy_hidden"],
+                    discrete_actions,
+                )
+                final_categorical_layer = next(
+                    layer
+                    for layer in reversed(list(self.categorical_head.modules()))
+                    if isinstance(layer, nn.Linear)
+                )
+                nn.init.orthogonal_(final_categorical_layer.weight, gain=0.01)
+                nn.init.zeros_(final_categorical_layer.bias)
             self.diffusion_policy: DiffusionPolicy | None = None
             self.gaussian_policy: TanhGaussianPolicy | None = None
         elif action_kind == "continuous":

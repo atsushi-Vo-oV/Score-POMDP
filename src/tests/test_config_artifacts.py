@@ -31,6 +31,10 @@ _LEGACY_MODEL_DEFAULTS: dict[str, object] = {
     "langevin_temperature_learnable": False,
     "langevin_warm_start": False,
     "langevin_step_size_learnable": False,
+    "policy_head_kind": "mlp",
+    "alpha_pieces": 16,
+    "alpha_temperature": 1.0,
+    "alpha_use_scores": False,
 }
 _LEGACY_COMPARISON_DEFAULTS: dict[str, object] = {
     "pf_hidden": [64],
