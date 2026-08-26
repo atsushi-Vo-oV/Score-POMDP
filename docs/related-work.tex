@@ -122,6 +122,33 @@ Rozet and Louppe\cite{rozet2023sda}は、短いMarkov segmentから軌道prior�
 観測尤度でguideしながら全軌道を非自己回帰的に生成する。
 逐次filterではなくsmoothingに近いが、prior scoreとlikelihood scoreを分離できることの関連例である。
 
+\subsection{重み付けから輸送へ：モデルベース側の系譜}
+
+古典的粒子フィルタのベイズ更新は重みの乗法（reweighting）だが、モデルベースの
+状態推定・データ同化では「粒子をscore/flowに沿って動かす（transport）」系譜が
+確立しつつある。Daum--Huangのparticle flow\cite{daum2010particleflow}は、
+log-homotopyが誘導するODEにより、重みもresamplingも使わずにprior粒子を
+posteriorへ決定論的に輸送してベイズ則を実装する。その学習版として、
+flow作用素自体をmeta学習するParticle Flow Bayes' Rule\cite{chen2019metaflow}がある。
+Stein particle filter\cite{maken2022stein}は$\nabla\log$事後とRKHS反発項による
+SVGD輸送で粒子を更新する。Ensemble Score Filter\cite{bao2024ensf}は、
+filtering密度の情報を有限sampleでなくscore関数に保持し、ensembleをscore dynamicsで
+前進させる。さらに古典SMCのresample--move\cite{gilks2001resamplemove}と
+SMC sampler\cite{delmoral2006smcsamplers}は、伝播後の粒子へMCMC
+（MALA/Langevin）rejuvenation moveを適用する枠組みである。
+
+\matchpoint
+ベイズ則を「重みの更新」ではなく「$\nabla\log$事後に沿う粒子輸送」で実装する点は、
+式\eqref{eq:proposed-score}のscoreに沿うULA更新と同型である。とくに本実装の
+warm start変種（再帰時刻の連鎖初期値をfresh noiseでなく前時刻粒子とするconfig flag）は、
+重み・resamplingを省いたresample--moveのmove stepと形式的に一致する。
+
+\difference
+上記はいずれも既知（または尤度が同定済みの）遷移・観測モデルを前提とする
+モデルベース手法であり、制御方策や報酬からのend-to-end学習を含まない。
+本実験は、この輸送型ベイズ更新をモデルフリー・報酬のみの設定で
+POMDP方策の内部に埋め込む点で異なる。
+
 \section{Setから関数を出力するoperator architecture}
 
 \subsection{Deep SetsとSet Transformer}
@@ -264,6 +291,71 @@ normalizing flowをvariational recurrent modelへ導入し、連続かつ多峰�
 正規化可能なflow densityと補助生成目的を用いるのに対し、今回のenergyは正規化定数を計算せず、
 scoreとsampleだけを利用する。完全再実装は比較コストが大きいため、主要な関連研究として引用し、
 実験比較は追加予算がある場合に限定する。
+
+\subsection{報酬のみで学習する粒子beliefの空白と本実装のPF baseline}
+
+粒子フィルタ系は、(i)~モデル既知の古典PF、(ii)~遷移・観測モデルを状態ラベル教師で
+学習する微分可能PF\cite{jonschkowski2018dpf,karkus2018pfnet}、
+(iii)~潜在粒子と識別的重みをタスク損失で学習するPF-RNN/DPFRL
+\cite{ma2020pfrnn,ma2020dpfrl}の3層に整理できる。最後の層が最もモデルフリーに近いが、
+DPFRLも観測再構成の補助lossを併用しており、「報酬のみ・状態ラベルなし・補助lossなし」で
+粒子beliefを学習する研究はほぼ空白である。本実験はこの設定に2手法を置く。
+一つは提案のscore belief、もう一つは比較用に実装した決定論的particle-filter baselineであり、
+後者は$K$個の学習anchor仮説、観測条件付き遷移MLP、観測適合度log重み、および
+soft resamplingの期待値に相当する一様床
+$w\leftarrow\lambda w+(1-\lambda)/K$からなる。確率的resamplingを決定論緩和に
+置き換えるのは、recurrenceを保存入力の決定論的関数に保ち、GRUと同一の
+prefix-replay/full-BPTT機構・action head・PPOを共有するためである。パラメータは
+scoreと0.1\%以内で一致させ、現行のtwo-task比較行列ではgate-free Elman RNNも加えた
+4手法（score、GRU、RNN、particle filter）を同一予算で走らせる。
+
+\section{モデルフリー粒子フィルタとscore beliefの形式的対比}
+
+両者を同じ記法で並べる。モデルフリーPF（本実装baseline、PF-RNN型）は
+潜在粒子$h_{t,i}\in\mathbb R^{d}$と重み$w_{t,i}$を
+\begin{align}
+  h_{t,i}&=f_\phi(h_{t-1,i},\,o_t,\,a_{t-1}),\\
+  \tilde w_{t,i}&\propto w_{t-1,i}\,
+    \exp\bigl(\ell_\phi(h_{t,i},o_t)\bigr),\qquad
+  w_{t,i}=\lambda\,\tilde w_{t,i}+\frac{1-\lambda}{K},\\
+  b_t&=\sum_{i=1}^{K}w_{t,i}\,\varphi_\phi(h_{t,i})
+\end{align}
+で更新する。ベイズ則は重みの乗法で模倣され、粒子集合に密度は定義されない。
+一方score beliefは、状態空間上の非正規化密度そのもの
+\begin{equation}
+  \hat p_t(s)\propto
+    \exp\bigl(f(o_t,s,a_{t-1})\bigr)\cdot
+    \frac1K\sum_{i=1}^{K}\exp\bigl(u(s,s_{t-1,i},a_{t-1})\bigr)
+  \label{eq:pf-vs-score-density}
+\end{equation}
+を定義し（$u$項が前時刻粒子群を混合事前として運ぶ予測、$f$項が補正）、そこから
+\begin{align}
+  s^{(l)}_{t,i}&=s^{(l-1)}_{t,i}
+    +\alpha_l\,\nabla_s\log\hat p_t\bigl(s^{(l-1)}_{t,i}\bigr)
+    +\sqrt{2\alpha_l\tau_l}\,\xi_{t,l,i},\qquad l=1,\dots,L,\\
+  s^{(0)}_{t,i}&=\xi_{t,0,i}\sim\mathcal N(0,I)\ \text{（cold）}
+    \quad\text{または}\quad s_{t-1,i}\ \text{（warm start）}
+  \label{eq:pf-vs-score-ula}
+\end{align}
+というULA輸送で等重みsampleを得て、
+$c_t=\operatorname{Enc}\bigl(\{(s_{t,i},\nabla_s\log\hat p_t(s_{t,i}))\}_{i=1}^{K}\bigr)$を
+方策条件とする。本質的な差は次の4点である。
+\begin{enumerate}
+  \item \textbf{ベイズ更新の実装}：PFは測度の乗法的reweighting、scoreは
+    $\nabla\log$事後に沿った質量輸送であり重みを持たない。事後の形は粒子の
+    幾何配置とscore vectorで表現される。
+  \item \textbf{遷移の結合構造}：PFの遷移は粒子ごとの点写像で祖先系列を作る
+    （resamplingが必要になる根源）。scoreのlog-mean-exp混合事前は新粒子1個を
+    前時刻粒子群全体と結合させ、系列もresamplingも生じない。
+  \item \textbf{生成的意味}：PFの$\ell_\phi$は密度を定義しない識別的適合度である。
+    scoreは予測$u$と補正$f$に分解された明示的な非正規化密度（EBM再帰ベイズ）を持つ。
+  \item \textbf{サンプラー自由度の分離}：連鎖初期化（cold/warm）、温度$\tau_l$、
+    ステップ幅$\alpha_l$はモデル定義（式\eqref{eq:pf-vs-score-density}）と独立な
+    サンプラー側の自由度であり、本実装ではconfig flagで切替え、
+    $\log\tau_l$・$\log\alpha_l$を学習パラメータにもできる。
+    $\tau\to0$かつwarm startの極限で、score beliefはPF型の決定論的ensemble再帰へ
+    連続的に退化する。
+\end{enumerate}
 
 \section{Recurrent model-free baseline}
 
@@ -606,6 +698,38 @@ code: \url{https://github.com/irom-princeton/dppo}.
 Ningyuan Yang, Jiaxuan Gao, Feng Gao, Yi Wu, Chao Yu,
 ``Fine-tuning Diffusion Policies with Backpropagation Through Diffusion Timesteps,'' 2025.
 arXiv: \url{https://arxiv.org/abs/2505.10482}.
+
+\bibitem{bao2024ensf}
+Feng Bao, Zezhong Zhang, Guannan Zhang,
+``An ensemble score filter for tracking high-dimensional nonlinear dynamical systems,''
+\emph{Computer Methods in Applied Mechanics and Engineering}, 2024.
+arXiv: \url{https://arxiv.org/abs/2309.00983}.
+
+\bibitem{daum2010particleflow}
+Fred Daum, Jim Huang,
+``Exact particle flow for nonlinear filters,''
+Proc.\ SPIE 7697, Signal Processing, Sensor Fusion, and Target Recognition XIX, 2010.
+
+\bibitem{chen2019metaflow}
+Xinshi Chen, Hanjun Dai, Le Song,
+``Particle Flow Bayes' Rule,'' ICML, 2019.
+Official: \url{https://proceedings.mlr.press/v97/chen19c.html}.
+
+\bibitem{maken2022stein}
+Fahira Afzal Maken, Fabio Ramos, Lionel Ott,
+``Stein Particle Filter for Nonlinear, Non-Gaussian State Estimation,''
+\emph{IEEE Robotics and Automation Letters}, Vol.~7, No.~2, 2022.
+arXiv: \url{https://arxiv.org/abs/2202.04213}.
+
+\bibitem{gilks2001resamplemove}
+Walter R. Gilks, Carlo Berzuini,
+``Following a moving target---Monte Carlo inference for dynamic Bayesian models,''
+\emph{Journal of the Royal Statistical Society: Series B}, Vol.~63, No.~1, pp.~127--146, 2001.
+
+\bibitem{delmoral2006smcsamplers}
+Pierre Del Moral, Arnaud Doucet, Ajay Jasra,
+``Sequential Monte Carlo samplers,''
+\emph{Journal of the Royal Statistical Society: Series B}, Vol.~68, No.~3, pp.~411--436, 2006.
 
 \end{thebibliography}
 
