@@ -453,3 +453,63 @@ def test_invalid_config_name_and_actions_are_rejected() -> None:
         LightDarkNDEnv(goal_bonus=-1.0)
     with pytest.raises(ValueError, match="must be finite"):
         LightDarkNDEnv(goal_bonus=float("inf"))
+
+
+def test_light_dark_noise_gain_scales_the_observation_noise() -> None:
+    default = LightDarkNDEnv(dimension=2, seed=0)
+    default.reset(seed=0)
+    darker = LightDarkNDEnv(dimension=2, noise_gain=5.0, seed=0)
+    darker.reset(seed=0)
+    # Same state (same seed), ten times the variance slope away from the light.
+    np.testing.assert_allclose(darker._state, default._state)
+    x1 = float(default._state[0])
+    expected_default = np.sqrt(0.5 * (5.0 - x1) ** 2 + 0.05**2)
+    expected_darker = np.sqrt(5.0 * (5.0 - x1) ** 2 + 0.05**2)
+    assert default.observation_std() == pytest.approx(expected_default)
+    assert darker.observation_std() == pytest.approx(expected_darker)
+
+
+def test_light_dark_terminal_cost_applies_only_at_the_horizon() -> None:
+    plain = LightDarkNDEnv(dimension=2, horizon=3, seed=1)
+    graded = LightDarkNDEnv(dimension=2, horizon=3, terminal_cost=10.0, seed=1)
+    plain.reset(seed=1)
+    graded.reset(seed=1)
+    action = np.zeros(2)
+    for step in range(3):
+        _, plain_reward, _, plain_truncated, _ = plain.step(action)
+        _, graded_reward, _, graded_truncated, _ = graded.step(action)
+        assert plain_truncated == graded_truncated
+        if not graded_truncated:
+            assert graded_reward == plain_reward
+        else:
+            final_state = graded._state
+            assert graded_reward == pytest.approx(
+                plain_reward - 10.0 * float(np.dot(final_state, final_state))
+            )
+
+
+def test_light_dark_process_noise_is_seeded_and_off_by_default() -> None:
+    quiet = LightDarkNDEnv(dimension=2, seed=2)
+    quiet.reset(seed=2)
+    start = quiet._state.copy()
+    quiet.step(np.array([0.5, -0.5]))
+    np.testing.assert_allclose(quiet._state, start + np.array([0.5, -0.5]))
+
+    noisy_a = LightDarkNDEnv(dimension=2, process_noise_std=0.1, seed=2)
+    noisy_b = LightDarkNDEnv(dimension=2, process_noise_std=0.1, seed=2)
+    noisy_a.reset(seed=2)
+    noisy_b.reset(seed=2)
+    noisy_a.step(np.array([0.5, -0.5]))
+    noisy_b.step(np.array([0.5, -0.5]))
+    np.testing.assert_allclose(noisy_a._state, noisy_b._state)
+    assert not np.allclose(noisy_a._state, start + np.array([0.5, -0.5]))
+
+
+def test_light_dark_rejects_negative_p3o_knobs() -> None:
+    for kwargs in (
+        {"noise_gain": -0.1},
+        {"terminal_cost": -1.0},
+        {"process_noise_std": -0.5},
+    ):
+        with pytest.raises(ValueError, match="non-negative"):
+            LightDarkNDEnv(dimension=2, **kwargs)

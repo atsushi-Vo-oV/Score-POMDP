@@ -44,6 +44,9 @@ _LEGACY_COMPARISON_DEFAULTS: dict[str, object] = {
     "rnn_hidden_dim": 32,
 }
 _LEGACY_LIGHT_DARK_DEFAULTS: dict[str, object] = {
+    "noise_gain": 0.5,
+    "terminal_cost": 0.0,
+    "process_noise_std": 0.0,
     "light_position": 5.0,
     "initial_mean": 2.0,
     "initial_std": 0.5,

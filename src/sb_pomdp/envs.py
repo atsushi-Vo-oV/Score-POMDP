@@ -691,6 +691,9 @@ class LightDarkNDEnv(_BaseMaskedEnv):
         action_cost: float = 0.5,
         goal_radius: float = 0.25,
         goal_bonus: float = 0.0,
+        noise_gain: float = 0.5,
+        terminal_cost: float = 0.0,
+        process_noise_std: float = 0.0,
     ) -> None:
         super().__init__(
             horizon=horizon,
@@ -712,9 +715,16 @@ class LightDarkNDEnv(_BaseMaskedEnv):
             "action_cost": action_cost,
             "goal_radius": goal_radius,
             "goal_bonus": goal_bonus,
+            "noise_gain": noise_gain,
+            "terminal_cost": terminal_cost,
+            "process_noise_std": process_noise_std,
         }
         if any(not np.isfinite(value) for value in finite_parameters.values()):
             raise ValueError("Light-Dark parameters must be finite")
+        if noise_gain < 0 or terminal_cost < 0 or process_noise_std < 0:
+            raise ValueError(
+                "noise_gain, terminal_cost, and process_noise_std must be non-negative"
+            )
         if initial_std < 0:
             raise ValueError("initial_std must be non-negative")
         if max_action <= 0:
@@ -738,6 +748,9 @@ class LightDarkNDEnv(_BaseMaskedEnv):
         self.action_cost = float(action_cost)
         self.goal_radius = float(goal_radius)
         self.goal_bonus = float(goal_bonus)
+        self.noise_gain = float(noise_gain)
+        self.terminal_cost = float(terminal_cost)
+        self.process_noise_std = float(process_noise_std)
         self.action_spec = ActionSpec.continuous(
             -self.max_action,
             self.max_action,
@@ -750,7 +763,7 @@ class LightDarkNDEnv(_BaseMaskedEnv):
         if self._state is None:
             raise RuntimeError("The environment has not been reset")
         variance = (
-            0.5 * (self.light_position - float(self._state[0])) ** 2
+            self.noise_gain * (self.light_position - float(self._state[0])) ** 2
             + self.observation_noise_std**2
         )
         return float(np.sqrt(variance))
@@ -798,6 +811,11 @@ class LightDarkNDEnv(_BaseMaskedEnv):
         cost = self.state_cost * float(np.dot(previous_state, previous_state))
         cost += self.action_cost * float(np.dot(selected, selected))
         self._state = previous_state + selected.astype(np.float64)
+        if self.process_noise_std > 0.0:
+            # Guarded so the default keeps the historical RNG stream untouched.
+            self._state = self._state + self._rng.normal(
+                loc=0.0, scale=self.process_noise_std, size=self.dimension
+            )
 
         terminated = bool(np.linalg.norm(self._state) <= self.goal_radius)
         reward = -float(cost)
@@ -806,6 +824,11 @@ class LightDarkNDEnv(_BaseMaskedEnv):
             # the pure cost-truncation definition, down to the sign of a zero.
             reward += self.goal_bonus
         terminated, truncated = self._finish_step(terminated)
+        if truncated and self.terminal_cost:
+            # A P3O-style dense final grading of the post-transition state; its
+            # expectation under the belief prices the residual uncertainty
+            # directly, which is what makes localisation smoothly rewarding.
+            reward -= self.terminal_cost * float(np.dot(self._state, self._state))
         return self._observation(), reward, terminated, truncated, self._info()
 
 
@@ -853,6 +876,9 @@ _LIGHT_DARK_KEYS = {
     "action_cost",
     "goal_radius",
     "goal_bonus",
+    "noise_gain",
+    "terminal_cost",
+    "process_noise_std",
 }
 
 

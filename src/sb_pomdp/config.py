@@ -60,6 +60,9 @@ _LIGHT_DARK_LEGACY_TASK_DEFAULTS: dict[str, JSONValue] = {
     "action_cost": 0.5,
     "goal_radius": 0.25,
     "goal_bonus": 0.0,
+    "noise_gain": 0.5,
+    "terminal_cost": 0.0,
+    "process_noise_std": 0.0,
 }
 _LIGHT_DARK_TASK_KEYS = (
     _ENVIRONMENT_TASK_KEYS
@@ -340,7 +343,14 @@ def _validate_light_dark_task(task: Mapping[str, Any], path: str) -> None:
     _number(task["light_position"], f"{path}.light_position")
     _number(task["initial_mean"], f"{path}.initial_mean")
     _number(task["initial_std"], f"{path}.initial_std", minimum=0.0)
-    for key in ("state_cost", "action_cost", "goal_bonus"):
+    for key in (
+        "state_cost",
+        "action_cost",
+        "goal_bonus",
+        "noise_gain",
+        "terminal_cost",
+        "process_noise_std",
+    ):
         _number(task[key], f"{path}.{key}", minimum=0.0)
     _positive_number(task["goal_radius"], f"{path}.goal_radius")
 
