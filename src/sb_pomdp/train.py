@@ -30,6 +30,7 @@ from .config import ExperimentConfig, load_config, normalize_legacy_resolved_con
 from .envs import ActionSpec, make_env
 from .policies import ScoreBeliefActorCritic
 from .ppo import update_ppo
+from .value_transform import ValueTransform
 
 LOGGER = logging.getLogger("sb_pomdp")
 
@@ -626,6 +627,7 @@ def truncation_bootstrap_values(
     particles: torch.Tensor,
     action_features: torch.Tensor,
     device: torch.device,
+    value_transform: ValueTransform | None = None,
 ) -> torch.Tensor:
     """Value the post-step state that a time-limit truncation discarded.
 
@@ -658,7 +660,9 @@ def truncation_bootstrap_values(
     )
     with torch.no_grad():
         final_particles, final_scores = _sample_belief(model, final_context, model_config)
-        bootstrap = model.value(model.encode(final_particles, final_scores))
+        bootstrap = (value_transform or ValueTransform()).to_raw(
+            model.value(model.encode(final_particles, final_scores))
+        )
     values.index_copy_(0, selector, bootstrap.detach().to(dtype=values.dtype))
     return values
 
@@ -1529,6 +1533,7 @@ def train_single(
     rollout_batch_size = int(ppo_config["num_envs"]) * int(ppo_config["rollout_steps"])
     configured_updates = math.ceil(int(ppo_config["total_steps"]) / rollout_batch_size)
     bootstrap_on_truncation = bool(ppo_config["bootstrap_on_truncation"])
+    value_transform = ValueTransform.from_config(ppo_config)
     checkpoint: dict[str, Any] | None = None
     start_update = 0
     if resume_checkpoint is not None:
@@ -1774,6 +1779,7 @@ def train_single(
                     particles=particles,
                     action_features=action_features,
                     device=device,
+                    value_transform=value_transform,
                 )
                 truncation_bootstrap_sum += float(truncation_values.sum().cpu())
                 truncation_bootstrap_count += len(truncated_step_indices(step_infos))
@@ -1786,7 +1792,7 @@ def train_single(
                 particles=particles,
                 actions=action,
                 old_log_prob=old_log_prob,
-                old_values=old_value,
+                old_values=value_transform.to_raw(old_value),
                 rewards=reward_tensor,
                 dones=done_tensor,
                 ula_initial_noise=ula_initial_noise,
@@ -1910,7 +1916,9 @@ def train_single(
             )
         bootstrap_particles, bootstrap_scores = _sample_belief(model, context, model_config)
         with torch.no_grad():
-            last_value = model.value(model.encode(bootstrap_particles, bootstrap_scores))
+            last_value = value_transform.to_raw(
+                model.value(model.encode(bootstrap_particles, bootstrap_scores))
+            )
         rollout = builder.finish(
             last_value=last_value,
             gamma=float(ppo_config["gamma"]),

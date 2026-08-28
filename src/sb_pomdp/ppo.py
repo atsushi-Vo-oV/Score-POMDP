@@ -11,6 +11,7 @@ from torch.utils.checkpoint import checkpoint
 from .belief import EnergyBelief, PotentialBranch
 from .buffer import RolloutBatch
 from .policies import ScoreBeliefActorCritic
+from .value_transform import ValueTransform
 
 
 @dataclass(slots=True)
@@ -390,6 +391,7 @@ def update_ppo(
     )
     environments_per_microbatch = sequence_microbatch_size // rollout_steps
 
+    value_transform = ValueTransform.from_config(ppo_config)
     advantages = rollout.advantages
     if ppo_config["normalize_advantage"]:
         advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
@@ -454,7 +456,7 @@ def update_ppo(
                     ppo_config,
                 )
                 returns = _time_environment_flatten(rollout.returns[:, environment_indices])
-                value_loss = 0.5 * (new_values - returns).square().mean()
+                value_loss = 0.5 * (new_values - value_transform.to_target(returns)).square().mean()
                 total_loss = (
                     policy_loss
                     + float(ppo_config["value_coef"]) * value_loss

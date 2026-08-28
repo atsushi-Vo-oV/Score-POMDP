@@ -54,6 +54,7 @@ from .train import (
     seed_everything,
     truncated_step_indices,
 )
+from .value_transform import ValueTransform
 
 BaselineMethod = Literal["observation_mlp", "gru", "rnn", "oracle_state", "particle_filter"]
 BASELINE_METHODS = frozenset({"observation_mlp", "gru", "rnn", "oracle_state", "particle_filter"})
@@ -248,6 +249,7 @@ def _truncation_bootstrap_values(
     hidden: torch.Tensor | None,
     action_features: torch.Tensor,
     device: torch.device,
+    value_transform: ValueTransform | None = None,
 ) -> torch.Tensor:
     """Value the post-step state that a time-limit truncation discarded.
 
@@ -289,6 +291,7 @@ def _truncation_bootstrap_values(
             bootstrap = model.heads.value(features)
         else:
             bootstrap = model.value(inputs)
+    bootstrap = (value_transform or ValueTransform()).to_raw(bootstrap)
     values.index_copy_(0, selector, bootstrap.detach().to(dtype=values.dtype))
     return values
 
@@ -381,7 +384,8 @@ def _optimise_minibatch(
         float(ppo_config["clip_coef"]),
     )
     entropy = entropy_values.mean()
-    value_loss = 0.5 * (new_values - returns).square().mean()
+    value_targets = ValueTransform.from_config(ppo_config).to_target(returns)
+    value_loss = 0.5 * (new_values - value_targets).square().mean()
     total_loss = (
         policy_loss
         + float(ppo_config["value_coef"]) * value_loss
@@ -1178,6 +1182,7 @@ def train_baseline_single(
     rollout_batch_size = int(ppo_config["num_envs"]) * int(ppo_config["rollout_steps"])
     configured_updates = math.ceil(int(ppo_config["total_steps"]) / rollout_batch_size)
     bootstrap_on_truncation = bool(ppo_config["bootstrap_on_truncation"])
+    value_transform = ValueTransform.from_config(ppo_config)
     checkpoint: dict[str, Any] | None = None
     start_update = 0
     if resume_checkpoint is not None:
@@ -1438,6 +1443,7 @@ def train_baseline_single(
                     _truncation_bootstrap_values(
                         model,
                         method,
+                        value_transform=value_transform,
                         infos=step_infos,
                         hidden=hidden,
                         action_features=action_features,
@@ -1447,7 +1453,7 @@ def train_baseline_single(
                 truncation_bootstrap_count += len(truncated_step_indices(step_infos))
             action_steps.append(sample.action.detach())
             log_prob_steps.append(sample.log_prob.detach())
-            value_steps.append(old_value.detach())
+            value_steps.append(value_transform.to_raw(old_value.detach()))
             reward_steps.append(torch.as_tensor(reward, dtype=torch.float32, device=device))
             done_steps.append(done_tensor)
 
@@ -1511,9 +1517,9 @@ def train_baseline_single(
             if isinstance(model, RECURRENT_BASELINE_TYPES):
                 assert hidden is not None
                 bootstrap_features, _ = model.step(bootstrap_inputs, hidden, episode_starts)
-                last_value = model.heads.value(bootstrap_features)
+                last_value = value_transform.to_raw(model.heads.value(bootstrap_features))
             else:
-                last_value = model.value(bootstrap_inputs)
+                last_value = value_transform.to_raw(model.value(bootstrap_inputs))
 
         rewards = torch.stack(reward_steps)
         dones = torch.stack(done_steps)

@@ -148,6 +148,7 @@ _PPO_KEYS = frozenset(
         "max_grad_norm",
         "normalize_advantage",
         "bootstrap_on_truncation",
+        "value_target_transform",
     }
 )
 
@@ -158,7 +159,7 @@ _PPO_KEYS = frozenset(
 # this table - or ``_LIGHT_DARK_LEGACY_TASK_DEFAULTS`` for per-task keys, and
 # nothing else - when a new key has to stay comparable with the campaign.
 _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
-    "ppo": {"bootstrap_on_truncation": False},
+    "ppo": {"bootstrap_on_truncation": False, "value_target_transform": "none"},
     # Langevin tempering and warm starts arrived after the first campaigns; at
     # these defaults the belief update is bit-identical to the original ULA.
     "model": {
@@ -499,6 +500,11 @@ def _validate_ppo(value: Any) -> Mapping[str, Any]:
     _number(section["entropy_coef"], "ppo.entropy_coef", minimum=0.0)
     _boolean(section["normalize_advantage"], "ppo.normalize_advantage")
     _boolean(section["bootstrap_on_truncation"], "ppo.bootstrap_on_truncation")
+    transform = _nonempty_string(
+        section["value_target_transform"], "ppo.value_target_transform"
+    )
+    if transform not in {"none", "symlog"}:
+        raise ConfigError("ppo.value_target_transform must be none or symlog")
 
     rollout_batch = section["num_envs"] * section["rollout_steps"]
     if section["minibatch_size"] > rollout_batch:

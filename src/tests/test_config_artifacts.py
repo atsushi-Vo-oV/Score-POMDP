@@ -25,7 +25,10 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # ``_valid_config`` is deliberately written in the pre-campaign schema.  These are
 # the post-campaign keys the normalizer fills in, at the values that reproduce the
 # campaign's behaviour exactly.
-_LEGACY_PPO_DEFAULTS: dict[str, object] = {"bootstrap_on_truncation": False}
+_LEGACY_PPO_DEFAULTS: dict[str, object] = {
+    "bootstrap_on_truncation": False,
+    "value_target_transform": "none",
+}
 _LEGACY_MODEL_DEFAULTS: dict[str, object] = {
     "langevin_temperature": 1.0,
     "langevin_temperature_learnable": False,
