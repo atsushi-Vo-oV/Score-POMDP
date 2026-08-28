@@ -14,7 +14,12 @@ module purge
 module load cuda/12.2.2 cudnn/8.9.7 nccl/2.22.3 pytorch-cuda/2.3.1-12.2.2
 
 export PYTHONPATH="$PROJECT_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
-export OMP_NUM_THREADS=16
+if [[ "${PJM_RSCGRP:-}" == *mig* ]]; then
+  # A MIG slice is allocated 4 cores; match the thread count to the allocation.
+  export OMP_NUM_THREADS="$(nproc)"
+else
+  export OMP_NUM_THREADS=16
+fi
 EXPECTED_PRODUCTION_SHARDS=80
 
 CONFIG_PATH="${SB_POMDP_CONFIG:-config/production.json}"
