@@ -28,6 +28,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _LEGACY_PPO_DEFAULTS: dict[str, object] = {
     "bootstrap_on_truncation": False,
     "value_target_transform": "none",
+    "langevin_schedule_lr_multiplier": 1.0,
 }
 _LEGACY_MODEL_DEFAULTS: dict[str, object] = {
     "langevin_temperature": 1.0,

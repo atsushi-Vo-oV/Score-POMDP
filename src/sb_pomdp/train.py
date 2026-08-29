@@ -540,6 +540,64 @@ def _environment_actions(action_spec: ActionSpec, action: torch.Tensor) -> np.nd
     return array.astype(np.float32, copy=False)
 
 
+LANGEVIN_SCHEDULE_PARAMETERS = frozenset(
+    {"langevin_log_step_size", "langevin_log_temperature"}
+)
+
+
+def langevin_schedule_parameter_names(model: torch.nn.Module) -> list[str]:
+    """Names of the learned per-step ULA step-size / temperature schedules."""
+
+    return [
+        name
+        for name, _ in model.named_parameters()
+        if name.rsplit(".", 1)[-1] in LANGEVIN_SCHEDULE_PARAMETERS
+    ]
+
+
+def build_optimizer(
+    model: torch.nn.Module, ppo_config: Mapping[str, Any]
+) -> torch.optim.Optimizer:
+    """Adam over the model, with an optional separate rate for the ULA schedules.
+
+    ``ppo.langevin_schedule_lr_multiplier`` scales the learning rate of the
+    learned ``log alpha_l`` / ``log tau_l`` schedules only.  A log-space
+    parameter cannot move faster than roughly the Adam learning rate per
+    step, so at the policy rate (2.5e-4) a schedule needs thousands of
+    consistently signed updates to change by a factor of e; the multiplier
+    lets the schedule travel without touching the policy and energy rates.
+    At the default multiplier 1.0 (and whenever no schedule is learned) the
+    optimizer is the original single-group Adam, so checkpoints written by
+    earlier runs load unchanged.
+    """
+
+    learning_rate = float(ppo_config["learning_rate"])
+    multiplier = float(ppo_config.get("langevin_schedule_lr_multiplier", 1.0))
+    if not multiplier > 0.0:
+        raise ValueError("langevin_schedule_lr_multiplier must be positive")
+    schedule_names = set(langevin_schedule_parameter_names(model))
+    if multiplier == 1.0 or not schedule_names:
+        return torch.optim.Adam(model.parameters(), lr=learning_rate, eps=1e-5)
+    main_parameters = [
+        parameter
+        for name, parameter in model.named_parameters()
+        if name not in schedule_names
+    ]
+    schedule_parameters = [
+        parameter
+        for name, parameter in model.named_parameters()
+        if name in schedule_names
+    ]
+    return torch.optim.Adam(
+        [
+            {"params": main_parameters},
+            {"params": schedule_parameters, "lr": learning_rate * multiplier},
+        ],
+        lr=learning_rate,
+        eps=1e-5,
+    )
+
+
 @torch.no_grad()
 def _policy_from_particles(
     model: ScoreBeliefActorCritic,
@@ -1585,9 +1643,7 @@ def train_single(
     batch = SyncEnvironmentBatch(environments)
     first_environment = environments[0]
     model = model_for_environment(first_environment, model_config, device)
-    optimizer = torch.optim.Adam(
-        model.parameters(), lr=float(ppo_config["learning_rate"]), eps=1e-5
-    )
+    optimizer = build_optimizer(model, ppo_config)
     parameter_count = sum(parameter.numel() for parameter in model.parameters())
     LOGGER.info("Model parameters: %d", parameter_count)
 

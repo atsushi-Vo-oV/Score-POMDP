@@ -149,6 +149,7 @@ _PPO_KEYS = frozenset(
         "normalize_advantage",
         "bootstrap_on_truncation",
         "value_target_transform",
+        "langevin_schedule_lr_multiplier",
     }
 )
 
@@ -159,7 +160,12 @@ _PPO_KEYS = frozenset(
 # this table - or ``_LIGHT_DARK_LEGACY_TASK_DEFAULTS`` for per-task keys, and
 # nothing else - when a new key has to stay comparable with the campaign.
 _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
-    "ppo": {"bootstrap_on_truncation": False, "value_target_transform": "none"},
+    "ppo": {
+        "bootstrap_on_truncation": False,
+        "value_target_transform": "none",
+        # The learned Langevin schedules shared the policy learning rate.
+        "langevin_schedule_lr_multiplier": 1.0,
+    },
     # Langevin tempering and warm starts arrived after the first campaigns; at
     # these defaults the belief update is bit-identical to the original ULA.
     "model": {
@@ -489,6 +495,10 @@ def _validate_ppo(value: Any) -> Mapping[str, Any]:
         _integer(section[key], f"ppo.{key}")
     for key in ("learning_rate", "clip_coef", "value_coef", "max_grad_norm"):
         _positive_number(section[key], f"ppo.{key}")
+    _positive_number(
+        section["langevin_schedule_lr_multiplier"],
+        "ppo.langevin_schedule_lr_multiplier",
+    )
     for key in ("gamma", "gae_lambda"):
         _number(
             section[key],
