@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import logging
 import math
@@ -478,6 +479,36 @@ def model_for_environment(
         model_config=model_config,
     )
     return model.to(device)
+
+
+def _tilted_weights(segment_rewards: np.ndarray, eta: float) -> np.ndarray:
+    """Normalised exp(eta * r) weights of one resampling segment."""
+
+    shifted = eta * (segment_rewards - float(segment_rewards.max()))
+    weights = np.exp(shifted)
+    return weights / weights.sum()
+
+
+def _systematic_resample(weights: np.ndarray, rng: np.random.Generator) -> list[int]:
+    """Low-variance systematic resampling; equal weights return the identity."""
+
+    count = len(weights)
+    positions = (rng.random() + np.arange(count)) / count
+    cumulative = np.cumsum(weights)
+    cumulative[-1] = 1.0
+    return np.searchsorted(cumulative, positions).tolist()
+
+
+def _clone_belief_history(history: BeliefReplayHistory) -> BeliefReplayHistory:
+    """Fresh list objects over shared (never-mutated) per-step tensors."""
+
+    return BeliefReplayHistory(
+        observations=list(history.observations),
+        previous_actions=list(history.previous_actions),
+        initial=list(history.initial),
+        ula_initial_noise=list(history.ula_initial_noise),
+        ula_step_noises=list(history.ula_step_noises),
+    )
 
 
 def _sample_belief(
@@ -1725,6 +1756,10 @@ def train_single(
         )
         if not artifacts.metrics_path.exists() or artifacts.metrics_path.stat().st_size == 0:
             artifacts.csv_appender(METRIC_FIELDS).append_many(metric_rows)
+    algorithm = str(ppo_config.get("algorithm", "ppo"))
+    p3o_mode = algorithm == "p3o_wml"
+    p3o_eta = float(ppo_config.get("p3o_eta", 1.0))
+    p3o_interval = int(ppo_config.get("p3o_resample_interval", 5))
     segment_started = time.perf_counter()
 
     def current_checkpoint_payload(update: int, global_step: int) -> dict[str, Any]:
@@ -1801,6 +1836,12 @@ def train_single(
         truncation_bootstrap_sum = 0.0
         truncation_bootstrap_count = 0
         episode_rows: list[dict[str, Any]] = []
+        p3o_segment_rewards = np.zeros(batch.size, dtype=np.float64)
+        p3o_step_in_episode = 0
+        p3o_resample_events = 0
+        p3o_unique_ancestors = 0
+        p3o_rollout_closed = False
+        p3o_update_rng = np.random.default_rng(seed * 1_000_003 + update)
         model.eval()
 
         for rollout_index in range(int(ppo_config["rollout_steps"])):
@@ -1953,7 +1994,73 @@ def train_single(
                 )
                 episode_returns[environment_index] = 0.0
                 episode_lengths[environment_index] = 0
+            if p3o_mode:
+                p3o_segment_rewards += reward
+                p3o_step_in_episode += 1
+                if bool(np.any(done)):
+                    if not bool(np.all(done)):
+                        raise RuntimeError(
+                            "ppo.algorithm=p3o_wml needs synchronised episodes: "
+                            "an environment ended before the shared time limit"
+                        )
+                    if any(not info.get("truncated", False) for info in step_infos):
+                        raise RuntimeError(
+                            "ppo.algorithm=p3o_wml supports time-limit episode ends only"
+                        )
+                    p3o_step_in_episode = 0
+                    p3o_rollout_closed = True
+                else:
+                    p3o_rollout_closed = False
+                    if p3o_step_in_episode % p3o_interval == 0:
+                        ancestors = _systematic_resample(
+                            _tilted_weights(p3o_segment_rewards, p3o_eta),
+                            p3o_update_rng,
+                        )
+                        p3o_resample_events += 1
+                        p3o_unique_ancestors += len(set(ancestors))
+                        if any(
+                            ancestor != slot for slot, ancestor in enumerate(ancestors)
+                        ):
+                            cloned = [
+                                copy.deepcopy(environments[ancestor])
+                                for ancestor in ancestors
+                            ]
+                            environments[:] = cloned
+                            ancestor_index = torch.as_tensor(
+                                ancestors, dtype=torch.long, device=device
+                            )
+                            context = BeliefContext(
+                                observation=context.observation[ancestor_index].clone(),
+                                previous_particles=context.previous_particles[
+                                    ancestor_index
+                                ].clone(),
+                                previous_action=context.previous_action[
+                                    ancestor_index
+                                ].clone(),
+                                initial=context.initial[ancestor_index].clone(),
+                            )
+                            builder.resample(ancestors)
+                            belief_histories[:] = [
+                                _clone_belief_history(belief_histories[ancestor])
+                                for ancestor in ancestors
+                            ]
+                            episode_returns[:] = episode_returns[ancestors]
+                            episode_lengths[:] = episode_lengths[ancestors]
+                        p3o_segment_rewards[:] = 0.0
 
+        if p3o_mode and not p3o_rollout_closed:
+            raise RuntimeError(
+                "ppo.algorithm=p3o_wml requires ppo.rollout_steps to equal the "
+                "episode horizon so every rollout closes on an episode boundary"
+            )
+        if p3o_mode:
+            LOGGER.info(
+                "p3o update=%d resample_events=%d mean_unique_ancestors=%.1f eta=%.2f",
+                update,
+                p3o_resample_events,
+                (p3o_unique_ancestors / p3o_resample_events) if p3o_resample_events else float("nan"),
+                p3o_eta,
+            )
         episode_appender.append_many(episode_rows)
         if bootstrap_on_truncation:
             # Reported through the log rather than metrics.csv: METRIC_FIELDS is
@@ -1975,8 +2082,18 @@ def train_single(
             last_value = value_transform.to_raw(
                 model.value(model.encode(bootstrap_particles, bootstrap_scores))
             )
+        p3o_wml_weights = (
+            torch.as_tensor(
+                _tilted_weights(p3o_segment_rewards, p3o_eta),
+                dtype=torch.float32,
+                device=device,
+            )
+            if p3o_mode
+            else None
+        )
         rollout = builder.finish(
             last_value=last_value,
+            wml_weights=p3o_wml_weights,
             gamma=float(ppo_config["gamma"]),
             gae_lambda=float(ppo_config["gae_lambda"]),
         )

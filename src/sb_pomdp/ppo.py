@@ -347,6 +347,66 @@ def _policy_objective(
     return policy_loss, approximate_kl, clip_fraction, entropy
 
 
+def _wml_policy_objective(
+    model: ScoreBeliefActorCritic,
+    condition: torch.Tensor,
+    rollout: RolloutBatch,
+    environment_indices: torch.Tensor,
+    advantages: torch.Tensor,
+    model_config: dict,
+    ppo_config: dict,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """P3O-style weighted maximum likelihood over the tilted population.
+
+    The reward-tempered resampling performed during collection makes the
+    surviving trajectories samples from the exp(eta * R)-tilted path measure;
+    by the Fisher identity, ascending their average action log-likelihood
+    ascends ``log E[exp(eta R)]``.  The residual (final-segment) weights that
+    resampling did not absorb arrive as ``rollout.wml_weights``.  ``advantages``
+    is accepted for call-site compatibility and ignored; there is no critic in
+    the policy objective, no ratio, and no clip.
+    """
+
+    del advantages, ppo_config
+    if rollout.wml_weights is None:
+        raise ValueError("the weighted-ML objective requires rollout wml_weights")
+    action = _time_environment_flatten(rollout.actions[:, environment_indices])
+    old_log_prob = _time_environment_flatten(rollout.old_log_prob[:, environment_indices])
+    if model.action_kind == "discrete":
+        assert model.categorical_head is not None
+        distribution = Categorical(logits=model.categorical_head(condition))
+        per_step = distribution.log_prob(action.long())
+        old_per_step = old_log_prob
+        entropy = distribution.entropy().mean()
+    elif model.continuous_policy_kind == "diffusion":
+        assert model.diffusion_policy is not None
+        assert rollout.diffusion_chains is not None
+        chains = _time_environment_flatten(rollout.diffusion_chains[:, environment_indices])
+        step_log_prob, step_entropy = model.diffusion_policy.log_prob_chain(condition, chains)
+        per_step = step_log_prob.sum(dim=-1)
+        old_per_step = old_log_prob.sum(dim=-1)
+        entropy = step_entropy.mean()
+    else:
+        assert model.gaussian_policy is not None
+        assert rollout.pre_tanh_actions is not None
+        pre_tanh = _time_environment_flatten(rollout.pre_tanh_actions[:, environment_indices])
+        per_step, gaussian_entropy = model.gaussian_policy.log_prob(
+            condition,
+            pre_tanh_action=pre_tanh,
+        )
+        old_per_step = old_log_prob
+        entropy = gaussian_entropy.mean()
+    rollout_steps = int(rollout.rewards.shape[0])
+    group = int(environment_indices.numel())
+    per_environment = per_step.reshape(rollout_steps, group).mean(dim=0)
+    weights = rollout.wml_weights.to(per_environment.dtype)[environment_indices]
+    policy_loss = -(weights * per_environment).sum()
+    with torch.no_grad():
+        approximate_kl = (old_per_step - per_step).mean()
+        clip_fraction = torch.zeros_like(approximate_kl)
+    return policy_loss, approximate_kl, clip_fraction, entropy
+
+
 def update_ppo(
     model: ScoreBeliefActorCritic,
     optimizer: torch.optim.Optimizer,
@@ -391,6 +451,12 @@ def update_ppo(
     )
     environments_per_microbatch = sequence_microbatch_size // rollout_steps
 
+    algorithm = str(ppo_config.get("algorithm", "ppo"))
+    if algorithm not in {"ppo", "p3o_wml"}:
+        raise ValueError("ppo.algorithm must be ppo or p3o_wml")
+    policy_objective = _policy_objective if algorithm == "ppo" else _wml_policy_objective
+    if algorithm == "p3o_wml" and rollout.wml_weights is None:
+        raise ValueError("ppo.algorithm=p3o_wml requires a tilted rollout (wml_weights)")
     value_transform = ValueTransform.from_config(ppo_config)
     advantages = rollout.advantages
     if ppo_config["normalize_advantage"]:
@@ -446,7 +512,7 @@ def update_ppo(
                     _time_environment_flatten(scores),
                 )
                 new_values = model.value(condition)
-                policy_loss, approximate_kl, clip_fraction, entropy = _policy_objective(
+                policy_loss, approximate_kl, clip_fraction, entropy = policy_objective(
                     model,
                     condition,
                     rollout,

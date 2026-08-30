@@ -1182,6 +1182,10 @@ def train_baseline_single(
     rollout_batch_size = int(ppo_config["num_envs"]) * int(ppo_config["rollout_steps"])
     configured_updates = math.ceil(int(ppo_config["total_steps"]) / rollout_batch_size)
     bootstrap_on_truncation = bool(ppo_config["bootstrap_on_truncation"])
+    if str(ppo_config.get("algorithm", "ppo")) != "ppo":
+        raise NotImplementedError(
+            "baseline trainers support only ppo.algorithm=ppo for now"
+        )
     value_transform = ValueTransform.from_config(ppo_config)
     checkpoint: dict[str, Any] | None = None
     start_update = 0

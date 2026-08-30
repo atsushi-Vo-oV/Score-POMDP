@@ -29,6 +29,9 @@ _LEGACY_PPO_DEFAULTS: dict[str, object] = {
     "bootstrap_on_truncation": False,
     "value_target_transform": "none",
     "langevin_schedule_lr_multiplier": 1.0,
+    "algorithm": "ppo",
+    "p3o_eta": 1.0,
+    "p3o_resample_interval": 5,
 }
 _LEGACY_MODEL_DEFAULTS: dict[str, object] = {
     "langevin_temperature": 1.0,

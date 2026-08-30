@@ -151,6 +151,9 @@ _PPO_KEYS = frozenset(
         "bootstrap_on_truncation",
         "value_target_transform",
         "langevin_schedule_lr_multiplier",
+        "algorithm",
+        "p3o_eta",
+        "p3o_resample_interval",
     }
 )
 
@@ -166,6 +169,11 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         "value_target_transform": "none",
         # The learned Langevin schedules shared the policy learning rate.
         "langevin_schedule_lr_multiplier": 1.0,
+        # PPO was the only policy improver before the P3O-style tilted
+        # weighted-maximum-likelihood trainer arrived.
+        "algorithm": "ppo",
+        "p3o_eta": 1.0,
+        "p3o_resample_interval": 5,
     },
     # Langevin tempering and warm starts arrived after the first campaigns; at
     # these defaults the belief update is bit-identical to the original ULA.
@@ -506,6 +514,12 @@ def _validate_ppo(value: Any) -> Mapping[str, Any]:
         section["langevin_schedule_lr_multiplier"],
         "ppo.langevin_schedule_lr_multiplier",
     )
+    algorithm = _nonempty_string(section["algorithm"], "ppo.algorithm")
+    if algorithm not in {"ppo", "p3o_wml"}:
+        raise ConfigError("ppo.algorithm must be ppo or p3o_wml")
+    _positive_number(section["p3o_eta"], "ppo.p3o_eta")
+    if _integer(section["p3o_resample_interval"], "ppo.p3o_resample_interval") <= 0:
+        raise ConfigError("ppo.p3o_resample_interval must be positive")
     for key in ("gamma", "gae_lambda"):
         _number(
             section[key],

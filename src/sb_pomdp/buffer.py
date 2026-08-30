@@ -41,6 +41,9 @@ class RolloutBatch:
     diffusion_chains: torch.Tensor | None
     pre_tanh_actions: torch.Tensor | None
     belief_prefixes: tuple[BeliefReplayPrefix, ...]
+    # Normalised tilted-population weights of a P3O-style rollout, or ``None``
+    # for plain PPO data.  Indexed by environment slot.
+    wml_weights: torch.Tensor | None = None
 
     @property
     def rollout_shape(self) -> tuple[int, int]:
@@ -191,12 +194,48 @@ class RolloutBuilder:
                 self._pre_tanh_actions = []
             self._pre_tanh_actions.append(pre_tanh_actions.detach())
 
+    def resample(self, ancestors: list[int]) -> None:
+        """Rewrite every stored step so slot ``j`` carries ``ancestors[j]``'s past.
+
+        Applying the ancestor permutation to the whole stored history at every
+        resampling event composes into exact ancestral lineages, which is what
+        the weighted-maximum-likelihood update must imitate.  Only rollouts
+        whose episodes started at the rollout boundary are supported: a
+        non-empty belief replay prefix cannot be permuted after the fact.
+        """
+
+        if not self._data["rewards"]:
+            raise ValueError("cannot resample an empty rollout")
+        batch = int(self._data["rewards"][0].shape[0])
+        if len(ancestors) != batch:
+            raise ValueError("one ancestor index is required per environment slot")
+        if any(index < 0 or index >= batch for index in ancestors):
+            raise ValueError("ancestor indices must address environment slots")
+        if any(prefix.length for prefix in self._belief_prefixes):
+            raise ValueError(
+                "resampling requires episodes aligned to the rollout start "
+                "(empty belief replay prefixes)"
+            )
+        index = None
+        for items in self._data.values():
+            for position, value in enumerate(items):
+                if index is None or index.device != value.device:
+                    index = torch.as_tensor(ancestors, dtype=torch.long, device=value.device)
+                items[position] = value[index].clone()
+        for optional in (self._diffusion_chains, self._pre_tanh_actions, self._truncation_values):
+            if optional is not None:
+                for position, value in enumerate(optional):
+                    optional[position] = value[
+                        torch.as_tensor(ancestors, dtype=torch.long, device=value.device)
+                    ].clone()
+
     def finish(
         self,
         *,
         last_value: torch.Tensor,
         gamma: float,
         gae_lambda: float,
+        wml_weights: torch.Tensor | None = None,
     ) -> RolloutBatch:
         if not self._data["rewards"]:
             raise ValueError("cannot finish an empty rollout")
@@ -250,6 +289,7 @@ class RolloutBuilder:
             diffusion_chains=chains,
             pre_tanh_actions=pre_tanh_actions,
             belief_prefixes=self._belief_prefixes,
+            wml_weights=None if wml_weights is None else wml_weights.detach(),
         )
 
 
