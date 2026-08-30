@@ -35,6 +35,7 @@ _LEGACY_MODEL_DEFAULTS: dict[str, object] = {
     "langevin_temperature_learnable": False,
     "langevin_warm_start": False,
     "langevin_step_size_learnable": False,
+    "langevin_schedule_bound": "clamp",
     "policy_head_kind": "mlp",
     "alpha_pieces": 16,
     "alpha_temperature": 1.0,

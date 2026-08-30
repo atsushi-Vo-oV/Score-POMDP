@@ -375,6 +375,9 @@ class ScoreBeliefActorCritic(nn.Module):
             langevin_steps=(
                 int(model_config["langevin_steps"]) if needs_schedule_length else None
             ),
+            langevin_schedule_bound=str(
+                model_config.get("langevin_schedule_bound", "clamp")
+            ),
         )
         if self.encoder_kind == "transformer":
             self.encoder: nn.Module = BeliefSetEncoder(

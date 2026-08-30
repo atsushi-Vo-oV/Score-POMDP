@@ -16,6 +16,7 @@ log 空間パラメータの 1 step 移動量は Adam ではほぼ lr なので�
 | tau_lr10 | LD-5D bonus1、α_l+τ_l 学習、倍率 10 | τ study の tau_learn(×1) |
 | tau_lr100 | 同上、倍率 100 | 同上 |
 | cartpole_lr100 | masked_cartpole、α_l+τ_l 学習、倍率 100、50 updates 上限 | v2 score/cartpole @50(固定スケジュール、greedy 67.2) |
+| tau_lr100_sig | tau_lr100 と同一だが `model.langevin_schedule_bound=sigmoid`(clamp の代わりに sigmoid 再パラメータ化、範囲は同じ) | tau_lr100(clamp 版) |
 
 判定: return ではなく **checkpoint の `belief.langevin_log_step_size` /
 `belief.langevin_log_temperature` の軌跡**を第一に見る。
@@ -29,12 +30,23 @@ log 空間パラメータの 1 step 移動量は Adam ではほぼ lr なので�
 
 ```bash
 pjsub jobs/ld_tau_lr/debug_tau_lr.sh
+pjsub jobs/ld_tau_lr/debug_tau_sig.sh
 pjsub jobs/ld_tau_lr/tau_lr10.sh
 pjsub jobs/ld_tau_lr/tau_lr100.sh
 pjsub jobs/ld_tau_lr/cartpole_lr100.sh
+pjsub jobs/ld_tau_lr/tau_lr100_sig.sh
 ```
 
 各 arm は直接 compare 起動(campaign 機構なし)で resume 不可。LD は ~10
 分/update × 100 ≈ 17 h、CartPole は 50 updates 上限で ≈ 8-15 h、いずれも
 24 h 枠内。解析は scratchpad の tau_probe.py(スケジュール値の読み出しと
 表現プローブ)を流用する。
+
+## 結果(2026-08-30、clamp 版)
+
+- ×100 では 25 updates でスケジュールが大きく動いた(lr 説は実証)。LD ×100 は @50 までに α が
+  clamp 上限 0.5 を突き抜け(raw log 0.65-0.76)、clamp の勾配ゼロで以後凍結、τ は 0.003-0.026
+  まで低下 = 決定論的な大歩幅輸送。return @100 mean_chain −4.38(×10 −5.37、固定対照 −5.05)。
+- CartPole ×100(50 upd): α→0.0015-0.0028、τ→0.07-0.13(床 0.014-0.028)だが粒子雲は不変
+  (chain 停止)、greedy @50 29.6 vs 固定 67.2 = 悪化。
+- 凍結対策として `langevin_schedule_bound=sigmoid` を追加し tau_lr100_sig で再実行。

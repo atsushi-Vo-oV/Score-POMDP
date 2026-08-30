@@ -107,6 +107,7 @@ _MODEL_KEYS = frozenset(
         "langevin_temperature_learnable",
         "langevin_warm_start",
         "langevin_step_size_learnable",
+        "langevin_schedule_bound",
         "particle_clip",
         "score_clip",
         "energy_hidden",
@@ -173,6 +174,7 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         "langevin_temperature_learnable": False,
         "langevin_warm_start": False,
         "langevin_step_size_learnable": False,
+        "langevin_schedule_bound": "clamp",
         "policy_head_kind": "mlp",
         "alpha_pieces": 16,
         "alpha_temperature": 1.0,
@@ -414,6 +416,11 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
         section["langevin_step_size_learnable"],
         "model.langevin_step_size_learnable",
     )
+    bound = _nonempty_string(
+        section["langevin_schedule_bound"], "model.langevin_schedule_bound"
+    )
+    if bound not in {"clamp", "sigmoid"}:
+        raise ConfigError("model.langevin_schedule_bound must be clamp or sigmoid")
     for key in ("particle_clip", "score_clip"):
         _number(section[key], f"model.{key}", minimum=0.0)
     _positive_integer_list(section["energy_hidden"], "model.energy_hidden")

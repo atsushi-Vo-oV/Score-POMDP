@@ -58,6 +58,39 @@ _LOG_TEMPERATURE_MAX = math.log(4.0)
 # discretised chain away from a frozen or numerically unstable regime.
 _LOG_STEP_SIZE_MIN = math.log(1e-4)
 _LOG_STEP_SIZE_MAX = math.log(0.5)
+_SCHEDULE_BOUNDS = ("clamp", "sigmoid")
+_LOGIT_EPS = 1e-6
+
+
+def _bound_log_schedule(
+    raw: torch.Tensor, low: float, high: float, mode: str
+) -> torch.Tensor:
+    """Map a raw schedule parameter to a bounded log value.
+
+    ``clamp`` is the original hard projection: outside ``[low, high]`` the
+    gradient is exactly zero, so a parameter pushed past a bound can never
+    return.  ``sigmoid`` parameterises ``low + (high - low) * sigmoid(raw)``,
+    which keeps a non-zero gradient everywhere and approaches the bounds only
+    asymptotically.
+    """
+
+    if mode == "clamp":
+        return raw.clamp(low, high)
+    if mode == "sigmoid":
+        return low + (high - low) * torch.sigmoid(raw)
+    raise ValueError(f"unsupported schedule bound: {mode}")
+
+
+def _unbound_log_schedule(value: float, low: float, high: float, mode: str) -> float:
+    """Inverse of :func:`_bound_log_schedule` for parameter initialisation."""
+
+    if mode == "clamp":
+        return float(value)
+    if mode == "sigmoid":
+        fraction = (float(value) - low) / (high - low)
+        fraction = min(max(fraction, _LOGIT_EPS), 1.0 - _LOGIT_EPS)
+        return math.log(fraction / (1.0 - fraction))
+    raise ValueError(f"unsupported schedule bound: {mode}")
 
 
 class EnergyBelief(nn.Module):
@@ -76,7 +109,10 @@ class EnergyBelief(nn.Module):
     becomes a trained parameter.  ``langevin_step_size_learnable`` likewise
     turns the per-step drift schedule ``alpha_l`` into a trained parameter
     initialised at the configured step size, overriding the ``step_size``
-    argument of the update.  ``langevin_warm_start`` initialises the chain
+    argument of the update.  ``langevin_schedule_bound`` selects how the
+    learned schedules are kept inside their ranges (``clamp`` = hard
+    projection with a dead gradient outside, ``sigmoid`` = smooth bound with
+    a live gradient everywhere).  ``langevin_warm_start`` initialises the chain
     of a recursive step at the previous particles instead of fresh noise, which
     turns the particle positions themselves into a memory carrier.
     """
@@ -96,8 +132,12 @@ class EnergyBelief(nn.Module):
         langevin_step_size_learnable: bool = False,
         langevin_step_size: float | None = None,
         langevin_steps: int | None = None,
+        langevin_schedule_bound: str = "clamp",
     ) -> None:
         super().__init__()
+        if langevin_schedule_bound not in _SCHEDULE_BOUNDS:
+            raise ValueError("langevin_schedule_bound must be clamp or sigmoid")
+        self.langevin_schedule_bound = str(langevin_schedule_bound)
         self.observation_dim = observation_dim
         self.state_dim = state_dim
         self.action_feature_dim = action_feature_dim
@@ -113,7 +153,15 @@ class EnergyBelief(nn.Module):
                     "a learnable temperature schedule needs a positive langevin_steps"
                 )
             self.langevin_log_temperature: nn.Parameter | None = nn.Parameter(
-                torch.full((int(langevin_steps),), math.log(self.langevin_temperature))
+                torch.full(
+                    (int(langevin_steps),),
+                    _unbound_log_schedule(
+                        math.log(self.langevin_temperature),
+                        _LOG_TEMPERATURE_MIN,
+                        _LOG_TEMPERATURE_MAX,
+                        self.langevin_schedule_bound,
+                    ),
+                )
             )
         else:
             self.langevin_log_temperature = None
@@ -128,7 +176,13 @@ class EnergyBelief(nn.Module):
                 )
             self.langevin_log_step_size: nn.Parameter | None = nn.Parameter(
                 torch.full(
-                    (int(langevin_steps),), math.log(float(langevin_step_size))
+                    (int(langevin_steps),),
+                    _unbound_log_schedule(
+                        math.log(float(langevin_step_size)),
+                        _LOG_STEP_SIZE_MIN,
+                        _LOG_STEP_SIZE_MAX,
+                        self.langevin_schedule_bound,
+                    ),
                 )
             )
         else:
@@ -423,6 +477,30 @@ class EnergyBelief(nn.Module):
         )
         return initial_noise, langevin_noise
 
+    def temperature_schedule(self) -> torch.Tensor | None:
+        """Effective per-step ``tau_l`` (bounded, exponentiated) or ``None``."""
+
+        if self.langevin_log_temperature is None:
+            return None
+        return _bound_log_schedule(
+            self.langevin_log_temperature,
+            _LOG_TEMPERATURE_MIN,
+            _LOG_TEMPERATURE_MAX,
+            self.langevin_schedule_bound,
+        ).exp()
+
+    def step_size_schedule(self) -> torch.Tensor | None:
+        """Effective per-step ``alpha_l`` (bounded, exponentiated) or ``None``."""
+
+        if self.langevin_log_step_size is None:
+            return None
+        return _bound_log_schedule(
+            self.langevin_log_step_size,
+            _LOG_STEP_SIZE_MIN,
+            _LOG_STEP_SIZE_MAX,
+            self.langevin_schedule_bound,
+        ).exp()
+
     def particles_from_noise(
         self,
         observation: torch.Tensor,
@@ -512,9 +590,7 @@ class EnergyBelief(nn.Module):
                 raise ValueError(
                     "the learned temperature schedule length must equal the Langevin step count"
                 )
-            step_temperatures = self.langevin_log_temperature.clamp(
-                _LOG_TEMPERATURE_MIN, _LOG_TEMPERATURE_MAX
-            ).exp()
+            step_temperatures = self.temperature_schedule()
 
         if self.langevin_log_step_size is None:
             step_alphas = None
@@ -523,9 +599,7 @@ class EnergyBelief(nn.Module):
                 raise ValueError(
                     "the learned step-size schedule length must equal the Langevin step count"
                 )
-            step_alphas = self.langevin_log_step_size.clamp(
-                _LOG_STEP_SIZE_MIN, _LOG_STEP_SIZE_MAX
-            ).exp()
+            step_alphas = self.step_size_schedule()
 
         with torch.set_grad_enabled(track_grad):
             for step_index, alpha in enumerate(steps):
