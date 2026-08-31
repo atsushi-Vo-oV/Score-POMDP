@@ -32,6 +32,7 @@ _LEGACY_PPO_DEFAULTS: dict[str, object] = {
     "algorithm": "ppo",
     "p3o_eta": 1.0,
     "p3o_resample_interval": 5,
+    "p3o_demo_slots": 0,
 }
 _LEGACY_MODEL_DEFAULTS: dict[str, object] = {
     "langevin_temperature": 1.0,

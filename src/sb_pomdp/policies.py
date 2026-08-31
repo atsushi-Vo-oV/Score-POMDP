@@ -164,6 +164,47 @@ class DiffusionPolicy(nn.Module):
         action = torch.tanh(raw_action) * self.action_scale + self.action_bias
         return action, torch.stack(chain, dim=1), torch.stack(log_probabilities, dim=1)
 
+    def forward_noised_chain(
+        self,
+        actions: torch.Tensor,
+        *,
+        generator: torch.Generator | None = None,
+    ) -> torch.Tensor:
+        """Build a forward-diffused chain whose clean endpoint is ``actions``.
+
+        ``actions`` are environment-space actions inside the bounds.  The
+        returned ``[batch, num_steps + 1, action_dim]`` chain matches the
+        layout produced by :meth:`sample` (index 0 most noisy, index -1 the
+        raw pre-tanh action), with each intermediate element drawn from the
+        DDPM forward marginal ``q(x_t | x_0)``.  Evaluating
+        :meth:`log_prob_chain` on it is the standard variational
+        (denoising) surrogate for the log-likelihood of an external action -
+        the imitation loss used for demonstration slots.
+        """
+
+        if actions.ndim != 2 or actions.shape[-1] != self.action_dim:
+            raise ValueError(
+                f"expected actions of shape [batch, {self.action_dim}], "
+                f"got {tuple(actions.shape)}"
+            )
+        squashed = (actions - self.action_bias) / self.action_scale
+        squashed = squashed.clamp(-1.0 + 1e-6, 1.0 - 1e-6)
+        raw = torch.atanh(squashed)
+        pieces = []
+        for chain_index in range(self.num_steps):
+            alpha_bar = self.alpha_bars[self.num_steps - 1 - chain_index].to(raw.dtype)
+            noise = torch.randn(
+                raw.shape,
+                device=raw.device,
+                dtype=raw.dtype,
+                generator=generator,
+            )
+            pieces.append(
+                torch.sqrt(alpha_bar) * raw + torch.sqrt(1.0 - alpha_bar) * noise
+            )
+        pieces.append(raw)
+        return torch.stack(pieces, dim=1)
+
     def log_prob_chain(
         self,
         condition: torch.Tensor,

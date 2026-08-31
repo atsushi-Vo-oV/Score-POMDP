@@ -49,3 +49,29 @@ pjsub jobs/ld2d_p3o_wml/ds_wml.sh
   p3o resample 行(mean_unique_ancestors)。
 - 脱出が観測されなければ、次の一手はデモ種(スクリプト light-visit 軌道の
   buffer 注入)または情報利得シェーピング。
+
+## デモ種入り WML(第 2 弾、config/ld2d_p3o_wml_demo.json)
+
+素の WML の結果: 200 updates 完走も return は PPO と同帯で振動(transformer
+−220 / alpha −86 / deepsets −485、いずれも最終単点)。stochastic 評価軌跡は
+max x1 7〜10 と**光平面を越えていた**のに選抜が光訪問を増幅しなかった =
+「光を見ても belief が観測を使えないので return が良くならない」という
+**探索と belief の鶏と卵**を確認。
+
+対策として 64 スロット中 8 を **スクリプト passive-Kalman 制御**(参照
+return ≈ −15.5、全学習方策より上)に置き換える。デモ行動は forward-noised
+拡散チェーン(DDPM の変分下界)を通じて重み付き最尤に入り、初期は実質 BC、
+方策が追い付くと通常の選抜に戻る。デモ制御器は真のタスク定数で Kalman を
+回す(デモ生成のみのオラクル、学習器には行動列しか渡らない)。
+
+```bash
+pjsub jobs/ld2d_p3o_wml/debug_demo.sh
+pjsub jobs/ld2d_p3o_wml/score_demo.sh
+pjsub jobs/ld2d_p3o_wml/alpha_demo.sh
+pjsub jobs/ld2d_p3o_wml/ds_demo.sh
+```
+
+判定: (1) stochastic 評価が passive-KF 帯(−15〜−30)に近づくか =
+「行動を与えれば belief は観測を活用できるか」の直接テスト、(2) 3 encoder
+間の差(ここで初めて belief 表現の質が露出するはず)、(3) 収束後に demo
+重みが下がるか(episodes.csv の slot 別 return)。

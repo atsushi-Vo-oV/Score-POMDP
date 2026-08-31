@@ -154,6 +154,7 @@ _PPO_KEYS = frozenset(
         "algorithm",
         "p3o_eta",
         "p3o_resample_interval",
+        "p3o_demo_slots",
     }
 )
 
@@ -174,6 +175,7 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         "algorithm": "ppo",
         "p3o_eta": 1.0,
         "p3o_resample_interval": 5,
+        "p3o_demo_slots": 0,
     },
     # Langevin tempering and warm starts arrived after the first campaigns; at
     # these defaults the belief update is bit-identical to the original ULA.
@@ -520,6 +522,7 @@ def _validate_ppo(value: Any) -> Mapping[str, Any]:
     _positive_number(section["p3o_eta"], "ppo.p3o_eta")
     if _integer(section["p3o_resample_interval"], "ppo.p3o_resample_interval") <= 0:
         raise ConfigError("ppo.p3o_resample_interval must be positive")
+    _integer(section["p3o_demo_slots"], "ppo.p3o_demo_slots", minimum=0)
     for key in ("gamma", "gae_lambda"):
         _number(
             section[key],

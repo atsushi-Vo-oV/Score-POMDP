@@ -481,6 +481,67 @@ def model_for_environment(
     return model.to(device)
 
 
+class _PassiveKalmanDemo:
+    """Scripted passive-Kalman homing controller for light_dark demo slots.
+
+    The controller keeps an exact diagonal Kalman estimate of the position
+    (the task is linear-Gaussian given the noise schedule evaluated at its own
+    estimate), always drives the estimate toward the origin, and never visits
+    the light.  It uses the true task constants internally - a demonstration
+    source, not part of the learned model; only its observable behaviour
+    (actions) reaches the learner.
+    """
+
+    def __init__(self, environment: Any, slots: int) -> None:
+        for attribute in (
+            "light_position",
+            "initial_mean",
+            "initial_std",
+            "noise_gain",
+            "observation_noise_std",
+            "process_noise_std",
+            "max_action",
+            "dimension",
+        ):
+            if not hasattr(environment, attribute):
+                raise ValueError(
+                    "ppo.p3o_demo_slots requires a light_dark environment"
+                )
+        self._light = float(environment.light_position)
+        self._noise_gain = float(environment.noise_gain)
+        self._observation_noise = float(environment.observation_noise_std)
+        self._process_noise = float(environment.process_noise_std)
+        self._max_action = float(environment.max_action)
+        self._initial_mean = float(environment.initial_mean)
+        self._initial_variance = float(environment.initial_std) ** 2
+        self._dimension = int(environment.dimension)
+        self._slots = int(slots)
+        self._mean = np.full((self._slots, self._dimension), self._initial_mean)
+        self._variance = np.full(
+            (self._slots, self._dimension), self._initial_variance
+        )
+
+    def actions(self, observations: np.ndarray, initial: np.ndarray) -> np.ndarray:
+        """One control step for every demo slot given the current observation."""
+
+        reset = np.asarray(initial[: self._slots], dtype=bool)
+        self._mean[reset] = self._initial_mean
+        self._variance[reset] = self._initial_variance
+        estimate_x1 = self._mean[:, 0]
+        sigma_squared = (
+            self._noise_gain * (self._light - estimate_x1) ** 2
+            + self._observation_noise**2
+        )
+        gain = self._variance / (self._variance + sigma_squared[:, None])
+        innovation = observations[: self._slots].astype(np.float64) - self._mean
+        self._mean = self._mean + gain * innovation
+        self._variance = (1.0 - gain) * self._variance
+        action = np.clip(-self._mean, -self._max_action, self._max_action)
+        self._mean = self._mean + action
+        self._variance = self._variance + self._process_noise**2
+        return action.astype(np.float32)
+
+
 def _tilted_weights(segment_rewards: np.ndarray, eta: float) -> np.ndarray:
     """Normalised exp(eta * r) weights of one resampling segment."""
 
@@ -1760,6 +1821,23 @@ def train_single(
     p3o_mode = algorithm == "p3o_wml"
     p3o_eta = float(ppo_config.get("p3o_eta", 1.0))
     p3o_interval = int(ppo_config.get("p3o_resample_interval", 5))
+    p3o_demo_count = int(ppo_config.get("p3o_demo_slots", 0))
+    if p3o_demo_count and not p3o_mode:
+        raise ValueError("ppo.p3o_demo_slots requires ppo.algorithm=p3o_wml")
+    if p3o_demo_count and p3o_demo_count >= batch.size:
+        raise ValueError("ppo.p3o_demo_slots must leave at least one policy slot")
+    if p3o_demo_count and p3o_interval < int(ppo_config["rollout_steps"]):
+        raise ValueError(
+            "demo slots do not support mid-episode resampling yet: set "
+            "ppo.p3o_resample_interval >= ppo.rollout_steps"
+        )
+    if p3o_demo_count and first_environment.action_spec.is_discrete:
+        raise ValueError("ppo.p3o_demo_slots supports continuous light_dark tasks only")
+    p3o_demo = (
+        _PassiveKalmanDemo(first_environment, p3o_demo_count)
+        if p3o_demo_count
+        else None
+    )
     segment_started = time.perf_counter()
 
     def current_checkpoint_payload(update: int, global_step: int) -> dict[str, Any]:
@@ -1859,6 +1937,30 @@ def train_single(
                 pre_tanh_action,
                 old_value,
             ) = _policy_from_particles(model, particles, scores, deterministic=False)
+            if p3o_demo is not None:
+                demo_actions_np = p3o_demo.actions(
+                    context.observation.detach().cpu().numpy(),
+                    context.initial.detach().cpu().numpy(),
+                )
+                demo_actions = torch.as_tensor(
+                    demo_actions_np, dtype=action.dtype, device=device
+                )
+                assert model.diffusion_policy is not None
+                assert diffusion_chain is not None
+                demo_chain = model.diffusion_policy.forward_noised_chain(demo_actions)
+                with torch.no_grad():
+                    demo_condition = model.encode(
+                        particles[:p3o_demo_count], scores[:p3o_demo_count]
+                    )
+                    demo_log_prob, _ = model.diffusion_policy.log_prob_chain(
+                        demo_condition, demo_chain
+                    )
+                action = action.clone()
+                action[:p3o_demo_count] = demo_actions
+                diffusion_chain = diffusion_chain.clone()
+                diffusion_chain[:p3o_demo_count] = demo_chain
+                old_log_prob = old_log_prob.clone()
+                old_log_prob[:p3o_demo_count] = demo_log_prob
             environment_action = _environment_actions(first_environment.action_spec, action)
             # ``action_features`` is a pure function of the sampled action.  It
             # is materialised here because a truncation bootstrap conditions the
