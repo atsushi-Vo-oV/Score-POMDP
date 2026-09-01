@@ -44,6 +44,8 @@ _LEGACY_MODEL_DEFAULTS: dict[str, object] = {
     "alpha_pieces": 16,
     "alpha_temperature": 1.0,
     "alpha_use_scores": False,
+    "observation_prediction_coef": 0.0,
+    "observation_predictor_hidden": [64],
 }
 _LEGACY_COMPARISON_DEFAULTS: dict[str, object] = {
     "pf_hidden": [64],

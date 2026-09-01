@@ -17,6 +17,7 @@ from .networks import (
     AlphaPoolBeliefEncoder,
     BeliefSetEncoder,
     DeepSetsBeliefEncoder,
+    ObservationPredictor,
     make_mlp,
 )
 
@@ -444,6 +445,20 @@ class ScoreBeliefActorCritic(nn.Module):
                 dropout=model_config["dropout"],
             )
         condition_dim = model_config["d_model"]
+        self.observation_prediction_coef = float(
+            model_config.get("observation_prediction_coef", 0.0)
+        )
+        if self.observation_prediction_coef > 0.0:
+            self.observation_predictor: ObservationPredictor | None = (
+                ObservationPredictor(
+                    state_dim,
+                    action_feature_dim,
+                    observation_dim,
+                    model_config.get("observation_predictor_hidden", [64]),
+                )
+            )
+        else:
+            self.observation_predictor = None
         if self.policy_head_kind == "alpha_lse":
             # A convex (PWLC) value functional; with the alpha_pool encoder the
             # value is exactly a smooth max of belief-linear functionals.

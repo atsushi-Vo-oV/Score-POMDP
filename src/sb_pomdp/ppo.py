@@ -347,6 +347,43 @@ def _policy_objective(
     return policy_loss, approximate_kl, clip_fraction, entropy
 
 
+def observation_prediction_loss(
+    model: ScoreBeliefActorCritic,
+    particles: torch.Tensor,
+    rollout: RolloutBatch,
+    environment_indices: torch.Tensor,
+) -> torch.Tensor:
+    """Negative predictive log-likelihood of the next observation.
+
+    ``particles`` is the replayed ``[T, group, K, state]`` belief sequence
+    with its chain graph attached, so this loss back-propagates through the
+    ULA sampler into the energy networks - direct, state-free supervision of
+    the belief.  Targets are the agent's own next observations; steps that
+    end an episode have no successor inside it and are masked out.
+    """
+
+    predictor = getattr(model, "observation_predictor", None)
+    if predictor is None:
+        raise ValueError("the model has no observation predictor")
+    observations = rollout.observations[:, environment_indices]
+    dones = rollout.dones[:, environment_indices]
+    previous_actions = rollout.previous_actions[:, environment_indices]
+    if particles.shape[0] < 2:
+        return particles.new_zeros(())
+    source = particles[:-1]
+    targets = observations[1:]
+    actions = previous_actions[1:]
+    valid = (~dones[:-1]).reshape(-1)
+    steps, group = source.shape[0], source.shape[1]
+    log_likelihood = predictor.log_likelihood(
+        source.reshape(steps * group, *source.shape[2:]),
+        actions.reshape(steps * group, -1),
+        targets.reshape(steps * group, -1),
+    )
+    mask = valid.to(log_likelihood.dtype)
+    return -(log_likelihood * mask).sum() / mask.sum().clamp_min(1.0)
+
+
 def _wml_policy_objective(
     model: ScoreBeliefActorCritic,
     condition: torch.Tensor,
@@ -528,6 +565,17 @@ def update_ppo(
                     + float(ppo_config["value_coef"]) * value_loss
                     - float(ppo_config["entropy_coef"]) * entropy
                 )
+                if getattr(model, "observation_predictor", None) is not None:
+                    prediction_loss = observation_prediction_loss(
+                        model,
+                        particles,
+                        rollout,
+                        environment_indices,
+                    )
+                    total_loss = (
+                        total_loss
+                        + float(model.observation_prediction_coef) * prediction_loss
+                    )
                 (total_loss * microbatch_weight).backward()
 
                 microbatch_values = {

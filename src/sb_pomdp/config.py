@@ -128,6 +128,8 @@ _MODEL_KEYS = frozenset(
         "alpha_pieces",
         "alpha_temperature",
         "alpha_use_scores",
+        "observation_prediction_coef",
+        "observation_predictor_hidden",
         "belief_gradient_mode",
     }
 )
@@ -189,6 +191,10 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         "alpha_pieces": 16,
         "alpha_temperature": 1.0,
         "alpha_use_scores": False,
+        # Predictive-sufficiency belief supervision arrived last; zero keeps
+        # the auxiliary head absent and the update bit-identical.
+        "observation_prediction_coef": 0.0,
+        "observation_predictor_hidden": [64],
     },
     # The particle-filter and Elman-RNN baselines arrived after the first
     # campaigns; legacy resolved configs compare equal at these inert defaults.
@@ -425,6 +431,14 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
     _boolean(
         section["langevin_step_size_learnable"],
         "model.langevin_step_size_learnable",
+    )
+    _number(
+        section["observation_prediction_coef"],
+        "model.observation_prediction_coef",
+        minimum=0.0,
+    )
+    _positive_integer_list(
+        section["observation_predictor_hidden"], "model.observation_predictor_hidden"
     )
     bound = _nonempty_string(
         section["langevin_schedule_bound"], "model.langevin_schedule_bound"

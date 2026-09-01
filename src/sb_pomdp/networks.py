@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from itertools import pairwise
 
@@ -182,6 +183,75 @@ class AlphaPoolBeliefEncoder(nn.Module):
             torch.cat((particles, scores), dim=-1) if self.use_scores else particles
         )
         return self.trunk(inputs).mean(dim=1)
+
+
+class ObservationPredictor(nn.Module):
+    """Heteroscedastic next-observation density from particles and the action.
+
+    Predictive-sufficiency auxiliary supervision for the belief: maximising
+    ``log (1/K) sum_k N(o_{t+1}; mu(s_k, a_t), sigma(s_k, a_t))`` forces the
+    particle set to carry exactly the information needed to predict future
+    observations - a sufficient statistic in the predictive-state sense -
+    using nothing but the agent's own observation/action stream.  The
+    predictor reads particle positions only (never score vectors), so the
+    observation-feature shortcut through the encoder cannot satisfy this
+    loss; the gradient lands on the belief chain.  The head is auxiliary:
+    policy and value never consume its output.
+    """
+
+    _LOG_STD_MIN = -4.0
+    _LOG_STD_MAX = 3.0
+
+    def __init__(
+        self,
+        state_dim: int,
+        action_feature_dim: int,
+        observation_dim: int,
+        hidden_dims: Sequence[int],
+    ) -> None:
+        super().__init__()
+        if state_dim <= 0 or action_feature_dim < 0 or observation_dim <= 0:
+            raise ValueError("observation predictor dimensions must be positive")
+        self.state_dim = state_dim
+        self.action_feature_dim = action_feature_dim
+        self.observation_dim = observation_dim
+        self.network = make_mlp(
+            state_dim + action_feature_dim,
+            hidden_dims,
+            2 * observation_dim,
+        )
+
+    def log_likelihood(
+        self,
+        particles: torch.Tensor,
+        action_features: torch.Tensor,
+        next_observation: torch.Tensor,
+    ) -> torch.Tensor:
+        """Mixture log-likelihood ``log (1/K) sum_k p(o' | s_k, a)`` per batch row."""
+
+        if particles.ndim != 3 or particles.shape[-1] != self.state_dim:
+            raise ValueError(
+                f"expected particles [batch, K, {self.state_dim}], got {tuple(particles.shape)}"
+            )
+        batch, num_particles = particles.shape[0], particles.shape[1]
+        if action_features.shape != (batch, self.action_feature_dim):
+            raise ValueError("action features must have shape [batch, action_feature_dim]")
+        if next_observation.shape != (batch, self.observation_dim):
+            raise ValueError("next observation must have shape [batch, observation_dim]")
+        expanded_actions = action_features[:, None, :].expand(
+            batch, num_particles, self.action_feature_dim
+        )
+        outputs = self.network(torch.cat((particles, expanded_actions), dim=-1))
+        mean, log_std = outputs.chunk(2, dim=-1)
+        log_std = log_std.clamp(self._LOG_STD_MIN, self._LOG_STD_MAX)
+        target = next_observation[:, None, :]
+        per_dim = (
+            -0.5 * ((target - mean) / log_std.exp()).square()
+            - log_std
+            - 0.5 * math.log(2.0 * math.pi)
+        )
+        per_particle = per_dim.sum(dim=-1)
+        return torch.logsumexp(per_particle, dim=1) - math.log(num_particles)
 
 
 class AlphaLSEHead(nn.Module):
