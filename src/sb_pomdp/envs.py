@@ -8,7 +8,7 @@ requiring Gymnasium as a dependency.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -864,6 +864,226 @@ _MOUNTAIN_CAR_KEYS = {
     "goal_velocity",
     "power",
 }
+
+def _bivariate_normal(
+    x: np.ndarray, y: np.ndarray, sigma_x: float, sigma_y: float, mu_x: float, mu_y: float
+) -> np.ndarray:
+    """matplotlib.mlab.bivariate_normal with zero correlation (normalised density)."""
+
+    z = ((x - mu_x) / sigma_x) ** 2 + ((y - mu_y) / sigma_y) ** 2
+    return np.exp(-0.5 * z) / (2.0 * np.pi * sigma_x * sigma_y)
+
+
+_MOUNTAIN_HIKE_MEANS = ((0.5, 0.5), (0.0, 0.2), (-0.375, -0.5))
+_MOUNTAIN_HIKE_SIGMAS = ((0.75, 0.1), (0.1, 0.75), (0.75, 0.1))
+_MOUNTAIN_HIKE_FACTORS = (1.0, 0.8, 0.55)
+
+
+def mountain_hike_terrain(
+    x: np.ndarray | float,
+    y: np.ndarray | float,
+    *,
+    hill_height: float = 4.0,
+    shaping_power: float = 4.0,
+) -> np.ndarray:
+    """The Mountain Hike reward map ``r(x, y)`` in internal ``[-1, 1]^2`` coordinates.
+
+    Reproduces ``DeathValleyEnv.get_reward`` of the DVRL reference code
+    (Igl et al. 2018): the element-wise maximum over three axis-aligned
+    Gaussian ridges (``factor * pdf / 3``), shaped as ``1 - (1 - Z)^p``, scaled
+    by the hill height, shifted by ``-(0.5 + h)``, plus the linear tilt
+    ``(x + y) / 4``.  Note that the reference code passes the ``sigma``
+    entries to ``bivariate_normal`` as standard deviations.
+    """
+
+    x_arr = np.asarray(x, dtype=np.float64)
+    y_arr = np.asarray(y, dtype=np.float64)
+    z = np.zeros(np.broadcast(x_arr, y_arr).shape, dtype=np.float64)
+    count = len(_MOUNTAIN_HIKE_MEANS)
+    for (mu_x, mu_y), (sigma_x, sigma_y), factor in zip(
+        _MOUNTAIN_HIKE_MEANS, _MOUNTAIN_HIKE_SIGMAS, _MOUNTAIN_HIKE_FACTORS
+    ):
+        z = np.maximum(
+            z, factor * _bivariate_normal(x_arr, y_arr, sigma_x, sigma_y, mu_x, mu_y) / count
+        )
+    z = 1.0 - np.power(1.0 - z, shaping_power)
+    z = z * hill_height - (0.5 + hill_height) + (x_arr + y_arr) / 4.0
+    return z
+
+
+class MountainHikeEnv(_BaseMaskedEnv):
+    """Mountain Hike (Igl et al. 2018, DVRL): noisy 2D terrain navigation.
+
+    Faithful to the reference ``DeathValleyEnv`` with the ``mountainHike.yaml``
+    constants, expressed in the paper's coordinates (internal box scaled by
+    ``box_scale = 10``): the agent starts near ``(-8.5, -8.5)``, moves by a
+    norm-clipped step of at most ``max_action`` (0.5), suffers Gaussian
+    transition noise (std 0.25), observes its position with Gaussian noise of
+    ``observation_noise_std`` (the paper sweeps 0 / 1.5 / 3), and is rewarded by
+    the terrain map every step (minus ``action_cost * ||a||``), with a flat
+    penalty outside the box.  Episodes are time-limited (75 steps); the goal
+    region neither pays nor terminates by default, exactly like the reference
+    configuration.  The latent state is the true position, never observed.
+    """
+
+    state_dim = 2
+    observation_dim = 2
+    oracle_dim = 2
+
+    def __init__(
+        self,
+        *,
+        horizon: int = 75,
+        observation_noise_std: float = 3.0,
+        seed: int | None = None,
+        box_scale: float = 10.0,
+        transition_std: float = 0.25,
+        max_action: float = 0.5,
+        start_mean: Sequence[float] = (-8.5, -8.5),
+        start_std: float = 1.0,
+        action_cost: float = 0.01,
+        outside_box_cost: float = -1.5,
+        hill_height: float = 4.0,
+        shaping_power: float = 4.0,
+        goal_position: Sequence[float] = (7.0, 5.0),
+        goal_radius: float = 1.0,
+        goal_reward: float = 0.0,
+        goal_end: bool = False,
+    ) -> None:
+        super().__init__(
+            horizon=horizon,
+            observation_noise_std=observation_noise_std,
+            seed=seed,
+        )
+        start = np.asarray(start_mean, dtype=np.float64).reshape(-1)
+        goal = np.asarray(goal_position, dtype=np.float64).reshape(-1)
+        if start.shape != (2,) or goal.shape != (2,):
+            raise ValueError("start_mean and goal_position must be 2-vectors")
+        for name, value in (
+            ("box_scale", box_scale),
+            ("max_action", max_action),
+            ("hill_height", hill_height),
+            ("shaping_power", shaping_power),
+            ("goal_radius", goal_radius),
+        ):
+            if not np.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be positive")
+        for name, value in (
+            ("transition_std", transition_std),
+            ("start_std", start_std),
+            ("action_cost", action_cost),
+        ):
+            if not np.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be non-negative")
+        if not np.isfinite(outside_box_cost) or not np.isfinite(goal_reward):
+            raise ValueError("outside_box_cost and goal_reward must be finite")
+        self.box_scale = float(box_scale)
+        self.transition_std = float(transition_std)
+        self.max_action = float(max_action)
+        self.start_mean = start
+        self.start_std = float(start_std)
+        self.action_cost = float(action_cost)
+        self.outside_box_cost = float(outside_box_cost)
+        self.hill_height = float(hill_height)
+        self.shaping_power = float(shaping_power)
+        self.goal_position = goal
+        self.goal_radius = float(goal_radius)
+        self.goal_reward = float(goal_reward)
+        self.goal_end = bool(goal_end)
+        self.action_spec = ActionSpec.continuous(-self.max_action, self.max_action, shape=(2,))
+
+    def terrain_reward(self, position: np.ndarray) -> float:
+        """Reward map evaluated at a position given in paper (scaled) coordinates."""
+
+        internal = np.asarray(position, dtype=np.float64) / self.box_scale
+        return float(
+            mountain_hike_terrain(
+                internal[0],
+                internal[1],
+                hill_height=self.hill_height,
+                shaping_power=self.shaping_power,
+            )
+        )
+
+    def _outside_box(self) -> bool:
+        assert self._state is not None
+        return bool(np.any(np.abs(self._state) > self.box_scale))
+
+    def _reached_goal(self) -> bool:
+        assert self._state is not None
+        return bool(np.linalg.norm(self._state - self.goal_position) < self.goal_radius)
+
+    def _observation(self) -> np.ndarray:
+        assert self._state is not None
+        return self._add_observation_noise(np.asarray(self._state, dtype=np.float64))
+
+    def _info(self) -> dict[str, Any]:
+        info = super()._info()
+        info["terrain_reward"] = self.terrain_reward(self._state)
+        info["outside_box"] = self._outside_box()
+        info["distance_to_goal"] = float(np.linalg.norm(self._state - self.goal_position))
+        return info
+
+    def oracle_features(self) -> np.ndarray:
+        """Noise-free position squashed to (-1, 1)."""
+
+        if self._state is None:
+            raise RuntimeError("The environment has not been reset")
+        return np.asarray(np.tanh(self._state / self.box_scale), dtype=np.float32)
+
+    def reset(self, seed: int | None = None) -> tuple[np.ndarray, dict[str, Any]]:
+        self._start_reset(seed)
+        self._state = self._rng.normal(
+            loc=self.start_mean,
+            scale=self.start_std,
+            size=2,
+        ).astype(np.float64)
+        return self._observation(), self._info()
+
+    def step(self, action: Any) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+        self._before_step()
+        selected = self.action_spec.validate(action)
+        assert isinstance(selected, np.ndarray) and self._state is not None
+        proposed = np.asarray(selected, dtype=np.float64)
+        norm = float(np.linalg.norm(proposed))
+        action_penalty = self.action_cost * norm
+        if norm > self.max_action:
+            proposed = proposed / norm * self.max_action
+        noise = (
+            self._rng.normal(loc=0.0, scale=self.transition_std, size=2)
+            if self.transition_std > 0.0
+            else np.zeros(2)
+        )
+        self._state = self._state + proposed + noise
+        reached = self._reached_goal()
+        if reached and self.goal_reward != 0.0:
+            reward = self.goal_reward
+        elif self._outside_box():
+            reward = self.outside_box_cost * self.hill_height
+        else:
+            reward = self.terrain_reward(self._state)
+        terminated, truncated = self._finish_step(bool(self.goal_end and reached))
+        return self._observation(), float(reward - action_penalty), terminated, truncated, self._info()
+
+
+_MOUNTAIN_HIKE_KEYS = {
+    "horizon",
+    "observation_noise_std",
+    "box_scale",
+    "transition_std",
+    "max_action",
+    "start_mean",
+    "start_std",
+    "action_cost",
+    "outside_box_cost",
+    "hill_height",
+    "shaping_power",
+    "goal_position",
+    "goal_radius",
+    "goal_reward",
+    "goal_end",
+}
+
 _LIGHT_DARK_KEYS = {
     "horizon",
     "observation_noise_std",
@@ -922,8 +1142,11 @@ def make_env(
     if key in {"lightdark", "lightdarknd"}:
         kwargs = _factory_kwargs(config, _LIGHT_DARK_KEYS)
         return LightDarkNDEnv(seed=seed, **kwargs)
+    if key in {"mountainhike", "mountainhikev0", "deathvalley", "deathvalleyv0"}:
+        kwargs = _factory_kwargs(config, _MOUNTAIN_HIKE_KEYS)
+        return MountainHikeEnv(seed=seed, **kwargs)
 
     raise ValueError(
         f"Unknown environment {name!r}; expected masked_cartpole, masked_pendulum, "
-        "masked_mountain_car_continuous, or light_dark"
+        "masked_mountain_car_continuous, light_dark, or mountain_hike"
     )

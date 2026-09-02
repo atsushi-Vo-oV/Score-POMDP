@@ -46,6 +46,26 @@ _EXPERIMENT_KEYS = frozenset(
 _ENVIRONMENT_KEYS = frozenset({"tasks"})
 _ENVIRONMENT_TASK_KEYS = frozenset({"horizon", "observation_noise_std"})
 _LIGHT_DARK_ALIASES = frozenset({"lightdark", "lightdarknd"})
+_MOUNTAIN_HIKE_ALIASES = frozenset({"mountainhike", "mountainhikev0", "deathvalley", "deathvalleyv0"})
+_MOUNTAIN_HIKE_TASK_KEYS = frozenset(
+    {
+        "horizon",
+        "observation_noise_std",
+        "box_scale",
+        "transition_std",
+        "max_action",
+        "start_mean",
+        "start_std",
+        "action_cost",
+        "outside_box_cost",
+        "hill_height",
+        "shaping_power",
+        "goal_position",
+        "goal_radius",
+        "goal_reward",
+        "goal_end",
+    }
+)
 
 # Light-Dark reward and geometry knobs promoted from hard-coded constants after
 # the production campaign was submitted.  Every default is the constant that
@@ -368,6 +388,27 @@ def _normalized_task_name(task_name: str) -> str:
     return "".join(character for character in task_name.lower() if character.isalnum())
 
 
+def _validate_mountain_hike_task(task: Mapping[str, Any], path: str) -> None:
+    for key in ("box_scale", "max_action", "hill_height", "shaping_power", "goal_radius"):
+        if key in task:
+            _positive_number(task[key], f"{path}.{key}")
+    for key in ("transition_std", "start_std", "action_cost"):
+        if key in task:
+            _number(task[key], f"{path}.{key}", minimum=0.0)
+    for key in ("outside_box_cost", "goal_reward"):
+        if key in task:
+            _number(task[key], f"{path}.{key}")
+    for key in ("start_mean", "goal_position"):
+        if key in task:
+            value = task[key]
+            if not isinstance(value, list) or len(value) != 2:
+                raise ConfigError(f"{path}.{key} must be a 2-element array")
+            for index, item in enumerate(value):
+                _number(item, f"{path}.{key}[{index}]")
+    if "goal_end" in task:
+        _boolean(task["goal_end"], f"{path}.goal_end")
+
+
 def _validate_light_dark_task(task: Mapping[str, Any], path: str) -> None:
     """Validate the Light-Dark specific reward and geometry keys.
 
@@ -401,8 +442,16 @@ def _validate_environment(value: Any, requested_tasks: Sequence[str]) -> Mapping
         _nonempty_string(task_name, "environment.tasks key")
         if not _SAFE_COMPONENT.fullmatch(task_name):
             raise ConfigError("environment task names must be safe filename components")
-        is_light_dark = _normalized_task_name(task_name) in _LIGHT_DARK_ALIASES
-        expected_keys = _LIGHT_DARK_TASK_KEYS if is_light_dark else _ENVIRONMENT_TASK_KEYS
+        normalized_name = _normalized_task_name(task_name)
+        is_light_dark = normalized_name in _LIGHT_DARK_ALIASES
+        is_mountain_hike = normalized_name in _MOUNTAIN_HIKE_ALIASES
+        expected_keys = (
+            _LIGHT_DARK_TASK_KEYS
+            if is_light_dark
+            else _MOUNTAIN_HIKE_TASK_KEYS
+            if is_mountain_hike
+            else _ENVIRONMENT_TASK_KEYS
+        )
         path = f"environment.tasks.{task_name}"
         task = _closed_keys(task_value, path, expected_keys)
         _integer(task["horizon"], f"{path}.horizon")
@@ -413,6 +462,8 @@ def _validate_environment(value: Any, requested_tasks: Sequence[str]) -> Mapping
         )
         if is_light_dark:
             _validate_light_dark_task(task, path)
+        if is_mountain_hike:
+            _validate_mountain_hike_task(task, path)
 
     missing = [task for task in requested_tasks if task not in tasks]
     if missing:
@@ -658,6 +709,43 @@ def _validate_comparison(
     return section
 
 
+# Mountain Hike task knobs default to the DVRL reference configuration
+# (mountainHike.yaml, expressed in the paper's box_scale=10 coordinates).
+_MOUNTAIN_HIKE_TASK_DEFAULTS: dict[str, JSONValue] = {
+    "box_scale": 10.0,
+    "transition_std": 0.25,
+    "max_action": 0.5,
+    "start_mean": [-8.5, -8.5],
+    "start_std": 1.0,
+    "action_cost": 0.01,
+    "outside_box_cost": -1.5,
+    "hill_height": 4.0,
+    "shaping_power": 4.0,
+    "goal_position": [7.0, 5.0],
+    "goal_radius": 1.0,
+    "goal_reward": 0.0,
+    "goal_end": False,
+}
+
+
+def _fill_mountain_hike_task_defaults(config: dict[str, Any]) -> None:
+    """Insert the Mountain Hike task defaults in *config*, in place."""
+
+    environment = config.get("environment")
+    if not isinstance(environment, dict):
+        return
+    tasks = environment.get("tasks")
+    if not isinstance(tasks, dict):
+        return
+    for task_name, task in tasks.items():
+        if not isinstance(task_name, str) or not isinstance(task, dict):
+            continue
+        if _normalized_task_name(task_name) not in _MOUNTAIN_HIKE_ALIASES:
+            continue
+        for key, default in _MOUNTAIN_HIKE_TASK_DEFAULTS.items():
+            task.setdefault(key, deepcopy(default))
+
+
 def _fill_light_dark_task_defaults(config: dict[str, Any]) -> None:
     """Insert the Light-Dark post-campaign task keys in *config*, in place."""
 
@@ -701,6 +789,7 @@ def normalize_legacy_resolved_config(config: Mapping[str, Any]) -> dict[str, Any
         for key, default in defaults.items():
             values.setdefault(key, deepcopy(default))
     _fill_light_dark_task_defaults(result)
+    _fill_mountain_hike_task_defaults(result)
     return result
 
 
