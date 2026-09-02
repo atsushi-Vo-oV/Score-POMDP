@@ -420,6 +420,10 @@ class ScoreBeliefActorCritic(nn.Module):
             langevin_schedule_bound=str(
                 model_config.get("langevin_schedule_bound", "clamp")
             ),
+            energy_network_kind=str(model_config.get("energy_network_kind", "mlp")),
+            kan_grid_size=int(model_config.get("kan_grid_size", 8)),
+            kan_spline_order=int(model_config.get("kan_spline_order", 3)),
+            kan_grid_range=float(model_config.get("kan_grid_range", 3.0)),
         )
         if self.encoder_kind == "transformer":
             self.encoder: nn.Module = BeliefSetEncoder(

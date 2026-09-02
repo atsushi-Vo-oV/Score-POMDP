@@ -8,6 +8,7 @@ from itertools import pairwise
 
 import torch
 from torch import nn
+from torch.nn import functional
 
 
 def make_mlp(
@@ -183,6 +184,144 @@ class AlphaPoolBeliefEncoder(nn.Module):
             torch.cat((particles, scores), dim=-1) if self.use_scores else particles
         )
         return self.trunk(inputs).mean(dim=1)
+
+
+class KANLinear(nn.Module):
+    """Kolmogorov-Arnold layer: a learnable B-spline function on every edge.
+
+    Efficient-KAN formulation (Liu et al. 2024, "KAN: Kolmogorov-Arnold
+    Networks"): each edge ``i -> j`` carries ``phi_ij(x) = w_b * silu(x) +
+    w_s * sum_m c_ijm B_m(x)`` with ``B_m`` cubic B-spline bases on a fixed
+    grid over ``[-grid_range, grid_range]``; the unit output is the sum over
+    incoming edges.  Outside the grid only the smooth ``silu`` base term is
+    active, so the layer degrades gracefully instead of extrapolating splines.
+    The map is piecewise polynomial in its input, hence its input gradient
+    (needed for ULA scores) and second derivative (needed for the reparameterised
+    ``full`` belief gradient) are both well defined and computed by autograd.
+    """
+
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        *,
+        grid_size: int = 8,
+        spline_order: int = 3,
+        grid_range: float = 3.0,
+    ) -> None:
+        super().__init__()
+        if in_features <= 0 or out_features <= 0:
+            raise ValueError("KAN layer dimensions must be positive")
+        if grid_size <= 0 or spline_order <= 0:
+            raise ValueError("KAN grid_size and spline_order must be positive")
+        if not grid_range > 0.0:
+            raise ValueError("KAN grid_range must be positive")
+        self.in_features = int(in_features)
+        self.out_features = int(out_features)
+        self.grid_size = int(grid_size)
+        self.spline_order = int(spline_order)
+        spacing = 2.0 * float(grid_range) / self.grid_size
+        knots = (
+            torch.arange(-self.spline_order, self.grid_size + self.spline_order + 1)
+            * spacing
+            - float(grid_range)
+        )
+        self.register_buffer("grid", knots)
+        self.base_weight = nn.Parameter(torch.empty(self.out_features, self.in_features))
+        self.spline_weight = nn.Parameter(
+            torch.empty(self.out_features, self.in_features, self.grid_size + self.spline_order)
+        )
+        self.spline_scaler = nn.Parameter(torch.ones(self.out_features, self.in_features))
+        nn.init.kaiming_uniform_(self.base_weight, a=5**0.5)
+        nn.init.normal_(self.spline_weight, std=0.1 / (self.in_features**0.5))
+
+    @property
+    def num_bases(self) -> int:
+        return self.grid_size + self.spline_order
+
+    def b_splines(self, inputs: torch.Tensor) -> torch.Tensor:
+        """Cox-de Boor bases: ``[batch, in_features, grid_size + spline_order]``."""
+
+        if inputs.ndim != 2 or inputs.shape[-1] != self.in_features:
+            raise ValueError(
+                f"expected inputs [batch, {self.in_features}], got {tuple(inputs.shape)}"
+            )
+        grid = self.grid.to(inputs.dtype)
+        x = inputs[:, :, None]
+        bases = ((x >= grid[:-1]) & (x < grid[1:])).to(inputs.dtype)
+        for order in range(1, self.spline_order + 1):
+            left = (x - grid[: -(order + 1)]) / (grid[order:-1] - grid[: -(order + 1)])
+            right = (grid[order + 1 :] - x) / (grid[order + 1 :] - grid[1:-order])
+            bases = left * bases[:, :, :-1] + right * bases[:, :, 1:]
+        return bases
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        leading = inputs.shape[:-1]
+        flat = inputs.reshape(-1, self.in_features)
+        base = functional.linear(functional.silu(flat), self.base_weight)
+        bases = self.b_splines(flat).reshape(flat.shape[0], -1)
+        scaled = (self.spline_weight * self.spline_scaler[:, :, None]).reshape(
+            self.out_features, -1
+        )
+        spline = functional.linear(bases, scaled)
+        return (base + spline).reshape(*leading, self.out_features)
+
+
+def make_kan(
+    input_dim: int,
+    hidden_dims: Sequence[int],
+    output_dim: int,
+    *,
+    grid_size: int = 8,
+    spline_order: int = 3,
+    grid_range: float = 3.0,
+) -> nn.Sequential:
+    """Stack KAN layers; the spline edges are the nonlinearity, so no activations."""
+
+    if input_dim <= 0 or output_dim <= 0:
+        raise ValueError("KAN input and output dimensions must be positive")
+    dims = [input_dim, *hidden_dims, output_dim]
+    return nn.Sequential(
+        *(
+            KANLinear(
+                in_features,
+                out_features,
+                grid_size=grid_size,
+                spline_order=spline_order,
+                grid_range=grid_range,
+            )
+            for in_features, out_features in pairwise(dims)
+        )
+    )
+
+
+NETWORK_KINDS = ("mlp", "kan")
+
+
+def make_network(
+    kind: str,
+    input_dim: int,
+    hidden_dims: Sequence[int],
+    output_dim: int,
+    *,
+    kan_grid_size: int = 8,
+    kan_spline_order: int = 3,
+    kan_grid_range: float = 3.0,
+) -> nn.Sequential:
+    """Build an MLP or a KAN of the same layer widths."""
+
+    if kind == "mlp":
+        return make_mlp(input_dim, hidden_dims, output_dim)
+    if kind == "kan":
+        return make_kan(
+            input_dim,
+            hidden_dims,
+            output_dim,
+            grid_size=kan_grid_size,
+            spline_order=kan_spline_order,
+            grid_range=kan_grid_range,
+        )
+    raise ValueError(f"unsupported network kind: {kind!r} (expected mlp or kan)")
 
 
 class ObservationPredictor(nn.Module):

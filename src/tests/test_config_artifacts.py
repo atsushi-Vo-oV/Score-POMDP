@@ -46,6 +46,10 @@ _LEGACY_MODEL_DEFAULTS: dict[str, object] = {
     "alpha_use_scores": False,
     "observation_prediction_coef": 0.0,
     "observation_predictor_hidden": [64],
+    "energy_network_kind": "mlp",
+    "kan_grid_size": 8,
+    "kan_spline_order": 3,
+    "kan_grid_range": 3.0,
 }
 _LEGACY_COMPARISON_DEFAULTS: dict[str, object] = {
     "pf_hidden": [64],

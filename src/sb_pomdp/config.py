@@ -130,6 +130,10 @@ _MODEL_KEYS = frozenset(
         "alpha_use_scores",
         "observation_prediction_coef",
         "observation_predictor_hidden",
+        "energy_network_kind",
+        "kan_grid_size",
+        "kan_spline_order",
+        "kan_grid_range",
         "belief_gradient_mode",
     }
 )
@@ -195,6 +199,11 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         # the auxiliary head absent and the update bit-identical.
         "observation_prediction_coef": 0.0,
         "observation_predictor_hidden": [64],
+        # Energy networks were plain MLPs before the KAN option existed.
+        "energy_network_kind": "mlp",
+        "kan_grid_size": 8,
+        "kan_spline_order": 3,
+        "kan_grid_range": 3.0,
     },
     # The particle-filter and Elman-RNN baselines arrived after the first
     # campaigns; legacy resolved configs compare equal at these inert defaults.
@@ -440,6 +449,12 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
     _positive_integer_list(
         section["observation_predictor_hidden"], "model.observation_predictor_hidden"
     )
+    energy_kind = _nonempty_string(section["energy_network_kind"], "model.energy_network_kind")
+    if energy_kind not in {"mlp", "kan"}:
+        raise ConfigError("model.energy_network_kind must be mlp or kan")
+    _integer(section["kan_grid_size"], "model.kan_grid_size")
+    _integer(section["kan_spline_order"], "model.kan_spline_order")
+    _positive_number(section["kan_grid_range"], "model.kan_grid_range")
     bound = _nonempty_string(
         section["langevin_schedule_bound"], "model.langevin_schedule_bound"
     )

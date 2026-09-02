@@ -9,7 +9,7 @@ from typing import Literal
 import torch
 from torch import nn
 
-from .networks import make_mlp
+from .networks import NETWORK_KINDS, make_network
 
 TemporalGradientMode = Literal["full", "tbptt_1"]
 PotentialBranch = Literal["initial", "recursive", "mixed"]
@@ -133,8 +133,15 @@ class EnergyBelief(nn.Module):
         langevin_step_size: float | None = None,
         langevin_steps: int | None = None,
         langevin_schedule_bound: str = "clamp",
+        energy_network_kind: str = "mlp",
+        kan_grid_size: int = 8,
+        kan_spline_order: int = 3,
+        kan_grid_range: float = 3.0,
     ) -> None:
         super().__init__()
+        if energy_network_kind not in NETWORK_KINDS:
+            raise ValueError("energy_network_kind must be mlp or kan")
+        self.energy_network_kind = str(energy_network_kind)
         if langevin_schedule_bound not in _SCHEDULE_BOUNDS:
             raise ValueError("langevin_schedule_bound must be clamp or sigmoid")
         self.langevin_schedule_bound = str(langevin_schedule_bound)
@@ -187,21 +194,22 @@ class EnergyBelief(nn.Module):
             )
         else:
             self.langevin_log_step_size = None
-        self.initial_energy = make_mlp(
-            observation_dim + state_dim,
-            hidden_dims,
-            1,
+        def energy_network(input_dim: int) -> nn.Module:
+            return make_network(
+                self.energy_network_kind,
+                input_dim,
+                hidden_dims,
+                1,
+                kan_grid_size=int(kan_grid_size),
+                kan_spline_order=int(kan_spline_order),
+                kan_grid_range=float(kan_grid_range),
+            )
+
+        self.initial_energy = energy_network(observation_dim + state_dim)
+        self.observation_energy = energy_network(
+            observation_dim + state_dim + action_feature_dim
         )
-        self.observation_energy = make_mlp(
-            observation_dim + state_dim + action_feature_dim,
-            hidden_dims,
-            1,
-        )
-        self.transition_energy = make_mlp(
-            2 * state_dim + action_feature_dim,
-            hidden_dims,
-            1,
-        )
+        self.transition_energy = energy_network(2 * state_dim + action_feature_dim)
 
     def _validate_context(
         self,
