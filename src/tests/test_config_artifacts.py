@@ -50,6 +50,7 @@ _LEGACY_MODEL_DEFAULTS: dict[str, object] = {
     "kan_grid_size": 8,
     "kan_spline_order": 3,
     "kan_grid_range": 3.0,
+    "kan_match_parameters": True,
 }
 _LEGACY_COMPARISON_DEFAULTS: dict[str, object] = {
     "pf_hidden": [64],

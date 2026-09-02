@@ -134,6 +134,7 @@ _MODEL_KEYS = frozenset(
         "kan_grid_size",
         "kan_spline_order",
         "kan_grid_range",
+        "kan_match_parameters",
         "belief_gradient_mode",
     }
 )
@@ -204,6 +205,7 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         "kan_grid_size": 8,
         "kan_spline_order": 3,
         "kan_grid_range": 3.0,
+        "kan_match_parameters": True,
     },
     # The particle-filter and Elman-RNN baselines arrived after the first
     # campaigns; legacy resolved configs compare equal at these inert defaults.
@@ -455,6 +457,7 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
     _integer(section["kan_grid_size"], "model.kan_grid_size")
     _integer(section["kan_spline_order"], "model.kan_spline_order")
     _positive_number(section["kan_grid_range"], "model.kan_grid_range")
+    _boolean(section["kan_match_parameters"], "model.kan_match_parameters")
     bound = _nonempty_string(
         section["langevin_schedule_bound"], "model.langevin_schedule_bound"
     )

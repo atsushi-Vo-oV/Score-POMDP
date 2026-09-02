@@ -9,7 +9,7 @@ from typing import Literal
 import torch
 from torch import nn
 
-from .networks import NETWORK_KINDS, make_network
+from .networks import NETWORK_KINDS, make_network, matched_kan_hidden_dims
 
 TemporalGradientMode = Literal["full", "tbptt_1"]
 PotentialBranch = Literal["initial", "recursive", "mixed"]
@@ -137,6 +137,7 @@ class EnergyBelief(nn.Module):
         kan_grid_size: int = 8,
         kan_spline_order: int = 3,
         kan_grid_range: float = 3.0,
+        kan_match_parameters: bool = True,
     ) -> None:
         super().__init__()
         if energy_network_kind not in NETWORK_KINDS:
@@ -194,22 +195,38 @@ class EnergyBelief(nn.Module):
             )
         else:
             self.langevin_log_step_size = None
-        def energy_network(input_dim: int) -> nn.Module:
+        self.kan_match_parameters = bool(kan_match_parameters)
+        self.energy_hidden_dims: dict[str, list[int]] = {}
+
+        def energy_network(name: str, input_dim: int) -> nn.Module:
+            widths = list(hidden_dims)
+            if self.energy_network_kind == "kan" and self.kan_match_parameters:
+                # Same depth and (near-)same parameter budget as the MLP the
+                # configuration describes; only the edge function class differs.
+                widths = matched_kan_hidden_dims(
+                    input_dim,
+                    hidden_dims,
+                    1,
+                    int(kan_grid_size) + int(kan_spline_order),
+                )
+            self.energy_hidden_dims[name] = widths
             return make_network(
                 self.energy_network_kind,
                 input_dim,
-                hidden_dims,
+                widths,
                 1,
                 kan_grid_size=int(kan_grid_size),
                 kan_spline_order=int(kan_spline_order),
                 kan_grid_range=float(kan_grid_range),
             )
 
-        self.initial_energy = energy_network(observation_dim + state_dim)
+        self.initial_energy = energy_network("initial", observation_dim + state_dim)
         self.observation_energy = energy_network(
-            observation_dim + state_dim + action_feature_dim
+            "observation", observation_dim + state_dim + action_feature_dim
         )
-        self.transition_energy = energy_network(2 * state_dim + action_feature_dim)
+        self.transition_energy = energy_network(
+            "transition", 2 * state_dim + action_feature_dim
+        )
 
     def _validate_context(
         self,

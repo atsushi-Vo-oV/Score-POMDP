@@ -298,6 +298,48 @@ def make_kan(
 NETWORK_KINDS = ("mlp", "kan")
 
 
+def count_mlp_parameters(input_dim: int, hidden_dims: Sequence[int], output_dim: int) -> int:
+    dims = [input_dim, *hidden_dims, output_dim]
+    return sum(i * o + o for i, o in pairwise(dims))
+
+
+def count_kan_parameters(
+    input_dim: int, hidden_dims: Sequence[int], output_dim: int, num_bases: int
+) -> int:
+    """Spline coefficients + base weight + spline scaler per edge."""
+
+    dims = [input_dim, *hidden_dims, output_dim]
+    return sum(i * o * (num_bases + 2) for i, o in pairwise(dims))
+
+
+def matched_kan_hidden_dims(
+    input_dim: int,
+    mlp_hidden_dims: Sequence[int],
+    output_dim: int,
+    num_bases: int,
+) -> list[int]:
+    """Uniform KAN widths (same depth) whose parameter count is closest to the MLP's.
+
+    A KAN edge carries ``num_bases + 2`` parameters where an MLP edge carries
+    one, so a KAN of the same widths is an order of magnitude larger.  This
+    keeps the ablation honest by default: same depth, same budget, only the
+    edge function class differs.
+    """
+
+    if not mlp_hidden_dims:
+        return []
+    target = count_mlp_parameters(input_dim, mlp_hidden_dims, output_dim)
+    depth = len(mlp_hidden_dims)
+    best_width, best_gap = 1, None
+    for width in range(1, max(mlp_hidden_dims) + 1):
+        gap = abs(count_kan_parameters(input_dim, [width] * depth, output_dim, num_bases) - target)
+        if best_gap is None or gap < best_gap:
+            best_width, best_gap = width, gap
+        elif count_kan_parameters(input_dim, [width] * depth, output_dim, num_bases) > target:
+            break
+    return [best_width] * depth
+
+
 def make_network(
     kind: str,
     input_dim: int,

@@ -7,7 +7,15 @@ import torch
 
 from sb_pomdp.belief import EnergyBelief
 from sb_pomdp.config import ConfigError, load_config
-from sb_pomdp.networks import KANLinear, make_kan, make_mlp, make_network
+from sb_pomdp.networks import (
+    KANLinear,
+    count_kan_parameters,
+    count_mlp_parameters,
+    make_kan,
+    make_mlp,
+    make_network,
+    matched_kan_hidden_dims,
+)
 from sb_pomdp.policies import ScoreBeliefActorCritic
 
 
@@ -131,3 +139,29 @@ def test_score_model_and_config_accept_kan() -> None:
     )
     assert isinstance(model.belief.transition_energy[0], KANLinear)
     assert model.belief.transition_energy[0].grid_size == 5
+
+
+def test_matched_widths_track_the_mlp_parameter_budget() -> None:
+    for input_dim, hidden in ((6, [48, 48]), (12, [48, 48]), (4, [32]), (20, [64, 64, 64])):
+        widths = matched_kan_hidden_dims(input_dim, hidden, 1, num_bases=11)
+        assert len(widths) == len(hidden)
+        mlp = count_mlp_parameters(input_dim, hidden, 1)
+        kan = count_kan_parameters(input_dim, widths, 1, 11)
+        assert abs(kan - mlp) / mlp < 0.15
+        model = make_kan(input_dim, widths, 1, grid_size=8, spline_order=3)
+        assert sum(p.numel() for p in model.parameters()) == kan
+
+
+def test_energy_belief_matches_parameters_by_default() -> None:
+    torch.manual_seed(0)
+    mlp = EnergyBelief(2, 2, 2, [48, 48])
+    kan = EnergyBelief(2, 2, 2, [48, 48], energy_network_kind="kan")
+    wide = EnergyBelief(
+        2, 2, 2, [48, 48], energy_network_kind="kan", kan_match_parameters=False
+    )
+    count = lambda module: sum(p.numel() for p in module.parameters())
+    assert abs(count(kan) - count(mlp)) / count(mlp) < 0.15
+    assert count(wide) > 5 * count(mlp)
+    assert kan.energy_hidden_dims["observation"] != [48, 48]
+    assert wide.energy_hidden_dims["observation"] == [48, 48]
+    assert mlp.energy_hidden_dims["transition"] == [48, 48]

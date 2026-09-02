@@ -424,6 +424,7 @@ class ScoreBeliefActorCritic(nn.Module):
             kan_grid_size=int(model_config.get("kan_grid_size", 8)),
             kan_spline_order=int(model_config.get("kan_spline_order", 3)),
             kan_grid_range=float(model_config.get("kan_grid_range", 3.0)),
+            kan_match_parameters=bool(model_config.get("kan_match_parameters", True)),
         )
         if self.encoder_kind == "transformer":
             self.encoder: nn.Module = BeliefSetEncoder(
