@@ -60,6 +60,7 @@ _LEGACY_COMPARISON_DEFAULTS: dict[str, object] = {
     "pf_hidden": [64],
     "pf_particle_dim": 8,
     "pf_soft_alpha": 0.9,
+    "alpha_feedforward_dim": None,
     "rnn_encoder_hidden": [64],
     "rnn_hidden_dim": 32,
 }

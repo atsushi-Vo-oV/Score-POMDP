@@ -213,6 +213,11 @@ def _method_config(
         data["model"]["encoder_kind"] = "alpha_pool"
         data["model"]["policy_head_kind"] = "alpha_lse"
         data["model"]["continuous_policy_kind"] = "diffusion"
+        alpha_ff = data["comparison"].get("alpha_feedforward_dim")
+        if alpha_ff is not None:
+            # Widen the alpha trunk independently of the transformer ff width
+            # (parameter matching without touching the other score methods).
+            data["model"]["transformer_ff_dim"] = int(alpha_ff)
     elif method in ("gru", "rnn", "particle_filter"):
         data["model"]["encoder_kind"] = "transformer"
         data["model"]["continuous_policy_kind"] = "diffusion"

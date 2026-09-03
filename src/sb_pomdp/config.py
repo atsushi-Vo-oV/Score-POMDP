@@ -101,6 +101,7 @@ _COMPARISON_KEYS = frozenset(
         "pf_hidden",
         "pf_particle_dim",
         "pf_soft_alpha",
+        "alpha_feedforward_dim",
     }
 )
 BELIEF_GRADIENT_MODES = frozenset({"full", "tbptt_1"})
@@ -242,6 +243,8 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         "pf_hidden": [64],
         "pf_particle_dim": 8,
         "pf_soft_alpha": 0.9,
+        # score_alpha shares transformer_ff_dim for its trunk unless overridden.
+        "alpha_feedforward_dim": None,
         "rnn_encoder_hidden": [64],
         "rnn_hidden_dim": 32,
     },
@@ -716,6 +719,9 @@ def _validate_comparison(
     _integer(section["rnn_hidden_dim"], "comparison.rnn_hidden_dim")
     _positive_integer_list(section["pf_hidden"], "comparison.pf_hidden")
     _integer(section["pf_particle_dim"], "comparison.pf_particle_dim")
+    alpha_ff = section["alpha_feedforward_dim"]
+    if alpha_ff is not None:
+        _integer(alpha_ff, "comparison.alpha_feedforward_dim")
     pf_soft_alpha = section["pf_soft_alpha"]
     if (
         isinstance(pf_soft_alpha, bool)
