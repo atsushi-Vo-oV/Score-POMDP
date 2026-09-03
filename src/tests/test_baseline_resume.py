@@ -19,7 +19,17 @@ from sb_pomdp.train_baselines import (
 )
 
 TASK = "masked_cartpole"
-METHODS = ("observation_mlp", "gru", "rnn", "oracle_state", "particle_filter")
+METHODS = ("observation_mlp", "gru", "rnn", "oracle_state", "particle_filter", "particle_filter_dpfrl")
+
+
+def _resolve(method: str, config: ExperimentConfig) -> tuple[str, ExperimentConfig]:
+    """Map the parametrised case onto a trainer method and its config."""
+
+    if method == "particle_filter_dpfrl":
+        return "particle_filter", config.with_overrides(
+            {"comparison.pf_variant": "dpfrl", "comparison.pf_mgf_features": 2}
+        )
+    return method, config
 
 
 def _tiny_two_update_config(tmp_path: Path, *, horizon: int = 3) -> ExperimentConfig:
@@ -89,7 +99,7 @@ def test_segmented_baseline_resume_matches_uninterrupted_training(
     tmp_path: Path,
     method: str,
 ) -> None:
-    config = _tiny_two_update_config(tmp_path)
+    method, config = _resolve(method, _tiny_two_update_config(tmp_path))
     uninterrupted_artifacts = _artifacts(tmp_path / "u", method)
     resumed_artifacts = _artifacts(tmp_path / "r", method)
 

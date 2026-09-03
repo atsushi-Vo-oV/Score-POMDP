@@ -205,6 +205,8 @@ def _make_model(
             "pf_num_particles": int(model_config["num_particles"]),
             "pf_particle_dim": int(comparison_config["pf_particle_dim"]),
             "pf_soft_alpha": float(comparison_config["pf_soft_alpha"]),
+            "pf_variant": str(comparison_config.get("pf_variant", "deterministic")),
+            "pf_mgf_features": int(comparison_config.get("pf_mgf_features", 0)),
             **shared_head_kwargs,
         }
 
@@ -234,13 +236,39 @@ def _current_inputs(
     batch: SyncEnvironmentBatch,
     previous_action: torch.Tensor,
     device: torch.device,
+    *,
+    model: Any | None = None,
+    generator: torch.Generator | None = None,
 ) -> torch.Tensor:
     if method == "oracle_state":
         return _oracle_batch(batch, device)
     observation_tensor = torch.as_tensor(observation, dtype=torch.float32, device=device)
     if method in ("gru", "rnn", "particle_filter"):
-        return torch.cat((observation_tensor, previous_action), dim=-1)
+        inputs = torch.cat((observation_tensor, previous_action), dim=-1)
+        return _append_input_noise(inputs, model, generator=generator)
     return observation_tensor
+
+
+def _append_input_noise(
+    inputs: torch.Tensor,
+    model: Any | None,
+    *,
+    generator: torch.Generator | None = None,
+) -> torch.Tensor:
+    """Append a stochastic filter's exogenous per-step noise to its input row.
+
+    The DPFRL-style particle filter consumes ``K*D`` normals and ``K`` uniforms
+    per step.  Drawing them here and storing them with the inputs keeps every
+    replay (prefix, recondition, resume) an exact function of stored data.
+    """
+
+    noise_dim = int(getattr(model, "noise_dim", 0) or 0)
+    if noise_dim == 0:
+        return inputs
+    noise = model.draw_noise(
+        inputs.shape[0], generator=generator, device=inputs.device, dtype=inputs.dtype
+    )
+    return torch.cat((inputs, noise), dim=-1)
 
 
 def _truncation_bootstrap_values(
@@ -280,6 +308,7 @@ def _truncation_bootstrap_values(
             inputs = torch.cat(
                 (inputs, action_features.detach().index_select(0, selector)), dim=-1
             )
+            inputs = _append_input_noise(inputs, model)
     with torch.no_grad():
         if isinstance(model, RECURRENT_BASELINE_TYPES):
             if hidden is None:
@@ -750,7 +779,11 @@ def evaluate_baseline(
                         device=device,
                     )
                 elif method in ("gru", "rnn", "particle_filter"):
-                    inputs = torch.cat((observation_tensor, previous_action), dim=-1)
+                    inputs = _append_input_noise(
+                        torch.cat((observation_tensor, previous_action), dim=-1),
+                        model,
+                        generator=generator,
+                    )
                 else:
                     inputs = observation_tensor
 
@@ -1323,6 +1356,7 @@ def train_baseline_single(
                     batch,
                     previous_action,
                     device,
+                    model=model,
                 ),
                 start_template=episode_starts,
             )
@@ -1402,6 +1436,7 @@ def train_baseline_single(
                 batch,
                 previous_action,
                 device,
+                model=model,
             )
             recurrent_prefixes = tuple(
                 history.snapshot(
@@ -1412,7 +1447,7 @@ def train_baseline_single(
             )
 
         for rollout_index in range(int(ppo_config["rollout_steps"])):
-            inputs = _current_inputs(method, observation, batch, previous_action, device)
+            inputs = _current_inputs(method, observation, batch, previous_action, device, model=model)
             input_steps.append(inputs.detach())
             episode_start_steps.append(episode_starts.detach())
             with torch.no_grad():
@@ -1519,7 +1554,7 @@ def train_baseline_single(
                 ),
             )
         with torch.no_grad():
-            bootstrap_inputs = _current_inputs(method, observation, batch, previous_action, device)
+            bootstrap_inputs = _current_inputs(method, observation, batch, previous_action, device, model=model)
             if isinstance(model, RECURRENT_BASELINE_TYPES):
                 assert hidden is not None
                 bootstrap_features, _ = model.step(bootstrap_inputs, hidden, episode_starts)
@@ -1575,6 +1610,7 @@ def train_baseline_single(
                 batch,
                 previous_action,
                 device,
+                model=model,
             )
             hidden = _recondition_recurrent_hidden(
                 model,

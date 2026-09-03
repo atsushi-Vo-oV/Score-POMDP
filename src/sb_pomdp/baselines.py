@@ -12,6 +12,7 @@ tanh-Gaussian continuous head used by their original ablation definitions.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
@@ -19,6 +20,7 @@ from typing import Literal
 import torch
 from torch import nn
 from torch.distributions import Categorical, Independent, Normal
+from torch.nn import functional
 
 from .networks import init_final_linear, make_head_network, make_trunk_network
 from .policies import DiffusionPolicy, PolicySample, TanhGaussianPolicy
@@ -736,6 +738,8 @@ class ParticleFilterActorCritic(nn.Module):
         discrete_actions: int | None = None,
         action_low: Sequence[float] | None = None,
         action_high: Sequence[float] | None = None,
+        variant: Literal["deterministic", "dpfrl"] = "deterministic",
+        mgf_features: int = 0,
     ) -> None:
         super().__init__()
         if observation_dim <= 0:
@@ -750,29 +754,65 @@ class ParticleFilterActorCritic(nn.Module):
             raise ValueError("particle_dim must be a positive integer")
         if not 0.0 < float(soft_alpha) <= 1.0:
             raise ValueError("soft_alpha must lie in (0, 1]")
+        if variant not in ("deterministic", "dpfrl"):
+            raise ValueError("variant must be 'deterministic' or 'dpfrl'")
+        if isinstance(mgf_features, bool) or not isinstance(mgf_features, int) or mgf_features < 0:
+            raise ValueError("mgf_features must be a non-negative integer")
         widths = _validate_hidden_dims(hidden_dims)
-        self.observation_dim = observation_dim
+        self.variant: Literal["deterministic", "dpfrl"] = variant
+        self.feature_input_dim = observation_dim
         self.num_particles = num_particles
         self.particle_dim = particle_dim
         self.soft_alpha = float(soft_alpha)
+        self.mgf_features = int(mgf_features)
         self.recurrent_layers = 1
+        # ``dpfrl`` inputs carry the exogenous per-step randomness after the
+        # raw features: K*D standard normals (transition noise) and K uniforms
+        # (soft-resampling draws).  Storing the noise in the input stream keeps
+        # the recurrence an exact function of stored inputs, so prefix replay,
+        # reconditioning, and resume work unchanged.
+        self.noise_dim = num_particles * (particle_dim + 1) if variant == "dpfrl" else 0
+        self.observation_dim = observation_dim + self.noise_dim
 
-        self.anchors = nn.Parameter(torch.randn(num_particles, particle_dim) * 0.1)
-        self.initial_net = make_trunk_network(observation_dim + particle_dim, widths, particle_dim)
-        self.transition_net = make_trunk_network(particle_dim + observation_dim, widths, particle_dim)
-        self.weight_net = make_trunk_network(particle_dim + observation_dim, widths, 1)
-        self.feature_net = nn.Sequential(
-            make_trunk_network(particle_dim, widths[:-1], widths[-1]), nn.SiLU()
-        )
         condition_dim = widths[-1] if policy_condition_dim is None else policy_condition_dim
         if condition_dim <= 0:
             raise ValueError("policy_condition_dim must be positive")
         self.policy_condition_dim = condition_dim
-        self.condition_projection: nn.Module = (
-            nn.Identity()
-            if widths[-1] == condition_dim
-            else nn.Linear(widths[-1], condition_dim)
-        )
+        if variant == "deterministic":
+            self.anchors = nn.Parameter(torch.randn(num_particles, particle_dim) * 0.1)
+            self.initial_net = make_trunk_network(observation_dim + particle_dim, widths, particle_dim)
+            self.transition_net = make_trunk_network(particle_dim + observation_dim, widths, particle_dim)
+            self.weight_net = make_trunk_network(particle_dim + observation_dim, widths, 1)
+            self.feature_net = nn.Sequential(
+                make_trunk_network(particle_dim, widths[:-1], widths[-1]), nn.SiLU()
+            )
+            self.condition_projection: nn.Module = (
+                nn.Identity()
+                if widths[-1] == condition_dim
+                else nn.Linear(widths[-1], condition_dim)
+            )
+        else:
+            encoded_dim = widths[-1]
+            # Observation/action encoder shared by every particle (DPFRL encodes
+            # the observation before the PF-GRU cell consumes it).
+            self.input_net = nn.Sequential(
+                make_trunk_network(observation_dim, widths[:-1], encoded_dim), nn.SiLU()
+            )
+            # PF-GRU cell (Ma et al. 2020): gates r, z; candidate n gets Gaussian
+            # noise with a learned, input-dependent scale (reparameterised).
+            self.gate = nn.Linear(particle_dim + encoded_dim, 2 * particle_dim)
+            self.candidate = nn.Linear(particle_dim + encoded_dim, particle_dim)
+            self.noise_scale = nn.Linear(particle_dim + encoded_dim, particle_dim)
+            self.initial_mean = nn.Linear(encoded_dim, particle_dim)
+            self.initial_noise_scale = nn.Linear(encoded_dim, particle_dim)
+            # Discriminative observation function: one linear layer, no
+            # activation, producing the log-compatibility added to log-weights.
+            self.observation_function = nn.Linear(particle_dim + encoded_dim, 1)
+            # Moment-generating-function features M_j = sum_i w_i exp(v_j . h_i).
+            self.mgf_vectors = nn.Parameter(
+                torch.randn(max(self.mgf_features, 1), particle_dim) / particle_dim**0.5
+            )
+            self.condition_projection = nn.Linear(particle_dim + self.mgf_features, condition_dim)
         self.heads = _PolicyValueHeads(
             condition_dim,
             action_kind=action_kind,
@@ -834,6 +874,98 @@ class ParticleFilterActorCritic(nn.Module):
         packed = torch.cat((particles, log_weights.unsqueeze(-1)), dim=-1)
         return packed.reshape(1, particles.shape[0], self.recurrent_hidden_dim)
 
+    def draw_noise(
+        self,
+        batch_size: int,
+        *,
+        generator: torch.Generator | None = None,
+        device: torch.device | str | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> torch.Tensor:
+        """Exogenous randomness for one step: ``[batch, K*D normals | K uniforms]``."""
+
+        if self.noise_dim == 0:
+            raise RuntimeError("the deterministic particle filter draws no noise")
+        parameter = next(self.parameters())
+        device = parameter.device if device is None else device
+        dtype = parameter.dtype if dtype is None else dtype
+        normals = torch.randn(
+            batch_size, self.num_particles * self.particle_dim, generator=generator, device=device, dtype=dtype
+        )
+        uniforms = torch.rand(batch_size, self.num_particles, generator=generator, device=device, dtype=dtype)
+        return torch.cat((normals, uniforms), dim=-1)
+
+    def _split_inputs(self, inputs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if inputs.shape[-1] != self.observation_dim:
+            raise ValueError(
+                f"particle-filter inputs must have width {self.observation_dim} "
+                f"(features {self.feature_input_dim} + noise {self.noise_dim}), got {inputs.shape[-1]}"
+            )
+        features = inputs[..., : self.feature_input_dim]
+        noise = inputs[..., self.feature_input_dim :]
+        batch = inputs.shape[0]
+        normals = noise[..., : self.num_particles * self.particle_dim].reshape(
+            batch, self.num_particles, self.particle_dim
+        )
+        uniforms = noise[..., self.num_particles * self.particle_dim :]
+        return features, normals, uniforms
+
+    def _dpfrl_step(
+        self,
+        inputs: torch.Tensor,
+        particles: torch.Tensor,
+        log_weights: torch.Tensor,
+        episode_start: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        features, normals, uniforms = self._split_inputs(inputs)
+        batch = features.shape[0]
+        starts = episode_start.bool().view(batch, 1)
+        encoded = self.input_net(features)
+        tiled = encoded.unsqueeze(1).expand(batch, self.num_particles, encoded.shape[-1])
+
+        # Initial particles: h_0^i = mu(e_0) + sigma_0(e_0) * xi^i.
+        initial_std = functional.softplus(self.initial_noise_scale(encoded)) + 1e-3
+        initial = (self.initial_mean(encoded) + initial_std * normals.transpose(0, 1)).transpose(0, 1)
+        # PF-GRU transition with reparameterised candidate noise.
+        gates = torch.sigmoid(self.gate(torch.cat((particles, tiled), dim=-1)))
+        reset_gate, update_gate = gates.chunk(2, dim=-1)
+        pre_candidate = self.candidate(torch.cat((reset_gate * particles, tiled), dim=-1))
+        std = functional.softplus(self.noise_scale(torch.cat((particles, tiled), dim=-1))) + 1e-3
+        candidate = torch.tanh(pre_candidate + std * normals)
+        propagated = (1.0 - update_gate) * candidate + update_gate * particles
+        new_particles = torch.where(starts.unsqueeze(-1), initial, propagated)
+
+        # Discriminative weight update in log space, normalised (eta).
+        uniform_log = torch.full_like(log_weights, -math.log(self.num_particles))
+        previous = torch.where(starts, uniform_log, log_weights)
+        compatibility = self.observation_function(torch.cat((new_particles, tiled), dim=-1)).squeeze(-1)
+        posterior_log = torch.log_softmax(previous + compatibility, dim=-1)
+
+        # Soft resampling every step: ancestors from q = alpha w + (1-alpha)/K,
+        # importance-corrected weights w' = w_a / q_a (Ma et al. 2020).
+        weights = posterior_log.exp()
+        proposal = self.soft_alpha * weights + (1.0 - self.soft_alpha) / self.num_particles
+        cumulative = proposal.cumsum(dim=-1)
+        cumulative = cumulative / cumulative[..., -1:].clamp_min(1e-12)
+        ancestors = torch.searchsorted(
+            cumulative.detach(), uniforms.clamp(max=1.0 - 1e-6).contiguous()
+        ).clamp(max=self.num_particles - 1)
+        resampled = torch.gather(
+            new_particles, 1, ancestors.unsqueeze(-1).expand(-1, -1, self.particle_dim)
+        )
+        corrected = torch.gather(weights, 1, ancestors) / torch.gather(proposal, 1, ancestors)
+        new_log_weights = torch.log_softmax(corrected.clamp_min(1e-12).log(), dim=-1)
+
+        # Belief summary: weighted mean particle plus MGF features.
+        resampled_weights = new_log_weights.exp()
+        mean_particle = (resampled_weights.unsqueeze(-1) * resampled).sum(dim=1)
+        summary = [mean_particle]
+        if self.mgf_features > 0:
+            projections = (resampled @ self.mgf_vectors[: self.mgf_features].T).clamp(-10.0, 10.0)
+            summary.append((resampled_weights.unsqueeze(-1) * projections.exp()).sum(dim=1))
+        condition = self.condition_projection(torch.cat(summary, dim=-1))
+        return condition, resampled, new_log_weights
+
     def _filter_step(
         self,
         inputs: torch.Tensor,
@@ -841,6 +973,8 @@ class ParticleFilterActorCritic(nn.Module):
         log_weights: torch.Tensor,
         episode_start: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self.variant == "dpfrl":
+            return self._dpfrl_step(inputs, particles, log_weights, episode_start)
         batch = inputs.shape[0]
         tiled_inputs = inputs.unsqueeze(1).expand(batch, self.num_particles, inputs.shape[-1])
         starts = episode_start.bool().view(batch, 1, 1)
@@ -1017,6 +1151,8 @@ def make_baseline_actor_critic(
     pf_num_particles: int = 16,
     pf_particle_dim: int = 8,
     pf_soft_alpha: float = 0.9,
+    pf_variant: Literal["deterministic", "dpfrl"] = "deterministic",
+    pf_mgf_features: int = 0,
 ) -> FeedForwardBaselineActorCritic | RecurrentBaseline:
     """Build one comparison model from environment dimensions and bounds."""
 
@@ -1038,6 +1174,8 @@ def make_baseline_actor_critic(
             num_particles=pf_num_particles,
             particle_dim=pf_particle_dim,
             soft_alpha=pf_soft_alpha,
+            variant=pf_variant,
+            mgf_features=pf_mgf_features,
             policy_condition_dim=policy_condition_dim,
             head_hidden_dims=head_hidden_dims,
             continuous_policy_kind=continuous_policy_kind,

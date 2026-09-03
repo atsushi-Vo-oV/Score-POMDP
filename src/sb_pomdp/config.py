@@ -101,6 +101,8 @@ _COMPARISON_KEYS = frozenset(
         "pf_hidden",
         "pf_particle_dim",
         "pf_soft_alpha",
+        "pf_variant",
+        "pf_mgf_features",
         "alpha_feedforward_dim",
     }
 )
@@ -243,6 +245,10 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         "pf_hidden": [64],
         "pf_particle_dim": 8,
         "pf_soft_alpha": 0.9,
+        # The particle-filter baseline was the deterministic ensemble before the
+        # PF-RNN/DPFRL-faithful stochastic variant existed.
+        "pf_variant": "deterministic",
+        "pf_mgf_features": 0,
         # score_alpha shares transformer_ff_dim for its trunk unless overridden.
         "alpha_feedforward_dim": None,
         "rnn_encoder_hidden": [64],
@@ -719,6 +725,10 @@ def _validate_comparison(
     _integer(section["rnn_hidden_dim"], "comparison.rnn_hidden_dim")
     _positive_integer_list(section["pf_hidden"], "comparison.pf_hidden")
     _integer(section["pf_particle_dim"], "comparison.pf_particle_dim")
+    pf_variant = _nonempty_string(section["pf_variant"], "comparison.pf_variant")
+    if pf_variant not in {"deterministic", "dpfrl"}:
+        raise ConfigError("comparison.pf_variant must be deterministic or dpfrl")
+    _integer(section["pf_mgf_features"], "comparison.pf_mgf_features", minimum=0)
     alpha_ff = section["alpha_feedforward_dim"]
     if alpha_ff is not None:
         _integer(alpha_ff, "comparison.alpha_feedforward_dim")
