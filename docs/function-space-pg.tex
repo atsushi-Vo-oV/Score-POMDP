@@ -1,0 +1,134 @@
+\documentclass[a4paper,11pt]{article}
+\usepackage{mysty}
+\usepackage[margin=24mm]{geometry}
+\usepackage[hidelinks,unicode]{hyperref}
+
+\title{固定正規直交基底による関数ベース方策勾配 --- 背景と本実装}
+\author{Belief-Score-Based-Model 実装ノート}
+\date{2026-09-03}
+
+\begin{document}
+\maketitle
+
+\section{通常の方策勾配（パラメータ空間）}
+
+belief の条件ベクトルを $z\in\mathbb{R}^{d}$，方策を $\pi_\theta(a\mid z)$ とし，
+目的関数を $J(\theta)=\mathbb{E}\!\left[\sum_t \gamma^t r_t\right]$ とする．方策勾配定理より
+\begin{equation}
+  \nabla_\theta J
+  = \mathbb{E}_{z\sim d^{\pi},\, a\sim\pi_\theta(\cdot\mid z)}
+    \bigl[\nabla_\theta \log \pi_\theta(a\mid z)\, A^{\pi}(z,a)\bigr].
+  \label{eq:pg}
+\end{equation}
+MLP ヘッドでは重み $\theta$ の微小変化が関数 $f_\theta(z)$（離散なら logit，連続なら Gaussian の $(\mu,\log\sigma)$）を
+非線形に動かすため，勾配の向きと大きさは重みの置き方（パラメータ化）に依存する．
+
+\section{関数空間の勾配}
+
+方策を関数 $f:\mathbb{R}^d\to\mathbb{R}^m$ そのもので表し，$\pi(a\mid z)=\pi(a\mid f(z))$ と書く．
+$f$ を「パラメータ」とみなした汎関数微分は
+\begin{equation}
+  \frac{\delta J}{\delta f}(z)
+  = d^{\pi}(z)\;\mathbb{E}_{a\sim\pi(\cdot\mid z)}
+    \!\left[\frac{\partial \log\pi(a\mid f(z))}{\partial f(z)}\; A^{\pi}(z,a)\right],
+  \label{eq:functional-grad}
+\end{equation}
+であり，訪問分布 $\mu=d^{\pi}$ に関する $L^2(\mu)$ 空間の勾配上昇
+\begin{equation}
+  f \leftarrow f + \eta\, \frac{\delta J}{\delta f}
+\end{equation}
+が関数ベース方策勾配である．パラメータ化に依らない，方策関数そのものの最急上昇方向を与える．
+
+\section{固定正規直交基底による展開}
+
+固定された基底 $\{\phi_i\}_{i=1}^{N}$ を用いて $f(z)=\sum_i c_i\,\phi_i(z)$ と展開し，
+基底が $\mu$ に関して正規直交
+\begin{equation}
+  \langle \phi_i,\phi_j\rangle_\mu := \int \phi_i(z)\,\phi_j(z)\,\mathrm{d}\mu(z) = \delta_{ij}
+  \label{eq:orthonormal}
+\end{equation}
+であるとする．連鎖律より係数勾配は
+\begin{equation}
+  \frac{\partial J}{\partial c_i}
+  = \int \frac{\delta J}{\delta f}(z)\,\phi_i(z)\,\mathrm{d}z
+  = \Bigl\langle \frac{\delta J}{\delta f},\,\phi_i\Bigr\rangle_{\mu},
+  \label{eq:coef-grad}
+\end{equation}
+すなわち\textbf{係数の通常勾配は汎関数勾配の基底部分空間への直交射影（Galerkin 射影）}に一致する．
+一般の（非直交な）基底では Gram 行列 $G_{ij}=\langle\phi_i,\phi_j\rangle_\mu$ を用いて
+\begin{equation}
+  \frac{\partial J}{\partial \mathbf{c}}
+  = G\,\Bigl\langle \frac{\delta J}{\delta f},\,\boldsymbol{\phi}\Bigr\rangle_{\mu},
+  \qquad
+  \text{関数空間の勾配} = G^{-1}\frac{\partial J}{\partial \mathbf{c}},
+  \label{eq:gram}
+\end{equation}
+となり，係数勾配は $G$ で歪む（自然勾配 $G^{-1}$ を掛けて初めて関数空間の勾配に戻る）．
+正規直交基底では $G=I$ なので，\textbf{素の SGD / PPO 更新がそのまま関数空間の勾配法}になる．
+これが「基底を一つ固定して正規直交にする」動機である．
+
+\section{本実装の基底}
+
+条件ベクトル $z\in\mathbb{R}^{64}$ に対し，seed 固定で生成した行正規直交行列 $Q\in\mathbb{R}^{16\times 64}$（$QQ^{\top}=I$）で
+\begin{equation}
+  u = \tanh(Qz)\in(-1,1)^{16}
+\end{equation}
+とし，各座標 $u_j$ の Fourier 基底
+\begin{equation}
+  \boldsymbol{\phi}(z)
+  = \Bigl\{\,1,\;\sqrt{2}\cos(k\pi u_j),\;\sqrt{2}\sin(k\pi u_j)
+    \;:\; j=1,\dots,16,\; k=1,\dots,K\,\Bigr\},\qquad K=4,
+  \label{eq:basis}
+\end{equation}
+を用いる（$1+2\cdot 16\cdot 4=129$ 基底）．各座標について $\{1,\sqrt{2}\cos(k\pi u),\sqrt{2}\sin(k\pi u)\}$ は
+$[-1,1]$ 上の一様測度で正規直交である：
+\begin{equation}
+  \frac{1}{2}\int_{-1}^{1} \sqrt{2}\cos(k\pi u)\,\sqrt{2}\cos(l\pi u)\,\mathrm{d}u=\delta_{kl},\qquad
+  \frac{1}{2}\int_{-1}^{1} \sqrt{2}\cos(k\pi u)\,\sqrt{2}\sin(l\pi u)\,\mathrm{d}u=0 .
+\end{equation}
+（$\cos$ のみでは偶関数しか張れないため $\sin$ 項が必須である．）
+座標間の交差項は持たないので，表現できる関数クラスは加法的・帯域制限な
+\begin{equation}
+  f(u) = c_0 + \sum_{j=1}^{16} g_j(u_j),\qquad
+  g_j \in \operatorname{span}\{\cos(k\pi u),\,\sin(k\pi u)\}_{k\le K},
+\end{equation}
+である．学習パラメータは係数 $\mathbf{c}\in\mathbb{R}^{129\times m}$ とバイアスのみで，$Q$ と基底は動かない．
+
+注意：正規直交性 \eqref{eq:orthonormal} は $u$ の一様測度に関するものであり，実際の訪問分布 $\mu$ とは一致しない．
+したがって $G\approx I$ は近似であり，また $\tanh$ 圧縮と固定射影 $Q$ が表現可能な関数を決める
+（回転した座標の交差項を含む関数は表せないことをテストで確認済み）．
+
+\section{PPO との接続}
+
+PPO の clip 付き代理目的
+\begin{equation}
+  L(\mathbf{c}) = \mathbb{E}\!\left[\min\bigl(\rho\,A,\;\operatorname{clip}(\rho,1-\epsilon,1+\epsilon)\,A\bigr)\right],
+  \qquad \rho=\frac{\pi_{\mathbf{c}}(a\mid z)}{\pi_{\mathrm{old}}(a\mid z)},
+\end{equation}
+を係数で微分すると，$f=\sum_i c_i\phi_i$ が $\mathbf{c}$ に線形であることから
+\begin{equation}
+  \nabla_{\mathbf{c}} L
+  = \mathbb{E}\!\left[\, w(z,a)\,\rho\,
+      \frac{\partial \log\pi(a\mid f(z))}{\partial f(z)}\, A\;\boldsymbol{\phi}(z)^{\top}\right],
+  \qquad w\in\{0,1\}\ \text{（clip 条件）},
+\end{equation}
+となる．これは \eqref{eq:coef-grad} の重み付き有限標本版である．
+\begin{itemize}
+  \item 離散行動（softmax）：$\log\pi$ は logit について凹なので，encoder を固定すれば係数についての最適化に偽の局所解が存在しない（ヘッド側の非凸性が消える）．
+  \item 連続行動：Gaussian 方策 $\mu(z)=\sum_i c^{\mu}_i\phi_i(z)$，$\log\sigma(z)=\sum_i c^{\sigma}_i\phi_i(z)$ を用いる．拡散方策は denoiser が非線形写像なので基底化できず，
+        対照として「MLP ヘッド + Gaussian 方策」を置いて方策クラスの効果と基底化の効果を分離する．
+  \item 価値関数も $V(z)=\sum_i c^{V}_i\phi_i(z)$ とし，価値回帰は係数について凸（最小二乗）になる．
+\end{itemize}
+
+\section{何が変わり，何が変わらないか}
+
+\begin{itemize}
+  \item \textbf{変わる}：ヘッドの最適化が関数空間の直交射影勾配となり，条件付けの良さと（固定 encoder 下での）凸性を得る．表現クラスは加法・帯域制限に狭まる．
+  \item \textbf{変わらない}：基底への入力 $z$ を作る belief / encoder には $\tanh(Qz)$ を通した連鎖律で従来どおり勾配が流れる．
+        したがって「belief が学ばれない」というボトルネックはこの手法では直接には解消されない --- 方策側の最適化を整える実験であり，belief 側の学習信号を変えるものではない．
+\end{itemize}
+
+\section*{参考}
+Fourier basis（Konidaris, Osentoski, Thomas 2011），関数空間 / RKHS の方策勾配（Lever \& Stafford 2015; Bagnell \& Schneider 2003），
+汎関数勾配ブースティング方策勾配（Kersting \& Driessens 2008）．
+\end{document}
