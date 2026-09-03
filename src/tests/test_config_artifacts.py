@@ -51,6 +51,10 @@ _LEGACY_MODEL_DEFAULTS: dict[str, object] = {
     "kan_spline_order": 3,
     "kan_grid_range": 3.0,
     "kan_match_parameters": True,
+    "head_network_kind": "mlp",
+    "trunk_network_kind": "mlp",
+    "basis_order": 4,
+    "basis_projection_dim": 16,
 }
 _LEGACY_COMPARISON_DEFAULTS: dict[str, object] = {
     "pf_hidden": [64],

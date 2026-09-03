@@ -31,6 +31,7 @@ from .baselines import (
 from .buffer import generalised_advantage_estimate
 from .config import ExperimentConfig
 from .envs import make_env
+from .networks import NetworkKinds, use_network_kinds
 from .ppo import PPOMetrics, diffusion_advantage_weights
 from .train import (
     EPISODE_FIELDS,
@@ -207,7 +208,8 @@ def _make_model(
             **shared_head_kwargs,
         }
 
-    model = make_baseline_actor_critic(
+    with use_network_kinds(NetworkKinds.from_config(model_config)):
+        model = make_baseline_actor_critic(
         kind,
         observation_dim=input_dim,
         state_dim=environment.oracle_dim,

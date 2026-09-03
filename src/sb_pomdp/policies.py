@@ -18,7 +18,9 @@ from .networks import (
     BeliefSetEncoder,
     DeepSetsBeliefEncoder,
     ObservationPredictor,
-    make_mlp,
+    init_final_linear,
+    make_head_network,
+    make_trunk_network,
 )
 
 
@@ -83,7 +85,7 @@ class DiffusionPolicy(nn.Module):
         self.num_steps = num_steps
         self.min_std = float(min_std)
         self.time_embedding = SinusoidalStepEmbedding(time_embedding_dim)
-        self.denoiser = make_mlp(
+        self.denoiser = make_trunk_network(
             condition_dim + self.action_dim + time_embedding_dim,
             hidden_dims,
             self.action_dim,
@@ -268,7 +270,7 @@ class TanhGaussianPolicy(nn.Module):
         self.log_std_min = float(log_std_min)
         self.log_std_max = float(log_std_max)
         self.inverse_epsilon = float(inverse_epsilon)
-        self.parameter_network = make_mlp(
+        self.parameter_network = make_head_network(
             condition_dim,
             hidden_dims,
             2 * self.action_dim,
@@ -471,7 +473,7 @@ class ScoreBeliefActorCritic(nn.Module):
                 condition_dim, 1, alpha_pieces, alpha_temperature
             )
         else:
-            self.value_head = make_mlp(
+            self.value_head = make_head_network(
                 condition_dim,
                 model_config["policy_hidden"],
                 1,
@@ -488,18 +490,12 @@ class ScoreBeliefActorCritic(nn.Module):
                     init_gain=0.01,
                 )
             else:
-                self.categorical_head = make_mlp(
+                self.categorical_head = make_head_network(
                     condition_dim,
                     model_config["policy_hidden"],
                     discrete_actions,
                 )
-                final_categorical_layer = next(
-                    layer
-                    for layer in reversed(list(self.categorical_head.modules()))
-                    if isinstance(layer, nn.Linear)
-                )
-                nn.init.orthogonal_(final_categorical_layer.weight, gain=0.01)
-                nn.init.zeros_(final_categorical_layer.bias)
+                init_final_linear(self.categorical_head, 0.01)
             self.diffusion_policy: DiffusionPolicy | None = None
             self.gaussian_policy: TanhGaussianPolicy | None = None
         elif action_kind == "continuous":

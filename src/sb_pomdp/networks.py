@@ -366,6 +366,188 @@ def make_network(
     raise ValueError(f"unsupported network kind: {kind!r} (expected mlp or kan)")
 
 
+class OrthonormalBasisHead(nn.Module):
+    """Linear map over a *fixed* orthonormal function basis of the input.
+
+    Function-space policy gradient with one fixed basis: the input ``z`` is
+    projected by a frozen orthonormal matrix ``Q`` (rows orthonormal, drawn
+    once from a seeded Gaussian and QR-orthogonalised), squashed to
+    ``u = tanh(Qz)`` in ``(-1, 1)``, and expanded in the Fourier basis
+    ``{1, sqrt(2) cos(k pi u_j), sqrt(2) sin(k pi u_j)}`` for ``k = 1..order`` -
+    orthonormal on the uniform measure of ``[-1, 1]`` per coordinate (cosines
+    alone would span only even functions).  Only the final linear
+    coefficients are trained, so ordinary gradient ascent on them *is* the
+    L2 functional gradient of the represented function; the basis never moves.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        *,
+        projection_dim: int = 16,
+        order: int = 4,
+        seed: int = 0,
+    ) -> None:
+        super().__init__()
+        if input_dim <= 0 or output_dim <= 0:
+            raise ValueError("basis head dimensions must be positive")
+        if projection_dim <= 0 or order <= 0:
+            raise ValueError("basis projection_dim and order must be positive")
+        self.input_dim = int(input_dim)
+        self.projection_dim = int(min(projection_dim, input_dim))
+        self.order = int(order)
+        generator = torch.Generator().manual_seed(int(seed))
+        gaussian = torch.randn(self.input_dim, self.projection_dim, generator=generator)
+        q, _ = torch.linalg.qr(gaussian)  # [input_dim, projection_dim], orthonormal columns
+        self.register_buffer("projection", q.T.contiguous())
+        self.register_buffer("orders", torch.arange(1, self.order + 1, dtype=torch.float32))
+        self.feature_dim = 1 + 2 * self.projection_dim * self.order
+        self.linear = nn.Linear(self.feature_dim, int(output_dim))
+        nn.init.zeros_(self.linear.weight)
+        nn.init.zeros_(self.linear.bias)
+
+    def features(self, inputs: torch.Tensor) -> torch.Tensor:
+        u = torch.tanh(inputs @ self.projection.T)  # [..., projection_dim]
+        angles = math.pi * u[..., :, None] * self.orders  # [..., projection_dim, order]
+        trig = math.sqrt(2.0) * torch.cat((torch.cos(angles), torch.sin(angles)), dim=-1)
+        flat = trig.reshape(*inputs.shape[:-1], 2 * self.projection_dim * self.order)
+        ones = torch.ones(*inputs.shape[:-1], 1, device=inputs.device, dtype=inputs.dtype)
+        return torch.cat((ones, flat), dim=-1)
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        return self.linear(self.features(inputs))
+
+
+HEAD_NETWORK_KINDS = ("mlp", "kan", "basis")
+TRUNK_NETWORK_KINDS = ("mlp", "kan")
+
+
+class NetworkKinds:
+    """Which function class builds heads and trunks (set from ``model`` config).
+
+    ``head`` covers value / categorical / Gaussian-parameter heads;
+    ``trunk`` covers feature encoders, the diffusion denoiser and the
+    particle-filter baseline's networks.  KAN widths follow the MLP parameter
+    budget when ``kan_match_parameters`` is on.
+    """
+
+    def __init__(
+        self,
+        *,
+        head: str = "mlp",
+        trunk: str = "mlp",
+        basis_order: int = 4,
+        basis_projection_dim: int = 16,
+        kan_grid_size: int = 8,
+        kan_spline_order: int = 3,
+        kan_grid_range: float = 3.0,
+        kan_match_parameters: bool = True,
+    ) -> None:
+        if head not in HEAD_NETWORK_KINDS:
+            raise ValueError("head network kind must be mlp, kan, or basis")
+        if trunk not in TRUNK_NETWORK_KINDS:
+            raise ValueError("trunk network kind must be mlp or kan")
+        self.head = head
+        self.trunk = trunk
+        self.basis_order = int(basis_order)
+        self.basis_projection_dim = int(basis_projection_dim)
+        self.kan_grid_size = int(kan_grid_size)
+        self.kan_spline_order = int(kan_spline_order)
+        self.kan_grid_range = float(kan_grid_range)
+        self.kan_match_parameters = bool(kan_match_parameters)
+
+    @classmethod
+    def from_config(cls, model_config) -> NetworkKinds:
+        return cls(
+            head=str(model_config.get("head_network_kind", "mlp")),
+            trunk=str(model_config.get("trunk_network_kind", "mlp")),
+            basis_order=int(model_config.get("basis_order", 4)),
+            basis_projection_dim=int(model_config.get("basis_projection_dim", 16)),
+            kan_grid_size=int(model_config.get("kan_grid_size", 8)),
+            kan_spline_order=int(model_config.get("kan_spline_order", 3)),
+            kan_grid_range=float(model_config.get("kan_grid_range", 3.0)),
+            kan_match_parameters=bool(model_config.get("kan_match_parameters", True)),
+        )
+
+
+_ACTIVE_KINDS = NetworkKinds()
+
+
+class use_network_kinds:
+    """Context manager selecting the function classes for constructors run inside it."""
+
+    def __init__(self, kinds: NetworkKinds) -> None:
+        self._kinds = kinds
+        self._previous: NetworkKinds | None = None
+
+    def __enter__(self) -> NetworkKinds:
+        global _ACTIVE_KINDS
+        self._previous = _ACTIVE_KINDS
+        _ACTIVE_KINDS = self._kinds
+        return self._kinds
+
+    def __exit__(self, *exc) -> None:
+        global _ACTIVE_KINDS
+        assert self._previous is not None
+        _ACTIVE_KINDS = self._previous
+
+
+def active_network_kinds() -> NetworkKinds:
+    return _ACTIVE_KINDS
+
+
+def _kan_with_budget(input_dim, hidden_dims, output_dim, kinds: NetworkKinds) -> nn.Sequential:
+    widths = list(hidden_dims)
+    if kinds.kan_match_parameters and widths:
+        widths = matched_kan_hidden_dims(
+            input_dim, hidden_dims, output_dim, kinds.kan_grid_size + kinds.kan_spline_order
+        )
+    return make_kan(
+        input_dim,
+        widths,
+        output_dim,
+        grid_size=kinds.kan_grid_size,
+        spline_order=kinds.kan_spline_order,
+        grid_range=kinds.kan_grid_range,
+    )
+
+
+def make_head_network(input_dim: int, hidden_dims: Sequence[int], output_dim: int) -> nn.Module:
+    """Value / policy head in the active function class."""
+
+    kinds = active_network_kinds()
+    if kinds.head == "mlp":
+        return make_mlp(input_dim, hidden_dims, output_dim)
+    if kinds.head == "kan":
+        return _kan_with_budget(input_dim, hidden_dims, output_dim, kinds)
+    return OrthonormalBasisHead(
+        input_dim,
+        output_dim,
+        projection_dim=kinds.basis_projection_dim,
+        order=kinds.basis_order,
+    )
+
+
+def make_trunk_network(input_dim: int, hidden_dims: Sequence[int], output_dim: int) -> nn.Module:
+    """Encoder / denoiser / filter network in the active function class."""
+
+    kinds = active_network_kinds()
+    if kinds.trunk == "mlp":
+        return make_mlp(input_dim, hidden_dims, output_dim)
+    return _kan_with_budget(input_dim, hidden_dims, output_dim, kinds)
+
+
+def init_final_linear(module: nn.Module, gain: float) -> None:
+    """Orthogonal-init the last ``nn.Linear`` of ``module`` if it has one (KAN has none)."""
+
+    for layer in reversed(list(module.modules())):
+        if isinstance(layer, nn.Linear):
+            nn.init.orthogonal_(layer.weight, gain=gain)
+            nn.init.zeros_(layer.bias)
+            return
+
+
 class ObservationPredictor(nn.Module):
     """Heteroscedastic next-observation density from particles and the action.
 

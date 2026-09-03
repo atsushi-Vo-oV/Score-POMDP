@@ -155,6 +155,10 @@ _MODEL_KEYS = frozenset(
         "kan_spline_order",
         "kan_grid_range",
         "kan_match_parameters",
+        "head_network_kind",
+        "trunk_network_kind",
+        "basis_order",
+        "basis_projection_dim",
         "belief_gradient_mode",
     }
 )
@@ -226,6 +230,11 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         "kan_spline_order": 3,
         "kan_grid_range": 3.0,
         "kan_match_parameters": True,
+        # Heads and trunks were MLPs before the basis / KAN head options.
+        "head_network_kind": "mlp",
+        "trunk_network_kind": "mlp",
+        "basis_order": 4,
+        "basis_projection_dim": 16,
     },
     # The particle-filter and Elman-RNN baselines arrived after the first
     # campaigns; legacy resolved configs compare equal at these inert defaults.
@@ -509,6 +518,14 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
     _integer(section["kan_spline_order"], "model.kan_spline_order")
     _positive_number(section["kan_grid_range"], "model.kan_grid_range")
     _boolean(section["kan_match_parameters"], "model.kan_match_parameters")
+    head_kind = _nonempty_string(section["head_network_kind"], "model.head_network_kind")
+    if head_kind not in {"mlp", "kan", "basis"}:
+        raise ConfigError("model.head_network_kind must be mlp, kan, or basis")
+    trunk_kind = _nonempty_string(section["trunk_network_kind"], "model.trunk_network_kind")
+    if trunk_kind not in {"mlp", "kan"}:
+        raise ConfigError("model.trunk_network_kind must be mlp or kan")
+    _integer(section["basis_order"], "model.basis_order")
+    _integer(section["basis_projection_dim"], "model.basis_projection_dim")
     bound = _nonempty_string(
         section["langevin_schedule_bound"], "model.langevin_schedule_bound"
     )

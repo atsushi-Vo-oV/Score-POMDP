@@ -29,6 +29,7 @@ from .artifacts import RunArtifacts, SeedArtifacts
 from .buffer import BeliefReplayPrefix, RolloutBuilder
 from .config import ExperimentConfig, load_config, normalize_legacy_resolved_config
 from .envs import ActionSpec, make_env
+from .networks import NetworkKinds, use_network_kinds
 from .policies import ScoreBeliefActorCritic
 from .ppo import update_ppo
 from .value_transform import ValueTransform
@@ -467,6 +468,12 @@ def model_for_environment(
     model_config: dict[str, Any],
     device: torch.device,
 ) -> ScoreBeliefActorCritic:
+    with use_network_kinds(NetworkKinds.from_config(model_config)):
+        model = _construct_score_model(environment, model_config)
+    return model.to(device)
+
+
+def _construct_score_model(environment: Any, model_config: dict[str, Any]) -> ScoreBeliefActorCritic:
     spec = environment.action_spec
     model = ScoreBeliefActorCritic(
         observation_dim=environment.observation_dim,
@@ -478,7 +485,7 @@ def model_for_environment(
         action_high=None if spec.high is None else spec.high.tolist(),
         model_config=model_config,
     )
-    return model.to(device)
+    return model
 
 
 class _PassiveKalmanDemo:

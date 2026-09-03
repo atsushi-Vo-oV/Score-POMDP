@@ -20,7 +20,7 @@ import torch
 from torch import nn
 from torch.distributions import Categorical, Independent, Normal
 
-from .networks import make_mlp
+from .networks import init_final_linear, make_head_network, make_trunk_network
 from .policies import DiffusionPolicy, PolicySample, TanhGaussianPolicy
 
 BaselineKind = Literal["observation", "oracle_state", "gru", "rnn", "particle_filter"]
@@ -60,7 +60,7 @@ def _feature_encoder(input_dim: int, hidden_dims: Sequence[int]) -> tuple[nn.Mod
     # ``make_mlp`` deliberately leaves its output layer linear.  Here that
     # output is a hidden representation, so keep a non-linearity even when the
     # configured baseline has only one hidden width (as in the local smoke).
-    return nn.Sequential(make_mlp(input_dim, widths[:-1], widths[-1]), nn.SiLU()), widths[-1]
+    return nn.Sequential(make_trunk_network(input_dim, widths[:-1], widths[-1]), nn.SiLU()), widths[-1]
 
 
 class SquashedDiagonalGaussian(nn.Module):
@@ -203,7 +203,7 @@ class _PolicyValueHeads(nn.Module):
         self.continuous_policy_kind = continuous_policy_kind
         if continuous_policy_kind not in {"gaussian", "diffusion"}:
             raise ValueError("continuous_policy_kind must be gaussian or diffusion")
-        self.value_head = make_mlp(feature_dim, hidden_dims, 1)
+        self.value_head = make_head_network(feature_dim, hidden_dims, 1)
 
         if action_kind == "discrete":
             if (
@@ -212,18 +212,12 @@ class _PolicyValueHeads(nn.Module):
                 or discrete_actions < 2
             ):
                 raise ValueError("a discrete policy requires at least two actions")
-            self.categorical_head: nn.Module | None = make_mlp(
+            self.categorical_head: nn.Module | None = make_head_network(
                 feature_dim,
                 hidden_dims,
                 discrete_actions,
             )
-            final_categorical_layer = next(
-                layer
-                for layer in reversed(list(self.categorical_head.modules()))
-                if isinstance(layer, nn.Linear)
-            )
-            nn.init.orthogonal_(final_categorical_layer.weight, gain=0.01)
-            nn.init.zeros_(final_categorical_layer.bias)
+            init_final_linear(self.categorical_head, 0.01)
             self.gaussian_policy: TanhGaussianPolicy | None = None
             self.diffusion_policy: DiffusionPolicy | None = None
         elif action_kind == "continuous":
@@ -764,11 +758,11 @@ class ParticleFilterActorCritic(nn.Module):
         self.recurrent_layers = 1
 
         self.anchors = nn.Parameter(torch.randn(num_particles, particle_dim) * 0.1)
-        self.initial_net = make_mlp(observation_dim + particle_dim, widths, particle_dim)
-        self.transition_net = make_mlp(particle_dim + observation_dim, widths, particle_dim)
-        self.weight_net = make_mlp(particle_dim + observation_dim, widths, 1)
+        self.initial_net = make_trunk_network(observation_dim + particle_dim, widths, particle_dim)
+        self.transition_net = make_trunk_network(particle_dim + observation_dim, widths, particle_dim)
+        self.weight_net = make_trunk_network(particle_dim + observation_dim, widths, 1)
         self.feature_net = nn.Sequential(
-            make_mlp(particle_dim, widths[:-1], widths[-1]), nn.SiLU()
+            make_trunk_network(particle_dim, widths[:-1], widths[-1]), nn.SiLU()
         )
         condition_dim = widths[-1] if policy_condition_dim is None else policy_condition_dim
         if condition_dim <= 0:
