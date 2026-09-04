@@ -153,6 +153,12 @@ _MODEL_KEYS = frozenset(
         "alpha_use_scores",
         "observation_prediction_coef",
         "observation_predictor_hidden",
+        "reward_prediction_coef",
+        "reward_predictor_hidden",
+        "langevin_transition_proposal",
+        "langevin_observation_anchor",
+        "proposal_hidden",
+        "encoder_use_scores",
         "energy_network_kind",
         "kan_grid_size",
         "kan_spline_order",
@@ -227,6 +233,15 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         # the auxiliary head absent and the update bit-identical.
         "observation_prediction_coef": 0.0,
         "observation_predictor_hidden": [64],
+        # Reward supervision, learned chain proposals, and the encoder score
+        # switch arrived with the "score v2" study; these defaults keep the
+        # sampler and the encoder inputs unchanged.
+        "reward_prediction_coef": 0.0,
+        "reward_predictor_hidden": [64],
+        "langevin_transition_proposal": False,
+        "langevin_observation_anchor": False,
+        "proposal_hidden": [64],
+        "encoder_use_scores": True,
         # Energy networks were plain MLPs before the KAN option existed.
         "energy_network_kind": "mlp",
         "kan_grid_size": 8,
@@ -520,6 +535,19 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
     _positive_integer_list(
         section["observation_predictor_hidden"], "model.observation_predictor_hidden"
     )
+    _number(section["reward_prediction_coef"], "model.reward_prediction_coef", minimum=0.0)
+    _positive_integer_list(section["reward_predictor_hidden"], "model.reward_predictor_hidden")
+    _positive_integer_list(section["proposal_hidden"], "model.proposal_hidden")
+    for key in (
+        "langevin_transition_proposal",
+        "langevin_observation_anchor",
+        "encoder_use_scores",
+    ):
+        _boolean(section[key], f"model.{key}")
+    if section["langevin_transition_proposal"] and not section["langevin_warm_start"]:
+        raise ConfigError(
+            "model.langevin_transition_proposal requires model.langevin_warm_start"
+        )
     energy_kind = _nonempty_string(section["energy_network_kind"], "model.energy_network_kind")
     if energy_kind not in {"mlp", "kan"}:
         raise ConfigError("model.energy_network_kind must be mlp or kan")

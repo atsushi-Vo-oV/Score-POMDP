@@ -18,6 +18,7 @@ from .networks import (
     BeliefSetEncoder,
     DeepSetsBeliefEncoder,
     ObservationPredictor,
+    RewardPredictor,
     init_final_linear,
     make_head_network,
     make_trunk_network,
@@ -427,7 +428,11 @@ class ScoreBeliefActorCritic(nn.Module):
             kan_spline_order=int(model_config.get("kan_spline_order", 3)),
             kan_grid_range=float(model_config.get("kan_grid_range", 3.0)),
             kan_match_parameters=bool(model_config.get("kan_match_parameters", True)),
+            transition_proposal=bool(model_config.get("langevin_transition_proposal", False)),
+            observation_anchor=bool(model_config.get("langevin_observation_anchor", False)),
+            proposal_hidden=list(model_config.get("proposal_hidden", [64])),
         )
+        encoder_use_scores = bool(model_config.get("encoder_use_scores", True))
         if self.encoder_kind == "transformer":
             self.encoder: nn.Module = BeliefSetEncoder(
                 state_dim=state_dim,
@@ -436,6 +441,7 @@ class ScoreBeliefActorCritic(nn.Module):
                 num_layers=model_config["num_transformer_layers"],
                 feedforward_dim=model_config["transformer_ff_dim"],
                 dropout=model_config["dropout"],
+                use_scores=encoder_use_scores,
             )
         elif self.encoder_kind == "alpha_pool":
             self.encoder = AlphaPoolBeliefEncoder(
@@ -450,6 +456,7 @@ class ScoreBeliefActorCritic(nn.Module):
                 d_model=model_config["d_model"],
                 feedforward_dim=model_config["transformer_ff_dim"],
                 dropout=model_config["dropout"],
+                use_scores=encoder_use_scores,
             )
         condition_dim = model_config["d_model"]
         self.observation_prediction_coef = float(
@@ -466,6 +473,15 @@ class ScoreBeliefActorCritic(nn.Module):
             )
         else:
             self.observation_predictor = None
+        self.reward_prediction_coef = float(model_config.get("reward_prediction_coef", 0.0))
+        if self.reward_prediction_coef > 0.0:
+            self.reward_predictor: RewardPredictor | None = RewardPredictor(
+                state_dim,
+                action_feature_dim,
+                model_config.get("reward_predictor_hidden", [64]),
+            )
+        else:
+            self.reward_predictor = None
         if self.policy_head_kind == "alpha_lse":
             # A convex (PWLC) value functional; with the alpha_pool encoder the
             # value is exactly a smooth max of belief-linear functionals.

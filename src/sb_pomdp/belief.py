@@ -9,7 +9,7 @@ from typing import Literal
 import torch
 from torch import nn
 
-from .networks import NETWORK_KINDS, make_network, matched_kan_hidden_dims
+from .networks import NETWORK_KINDS, make_mlp, make_network, matched_kan_hidden_dims
 
 TemporalGradientMode = Literal["full", "tbptt_1"]
 PotentialBranch = Literal["initial", "recursive", "mixed"]
@@ -30,6 +30,22 @@ def _langevin_step_sizes(
     if any(value <= 0 for value in steps):
         raise ValueError("all Langevin step sizes must be positive")
     return steps
+
+
+_ANCHOR_LOG_SCALE_MIN = -4.0
+_ANCHOR_LOG_SCALE_MAX = 2.0
+
+
+def _zero_final_mlp(input_dim: int, hidden_dims: Sequence[int], output_dim: int) -> nn.Module:
+    """MLP whose last linear layer starts at zero (an identity-preserving proposal)."""
+
+    network = make_mlp(input_dim, list(hidden_dims), output_dim)
+    for layer in reversed(list(network.modules())):
+        if isinstance(layer, nn.Linear):
+            nn.init.zeros_(layer.weight)
+            nn.init.zeros_(layer.bias)
+            break
+    return network
 
 
 def score_from_potential(
@@ -115,6 +131,14 @@ class EnergyBelief(nn.Module):
     a live gradient everywhere).  ``langevin_warm_start`` initialises the chain
     of a recursive step at the previous particles instead of fresh noise, which
     turns the particle positions themselves into a memory carrier.
+    ``transition_proposal`` (warm start only) first moves those previous
+    particles by a learned drift ``g(s_{t-1}, a_{t-1})`` - the explicit
+    prediction step of a particle filter - so the chain starts where the state
+    plausibly went instead of where it was; ``observation_anchor`` replaces the
+    standard-normal chain start of an *initial* step by a learned proposal
+    ``mu(o_0) + sigma(o_0) * xi``.  Both are zero-initialised, so a fresh model
+    is bit-identical to the plain cold/warm sampler, and both are trained only
+    through the policy/auxiliary gradients that flow into the chain (no state).
     """
 
     def __init__(
@@ -138,6 +162,9 @@ class EnergyBelief(nn.Module):
         kan_spline_order: int = 3,
         kan_grid_range: float = 3.0,
         kan_match_parameters: bool = True,
+        transition_proposal: bool = False,
+        observation_anchor: bool = False,
+        proposal_hidden: Sequence[int] = (64,),
     ) -> None:
         super().__init__()
         if energy_network_kind not in NETWORK_KINDS:
@@ -220,6 +247,18 @@ class EnergyBelief(nn.Module):
                 kan_grid_range=float(kan_grid_range),
             )
 
+        if transition_proposal and not self.langevin_warm_start:
+            raise ValueError("transition_proposal requires langevin_warm_start")
+        self.transition_proposal: nn.Module | None = (
+            _zero_final_mlp(state_dim + action_feature_dim, proposal_hidden, state_dim)
+            if transition_proposal
+            else None
+        )
+        self.observation_anchor: nn.Module | None = (
+            _zero_final_mlp(observation_dim, proposal_hidden, 2 * state_dim)
+            if observation_anchor
+            else None
+        )
         self.initial_energy = energy_network("initial", observation_dim + state_dim)
         self.observation_energy = energy_network(
             "observation", observation_dim + state_dim + action_feature_dim
@@ -601,12 +640,30 @@ class EnergyBelief(nn.Module):
         elif potential_branch not in {"initial", "recursive", "mixed"}:
             raise ValueError("potential_branch must be initial, recursive, or mixed")
 
+        if self.observation_anchor is not None:
+            anchor = self.observation_anchor(observation)
+            anchor_mean, anchor_log_scale = anchor.chunk(2, dim=-1)
+            anchor_log_scale = anchor_log_scale.clamp(
+                _ANCHOR_LOG_SCALE_MIN, _ANCHOR_LOG_SCALE_MAX
+            )
+            anchored = (
+                anchor_mean[:, None, :] + anchor_log_scale.exp()[:, None, :] * particles
+            )
+            particles = torch.where(initial.view(-1, 1, 1), anchored, particles)
         if self.langevin_warm_start:
             if incoming_particles.shape[1] != particles.shape[1]:
                 raise ValueError(
                     "langevin_warm_start needs matching previous and current particle counts"
                 )
-            particles = torch.where(initial.view(-1, 1, 1), particles, incoming_particles)
+            warm = incoming_particles
+            if self.transition_proposal is not None:
+                action_tiled = previous_action[:, None, :].expand(
+                    -1, incoming_particles.shape[1], -1
+                )
+                warm = warm + self.transition_proposal(
+                    torch.cat((incoming_particles, action_tiled), dim=-1)
+                )
+            particles = torch.where(initial.view(-1, 1, 1), particles, warm)
 
         if self.langevin_log_temperature is None:
             step_temperatures = None

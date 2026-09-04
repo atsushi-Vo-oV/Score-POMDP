@@ -50,13 +50,15 @@ class BeliefSetEncoder(nn.Module):
         num_layers: int,
         feedforward_dim: int,
         dropout: float,
+        use_scores: bool = True,
     ) -> None:
         super().__init__()
         if d_model % num_heads:
             raise ValueError("d_model must be divisible by num_heads")
         self.state_dim = state_dim
+        self.use_scores = bool(use_scores)
         self.token_projection = nn.Sequential(
-            nn.Linear(2 * state_dim, d_model),
+            nn.Linear((2 if self.use_scores else 1) * state_dim, d_model),
             nn.LayerNorm(d_model),
             nn.SiLU(),
         )
@@ -83,7 +85,9 @@ class BeliefSetEncoder(nn.Module):
             raise ValueError(
                 f"expected [batch, particles, {self.state_dim}], got {tuple(particles.shape)}"
             )
-        tokens = self.token_projection(torch.cat((particles, scores), dim=-1))
+        tokens = self.token_projection(
+            torch.cat((particles, scores), dim=-1) if self.use_scores else particles
+        )
         encoded = self.transformer(tokens)
         return self.output_norm(encoded.mean(dim=1))
 
@@ -103,6 +107,7 @@ class DeepSetsBeliefEncoder(nn.Module):
         d_model: int,
         feedforward_dim: int,
         dropout: float,
+        use_scores: bool = True,
     ) -> None:
         super().__init__()
         if state_dim <= 0 or d_model <= 0 or feedforward_dim <= 0:
@@ -110,8 +115,9 @@ class DeepSetsBeliefEncoder(nn.Module):
         if not 0.0 <= dropout < 1.0:
             raise ValueError("dropout must be in [0, 1)")
         self.state_dim = state_dim
+        self.use_scores = bool(use_scores)
         self.element_encoder = nn.Sequential(
-            nn.Linear(2 * state_dim, feedforward_dim),
+            nn.Linear((2 if self.use_scores else 1) * state_dim, feedforward_dim),
             nn.LayerNorm(feedforward_dim),
             nn.SiLU(),
             nn.Dropout(dropout),
@@ -134,7 +140,9 @@ class DeepSetsBeliefEncoder(nn.Module):
             raise ValueError(
                 f"expected [batch, particles, {self.state_dim}], got {tuple(particles.shape)}"
             )
-        tokens = self.element_encoder(torch.cat((particles, scores), dim=-1))
+        tokens = self.element_encoder(
+            torch.cat((particles, scores), dim=-1) if self.use_scores else particles
+        )
         return self.pooled_encoder(tokens.mean(dim=1))
 
 
@@ -614,6 +622,64 @@ class ObservationPredictor(nn.Module):
             - 0.5 * math.log(2.0 * math.pi)
         )
         per_particle = per_dim.sum(dim=-1)
+        return torch.logsumexp(per_particle, dim=1) - math.log(num_particles)
+
+
+class RewardPredictor(nn.Module):
+    """Heteroscedastic reward density from particles and the executed action.
+
+    Companion of :class:`ObservationPredictor` for the reward stream: maximising
+    ``log (1/K) sum_k N(r_t; mu(s_k, a_t), sigma(s_k, a_t))`` asks the particle
+    set to carry whatever the *observed* reward depends on.  Rewards are part of
+    the agent's own experience stream, so this is state-free supervision; the
+    head is auxiliary and never feeds policy or value.
+    """
+
+    _LOG_STD_MIN = -4.0
+    _LOG_STD_MAX = 3.0
+
+    def __init__(
+        self,
+        state_dim: int,
+        action_feature_dim: int,
+        hidden_dims: Sequence[int],
+    ) -> None:
+        super().__init__()
+        if state_dim <= 0 or action_feature_dim < 0:
+            raise ValueError("reward predictor dimensions must be positive")
+        self.state_dim = state_dim
+        self.action_feature_dim = action_feature_dim
+        self.network = make_mlp(state_dim + action_feature_dim, hidden_dims, 2)
+
+    def log_likelihood(
+        self,
+        particles: torch.Tensor,
+        action_features: torch.Tensor,
+        reward: torch.Tensor,
+    ) -> torch.Tensor:
+        """Mixture log-likelihood ``log (1/K) sum_k p(r | s_k, a)`` per batch row."""
+
+        if particles.ndim != 3 or particles.shape[-1] != self.state_dim:
+            raise ValueError(
+                f"expected particles [batch, K, {self.state_dim}], got {tuple(particles.shape)}"
+            )
+        batch, num_particles = particles.shape[0], particles.shape[1]
+        if action_features.shape != (batch, self.action_feature_dim):
+            raise ValueError("action features must have shape [batch, action_feature_dim]")
+        if reward.shape != (batch,):
+            raise ValueError("reward must have shape [batch]")
+        expanded_actions = action_features[:, None, :].expand(
+            batch, num_particles, self.action_feature_dim
+        )
+        outputs = self.network(torch.cat((particles, expanded_actions), dim=-1))
+        mean, log_std = outputs[..., 0], outputs[..., 1]
+        log_std = log_std.clamp(self._LOG_STD_MIN, self._LOG_STD_MAX)
+        target = reward[:, None]
+        per_particle = (
+            -0.5 * ((target - mean) / log_std.exp()).square()
+            - log_std
+            - 0.5 * math.log(2.0 * math.pi)
+        )
         return torch.logsumexp(per_particle, dim=1) - math.log(num_particles)
 
 

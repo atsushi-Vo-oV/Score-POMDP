@@ -64,6 +64,40 @@ def diffusion_advantage_weights(
     return discount**exponents
 
 
+def reward_prediction_loss(
+    model: ScoreBeliefActorCritic,
+    particles: torch.Tensor,
+    rollout: RolloutBatch,
+    environment_indices: torch.Tensor,
+) -> torch.Tensor:
+    """Negative predictive log-likelihood of the observed reward.
+
+    Mirrors :func:`observation_prediction_loss`: the belief at step ``t`` and
+    the action executed there (stored as the *previous* action of step
+    ``t+1``) must explain the reward received at ``t``.  Episode-final steps
+    have no stored successor action and are masked out.
+    """
+
+    predictor = getattr(model, "reward_predictor", None)
+    if predictor is None:
+        raise ValueError("the model has no reward predictor")
+    if particles.shape[0] < 2:
+        return particles.new_zeros(())
+    dones = rollout.dones[:, environment_indices]
+    actions = rollout.previous_actions[1:, environment_indices]
+    rewards = rollout.rewards[:-1, environment_indices]
+    source = particles[:-1]
+    valid = (~dones[:-1]).reshape(-1)
+    steps, group = source.shape[0], source.shape[1]
+    log_likelihood = predictor.log_likelihood(
+        source.reshape(steps * group, *source.shape[2:]),
+        actions.reshape(steps * group, -1),
+        rewards.reshape(steps * group),
+    )
+    mask = valid.to(log_likelihood.dtype)
+    return -(log_likelihood * mask).sum() / mask.sum().clamp_min(1.0)
+
+
 def _clipped_policy_loss(
     new_log_prob: torch.Tensor,
     old_log_prob: torch.Tensor,
@@ -576,6 +610,10 @@ def update_ppo(
                         total_loss
                         + float(model.observation_prediction_coef) * prediction_loss
                     )
+                if getattr(model, "reward_predictor", None) is not None:
+                    total_loss = total_loss + float(
+                        model.reward_prediction_coef
+                    ) * reward_prediction_loss(model, particles, rollout, environment_indices)
                 (total_loss * microbatch_weight).backward()
 
                 microbatch_values = {
