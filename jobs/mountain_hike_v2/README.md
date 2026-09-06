@@ -23,6 +23,8 @@
 | mountain_hike_v2g_liteL16.json | score_alpha | 100 | v2g, small networks (energy [16,16], d_model 32, policy [48,48]) with L 4 -> 16 |
 | mountain_hike_v2g_liteK32.json | score_transformer | 100 | v2g, small networks with K 16 -> 32 and L 4 -> 8 |
 | mountain_hike_v2g_liteK32.json | score_alpha | 100 | v2g, small networks with K 16 -> 32 and L 4 -> 8 |
+| mountain_hike_ab_warm.json | score_transformer | 100 | 対照: warm のみ(アンカー・補助・g なし) |
+| mountain_hike_ab_aux.json | score_transformer | 100 | 対照: 補助損失のみ(cold、アンカー・g なし) |
 
 ```bash
 pjsub jobs/mountain_hike_v2/debug_v2.sh        # 15 本の gate
