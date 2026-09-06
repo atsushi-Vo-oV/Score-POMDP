@@ -152,3 +152,39 @@ def test_config_accepts_a_mountain_hike_task_block() -> None:
                 },
             }
         )
+
+
+def test_teleport_relocates_uniformly_and_is_off_by_default() -> None:
+    import numpy as np
+
+    from sb_pomdp.envs import MountainHikeEnv
+
+    plain = MountainHikeEnv(observation_noise_std=0.0, transition_std=0.0)
+    plain.reset(seed=3)
+    before = plain._state.copy()
+    _, _, _, _, info = plain.step(np.array([0.1, 0.0]))
+    assert info["teleported"] is False
+    assert np.allclose(plain._state, before + np.array([0.1, 0.0]))
+
+    jumpy = MountainHikeEnv(observation_noise_std=0.0, transition_std=0.0, teleport_probability=0.999)
+    jumpy.reset(seed=3)
+    states = []
+    for _ in range(20):
+        _, _, _, _, info = jumpy.step(np.array([0.0, 0.0]))
+        assert info["teleported"] is True
+        states.append(jumpy._state.copy())
+    states = np.stack(states)
+    assert np.all(np.abs(states) <= 10.0) and states.std(axis=0).min() > 2.0
+    with pytest.raises(ValueError):
+        MountainHikeEnv(teleport_probability=1.0)
+
+
+def test_teleport_probability_is_a_validated_task_key() -> None:
+    from sb_pomdp.config import ConfigError, load_config
+
+    config = load_config("config/mountain_hike.json")
+    assert config.to_dict()["environment"]["tasks"]["mountain_hike"]["teleport_probability"] == 0.0
+    accepted = config.with_overrides({"environment.tasks.mountain_hike.teleport_probability": 0.03})
+    assert accepted.to_dict()["environment"]["tasks"]["mountain_hike"]["teleport_probability"] == 0.03
+    with pytest.raises(ConfigError):
+        config.with_overrides({"environment.tasks.mountain_hike.teleport_probability": 1.5})

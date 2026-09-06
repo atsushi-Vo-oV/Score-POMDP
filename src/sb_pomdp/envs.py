@@ -949,6 +949,7 @@ class MountainHikeEnv(_BaseMaskedEnv):
         goal_radius: float = 1.0,
         goal_reward: float = 0.0,
         goal_end: bool = False,
+        teleport_probability: float = 0.0,
     ) -> None:
         super().__init__(
             horizon=horizon,
@@ -990,6 +991,12 @@ class MountainHikeEnv(_BaseMaskedEnv):
         self.goal_radius = float(goal_radius)
         self.goal_reward = float(goal_reward)
         self.goal_end = bool(goal_end)
+        if not 0.0 <= float(teleport_probability) < 1.0:
+            raise ValueError("teleport_probability must be in [0, 1)")
+        # Kidnapped-robot variant: with this probability the transition is replaced
+        # by a uniform relocation inside the box, so the belief must be rebuilt.
+        self.teleport_probability = float(teleport_probability)
+        self._teleported = False
         self.action_spec = ActionSpec.continuous(-self.max_action, self.max_action, shape=(2,))
 
     def terrain_reward(self, position: np.ndarray) -> float:
@@ -1022,6 +1029,7 @@ class MountainHikeEnv(_BaseMaskedEnv):
         info["terrain_reward"] = self.terrain_reward(self._state)
         info["outside_box"] = self._outside_box()
         info["distance_to_goal"] = float(np.linalg.norm(self._state - self.goal_position))
+        info["teleported"] = bool(self._teleported)
         return info
 
     def oracle_features(self) -> np.ndarray:
@@ -1033,6 +1041,7 @@ class MountainHikeEnv(_BaseMaskedEnv):
 
     def reset(self, seed: int | None = None) -> tuple[np.ndarray, dict[str, Any]]:
         self._start_reset(seed)
+        self._teleported = False
         self._state = self._rng.normal(
             loc=self.start_mean,
             scale=self.start_std,
@@ -1054,7 +1063,12 @@ class MountainHikeEnv(_BaseMaskedEnv):
             if self.transition_std > 0.0
             else np.zeros(2)
         )
-        self._state = self._state + proposed + noise
+        if self.teleport_probability > 0.0 and self._rng.random() < self.teleport_probability:
+            self._state = self._rng.uniform(-self.box_scale, self.box_scale, size=2)
+            self._teleported = True
+        else:
+            self._state = self._state + proposed + noise
+            self._teleported = False
         reached = self._reached_goal()
         if reached and self.goal_reward != 0.0:
             reward = self.goal_reward
@@ -1082,6 +1096,7 @@ _MOUNTAIN_HIKE_KEYS = {
     "goal_radius",
     "goal_reward",
     "goal_end",
+    "teleport_probability",
 }
 
 _LIGHT_DARK_KEYS = {

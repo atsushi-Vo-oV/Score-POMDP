@@ -64,6 +64,7 @@ _MOUNTAIN_HIKE_TASK_KEYS = frozenset(
         "goal_radius",
         "goal_reward",
         "goal_end",
+        "teleport_probability",
     }
 )
 
@@ -448,6 +449,10 @@ def _validate_mountain_hike_task(task: Mapping[str, Any], path: str) -> None:
                 _number(item, f"{path}.{key}[{index}]")
     if "goal_end" in task:
         _boolean(task["goal_end"], f"{path}.goal_end")
+    if "teleport_probability" in task:
+        probability = _number(task["teleport_probability"], f"{path}.teleport_probability", minimum=0.0)
+        if probability >= 1.0:
+            raise ConfigError(f"{path}.teleport_probability must be below 1")
 
 
 def _validate_light_dark_task(task: Mapping[str, Any], path: str) -> None:
@@ -800,6 +805,7 @@ _MOUNTAIN_HIKE_TASK_DEFAULTS: dict[str, JSONValue] = {
     "goal_radius": 1.0,
     "goal_reward": 0.0,
     "goal_end": False,
+    "teleport_probability": 0.0,
 }
 
 
