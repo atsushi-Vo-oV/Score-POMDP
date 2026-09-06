@@ -15,7 +15,7 @@ PROJECT_ROOT="${PJM_O_WORKDIR:-$PWD}"
 cd "$PROJECT_ROOT"
 
 module purge
-module load cuda/12.2.2 cudnn/8.9.7 nccl/2.22.3 pytorch-cuda/2.3.1-12.2.2
+eval "${SB_POMDP_CPU_ENV:-source ~/cpu-torch/bin/activate}"
 export PYTHONPATH="$PROJECT_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 export OMP_NUM_THREADS=30
 export MKL_NUM_THREADS=30
