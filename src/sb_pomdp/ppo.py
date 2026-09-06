@@ -64,6 +64,42 @@ def diffusion_advantage_weights(
     return discount**exponents
 
 
+def action_value_advantages(
+    model: ScoreBeliefActorCritic,
+    condition: torch.Tensor,
+    taken_values: torch.Tensor,
+    advantages: torch.Tensor,
+    environment_indices: torch.Tensor,
+    value_transform: ValueTransform,
+    ppo_config: dict,
+) -> torch.Tensor:
+    """Advantages for the action-value critic, mixed with GAE by ``q_advantage_mix``.
+
+    ``A_Q = Q(b, a) - E_{a' ~ pi} Q(b, a')`` in raw return units (detached), so
+    the policy step no longer depends on the state-value bootstrap; ``mix``
+    interpolates towards the stored GAE advantages (Q-Prop / IPG style).  The
+    returned tensor has the rollout's full ``[time, environment]`` shape.
+    """
+
+    mix = float(ppo_config.get("q_advantage_mix", 1.0))
+    if mix <= 0.0:
+        return advantages
+    steps = advantages.shape[0]
+    with torch.no_grad():
+        expected = model.expected_action_value(condition)
+        q_advantage = value_transform.to_raw(taken_values.detach()) - value_transform.to_raw(expected)
+        q_advantage = q_advantage.reshape(steps, -1)
+        if ppo_config["normalize_advantage"]:
+            q_advantage = (q_advantage - q_advantage.mean()) / (
+                q_advantage.std(unbiased=False) + 1e-8
+            )
+        mixed = advantages.clone()
+        mixed[:, environment_indices] = (1.0 - mix) * advantages[:, environment_indices] + (
+            mix * q_advantage.to(advantages.dtype)
+        )
+    return mixed
+
+
 def reward_prediction_loss(
     model: ScoreBeliefActorCritic,
     particles: torch.Tensor,
@@ -582,13 +618,27 @@ def update_ppo(
                     _time_environment_flatten(particles),
                     _time_environment_flatten(scores),
                 )
-                new_values = model.value(condition)
+                if getattr(model, "action_value_head", None) is not None:
+                    taken = _time_environment_flatten(rollout.actions[:, environment_indices])
+                    new_values = model.action_value(condition, taken)
+                    minibatch_advantages = action_value_advantages(
+                        model,
+                        condition,
+                        new_values,
+                        advantages,
+                        environment_indices,
+                        value_transform,
+                        ppo_config,
+                    )
+                else:
+                    new_values = model.value(condition)
+                    minibatch_advantages = advantages
                 policy_loss, approximate_kl, clip_fraction, entropy = policy_objective(
                     model,
                     condition,
                     rollout,
                     environment_indices,
-                    advantages,
+                    minibatch_advantages,
                     model_config,
                     ppo_config,
                 )

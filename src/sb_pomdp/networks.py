@@ -625,6 +625,85 @@ class ObservationPredictor(nn.Module):
         return torch.logsumexp(per_particle, dim=1) - math.log(num_particles)
 
 
+class ActionValueHead(nn.Module):
+    """Action-value critic ``Q(c, a)`` on top of the policy condition ``c``.
+
+    Discrete actions: one forward pass emits ``Q(c, .)`` for every action.
+    Continuous actions: ``Q(c, a)`` from the concatenation ``[c, a]``.  Used by
+    the action-value PPO variant, where the on-policy lambda-return of the
+    executed action is the regression target (a SARSA/Q(lambda) critic) and the
+    advantage is ``Q(c, a) - E_{a' ~ pi}[Q(c, a')]`` (Q-Prop / IPG style).
+    """
+
+    def __init__(
+        self,
+        condition_dim: int,
+        hidden_dims: Sequence[int],
+        *,
+        discrete_actions: int | None = None,
+        action_dim: int | None = None,
+    ) -> None:
+        super().__init__()
+        if (discrete_actions is None) == (action_dim is None):
+            raise ValueError("give exactly one of discrete_actions or action_dim")
+        self.discrete = discrete_actions is not None
+        if self.discrete:
+            assert discrete_actions is not None
+            if discrete_actions < 2:
+                raise ValueError("discrete_actions must be at least 2")
+            self.num_actions = int(discrete_actions)
+            self.network = make_head_network(condition_dim, hidden_dims, self.num_actions)
+        else:
+            assert action_dim is not None
+            if action_dim <= 0:
+                raise ValueError("action_dim must be positive")
+            self.action_dim = int(action_dim)
+            self.network = make_head_network(condition_dim + self.action_dim, hidden_dims, 1)
+
+    def all_values(self, condition: torch.Tensor) -> torch.Tensor:
+        if not self.discrete:
+            raise ValueError("all_values is only defined for discrete actions")
+        return self.network(condition)
+
+    def forward(self, condition: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        if self.discrete:
+            values = self.network(condition)
+            return values.gather(-1, action.long().reshape(-1, 1)).squeeze(-1)
+        if action.shape != (condition.shape[0], self.action_dim):
+            raise ValueError(
+                f"expected actions [{condition.shape[0]}, {self.action_dim}], got {tuple(action.shape)}"
+            )
+        return self.network(torch.cat((condition, action), dim=-1)).squeeze(-1)
+
+
+def expected_action_value(
+    head: ActionValueHead,
+    condition: torch.Tensor,
+    *,
+    categorical_logits: torch.Tensor | None = None,
+    sample_actions=None,
+    num_samples: int = 8,
+) -> torch.Tensor:
+    """``V(c) = E_{a ~ pi(.|c)} Q(c, a)`` without gradient.
+
+    Exact for discrete policies (``categorical_logits``); a Monte Carlo average
+    over ``num_samples`` policy samples otherwise (``sample_actions`` maps a
+    condition batch to actions).  Sampling uses the policy's own RNG path.
+    """
+
+    with torch.no_grad():
+        if head.discrete:
+            if categorical_logits is None:
+                raise ValueError("discrete expected values need the categorical logits")
+            probabilities = torch.softmax(categorical_logits, dim=-1)
+            return (probabilities * head.all_values(condition)).sum(dim=-1)
+        if sample_actions is None or num_samples <= 0:
+            raise ValueError("continuous expected values need an action sampler and samples")
+        repeated = condition.repeat_interleave(num_samples, dim=0)
+        actions = sample_actions(repeated)
+        return head(repeated, actions).reshape(condition.shape[0], num_samples).mean(dim=1)
+
+
 class RewardPredictor(nn.Module):
     """Heteroscedastic reward density from particles and the executed action.
 

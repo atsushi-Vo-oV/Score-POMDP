@@ -22,7 +22,13 @@ from torch import nn
 from torch.distributions import Categorical, Independent, Normal
 from torch.nn import functional
 
-from .networks import init_final_linear, make_head_network, make_trunk_network
+from .networks import (
+    ActionValueHead,
+    expected_action_value,
+    init_final_linear,
+    make_head_network,
+    make_trunk_network,
+)
 from .policies import DiffusionPolicy, PolicySample, TanhGaussianPolicy
 
 BaselineKind = Literal["observation", "oracle_state", "gru", "rnn", "particle_filter"]
@@ -199,13 +205,30 @@ class _PolicyValueHeads(nn.Module):
         diffusion_beta_start: float = 0.01,
         diffusion_beta_end: float = 0.2,
         diffusion_min_std: float = 0.05,
+        critic_kind: Literal["state", "action"] = "state",
+        q_value_samples: int = 8,
     ) -> None:
         super().__init__()
         self.action_kind = action_kind
         self.continuous_policy_kind = continuous_policy_kind
         if continuous_policy_kind not in {"gaussian", "diffusion"}:
             raise ValueError("continuous_policy_kind must be gaussian or diffusion")
-        self.value_head = make_head_network(feature_dim, hidden_dims, 1)
+        if critic_kind not in {"state", "action"}:
+            raise ValueError("critic_kind must be state or action")
+        self.critic_kind = critic_kind
+        self.q_value_samples = int(q_value_samples)
+        self.value_head: nn.Module | None = (
+            None if critic_kind == "action" else make_head_network(feature_dim, hidden_dims, 1)
+        )
+        if critic_kind == "action":
+            self.action_value_head: ActionValueHead | None = ActionValueHead(
+                feature_dim,
+                hidden_dims,
+                discrete_actions=discrete_actions if action_kind == "discrete" else None,
+                action_dim=None if action_kind == "discrete" else len(action_low or ()),
+            )
+        else:
+            self.action_value_head = None
 
         if action_kind == "discrete":
             if (
@@ -250,7 +273,30 @@ class _PolicyValueHeads(nn.Module):
             raise ValueError(f"unsupported action kind: {action_kind}")
 
     def value(self, features: torch.Tensor) -> torch.Tensor:
+        if self.action_value_head is not None:
+            return self.expected_action_value(features)
+        assert self.value_head is not None
         return self.value_head(features).squeeze(-1)
+
+    def action_value(self, features: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        if self.action_value_head is None:
+            raise ValueError("the heads have no action-value critic")
+        return self.action_value_head(features, actions)
+
+    def expected_action_value(self, features: torch.Tensor) -> torch.Tensor:
+        if self.action_value_head is None:
+            raise ValueError("the heads have no action-value critic")
+        logits = None
+        if self.action_kind == "discrete":
+            assert self.categorical_head is not None
+            logits = self.categorical_head(features)
+        return expected_action_value(
+            self.action_value_head,
+            features,
+            categorical_logits=logits,
+            sample_actions=lambda f: self.sample_policy(f, deterministic=False).action,
+            num_samples=self.q_value_samples,
+        )
 
     def sample_policy(
         self,
@@ -362,7 +408,11 @@ class _PolicyValueHeads(nn.Module):
         return ActorCriticEvaluation(
             log_prob=log_prob,
             entropy=entropy,
-            value=self.value(features),
+            value=(
+                self.action_value(features, actions)
+                if self.action_value_head is not None
+                else self.value(features)
+            ),
         )
 
 
@@ -379,6 +429,8 @@ class FeedForwardBaselineActorCritic(nn.Module):
         discrete_actions: int | None = None,
         action_low: Sequence[float] | None = None,
         action_high: Sequence[float] | None = None,
+        critic_kind: Literal["state", "action"] = "state",
+        q_value_samples: int = 8,
     ) -> None:
         super().__init__()
         if input_source not in ("observation", "oracle_state"):
@@ -392,6 +444,8 @@ class FeedForwardBaselineActorCritic(nn.Module):
             discrete_actions=discrete_actions,
             action_low=action_low,
             action_high=action_high,
+            critic_kind=critic_kind,
+            q_value_samples=q_value_samples,
         )
 
     @property
@@ -491,6 +545,8 @@ class GRUActorCritic(nn.Module):
         diffusion_beta_start: float = 0.01,
         diffusion_beta_end: float = 0.2,
         diffusion_min_std: float = 0.05,
+        critic_kind: Literal["state", "action"] = "state",
+        q_value_samples: int = 8,
         discrete_actions: int | None = None,
         action_low: Sequence[float] | None = None,
         action_high: Sequence[float] | None = None,
@@ -540,6 +596,8 @@ class GRUActorCritic(nn.Module):
             diffusion_beta_start=diffusion_beta_start,
             diffusion_beta_end=diffusion_beta_end,
             diffusion_min_std=diffusion_min_std,
+            critic_kind=critic_kind,
+            q_value_samples=q_value_samples,
         )
 
     @property
@@ -735,6 +793,8 @@ class ParticleFilterActorCritic(nn.Module):
         diffusion_beta_start: float = 0.01,
         diffusion_beta_end: float = 0.2,
         diffusion_min_std: float = 0.05,
+        critic_kind: Literal["state", "action"] = "state",
+        q_value_samples: int = 8,
         discrete_actions: int | None = None,
         action_low: Sequence[float] | None = None,
         action_high: Sequence[float] | None = None,
@@ -825,6 +885,8 @@ class ParticleFilterActorCritic(nn.Module):
             diffusion_beta_start=diffusion_beta_start,
             diffusion_beta_end=diffusion_beta_end,
             diffusion_min_std=diffusion_min_std,
+            critic_kind=critic_kind,
+            q_value_samples=q_value_samples,
         )
 
     @property
@@ -1153,6 +1215,8 @@ def make_baseline_actor_critic(
     pf_soft_alpha: float = 0.9,
     pf_variant: Literal["deterministic", "dpfrl"] = "deterministic",
     pf_mgf_features: int = 0,
+    critic_kind: Literal["state", "action"] = "state",
+    q_value_samples: int = 8,
 ) -> FeedForwardBaselineActorCritic | RecurrentBaseline:
     """Build one comparison model from environment dimensions and bounds."""
 
@@ -1162,6 +1226,8 @@ def make_baseline_actor_critic(
         "discrete_actions": discrete_actions,
         "action_low": action_low,
         "action_high": action_high,
+        "critic_kind": critic_kind,
+        "q_value_samples": q_value_samples,
     }
     if kind == "observation":
         return ObservationActorCritic(observation_dim, **common)

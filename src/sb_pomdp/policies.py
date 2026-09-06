@@ -13,12 +13,14 @@ from torch.nn import functional
 
 from .belief import EnergyBelief
 from .networks import (
+    ActionValueHead,
     AlphaLSEHead,
     AlphaPoolBeliefEncoder,
     BeliefSetEncoder,
     DeepSetsBeliefEncoder,
     ObservationPredictor,
     RewardPredictor,
+    expected_action_value,
     init_final_linear,
     make_head_network,
     make_trunk_network,
@@ -482,12 +484,17 @@ class ScoreBeliefActorCritic(nn.Module):
             )
         else:
             self.reward_predictor = None
-        if self.policy_head_kind == "alpha_lse":
+        self.critic_kind = str(model_config.get("critic_kind", "state"))
+        if self.critic_kind not in {"state", "action"}:
+            raise ValueError("critic_kind must be state or action")
+        self.q_value_samples = int(model_config.get("q_value_samples", 8))
+        if self.critic_kind == "action":
+            # The action-value critic replaces the state-value head entirely.
+            self.value_head: nn.Module | None = None
+        elif self.policy_head_kind == "alpha_lse":
             # A convex (PWLC) value functional; with the alpha_pool encoder the
             # value is exactly a smooth max of belief-linear functionals.
-            self.value_head: nn.Module = AlphaLSEHead(
-                condition_dim, 1, alpha_pieces, alpha_temperature
-            )
+            self.value_head = AlphaLSEHead(condition_dim, 1, alpha_pieces, alpha_temperature)
         else:
             self.value_head = make_head_network(
                 condition_dim,
@@ -542,12 +549,46 @@ class ScoreBeliefActorCritic(nn.Module):
                 )
         else:
             raise ValueError(f"unsupported action kind: {action_kind}")
+        if self.critic_kind == "action":
+            self.action_value_head: ActionValueHead | None = ActionValueHead(
+                condition_dim,
+                model_config["policy_hidden"],
+                discrete_actions=discrete_actions if action_kind == "discrete" else None,
+                action_dim=None if action_kind == "discrete" else len(action_low or ()),
+            )
+        else:
+            self.action_value_head = None
 
     def encode(self, particles: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:
         return self.encoder(particles, scores)
 
     def value(self, condition: torch.Tensor) -> torch.Tensor:
+        """State value: the critic output, or ``E_pi Q`` for the action-value critic."""
+
+        if self.action_value_head is not None:
+            return self.expected_action_value(condition)
+        assert self.value_head is not None
         return self.value_head(condition).squeeze(-1)
+
+    def action_value(self, condition: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        if self.action_value_head is None:
+            raise ValueError("the model has no action-value critic")
+        return self.action_value_head(condition, action)
+
+    def expected_action_value(self, condition: torch.Tensor) -> torch.Tensor:
+        if self.action_value_head is None:
+            raise ValueError("the model has no action-value critic")
+        logits = None
+        if self.action_kind == "discrete":
+            assert self.categorical_head is not None
+            logits = self.categorical_head(condition)
+        return expected_action_value(
+            self.action_value_head,
+            condition,
+            categorical_logits=logits,
+            sample_actions=lambda c: self.sample_policy(c, deterministic=False).action,
+            num_samples=self.q_value_samples,
+        )
 
     def sample_policy(
         self,

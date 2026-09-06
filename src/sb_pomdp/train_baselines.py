@@ -177,6 +177,8 @@ def _make_model(
         input_dim += spec.feature_dim
 
     shared_head_kwargs = {
+        "critic_kind": str(model_config.get("critic_kind", "state")),
+        "q_value_samples": int(model_config.get("q_value_samples", 8)),
         "policy_condition_dim": int(model_config["d_model"]),
         "head_hidden_dims": model_config["policy_hidden"],
         "continuous_policy_kind": model_config["continuous_policy_kind"],
@@ -185,7 +187,10 @@ def _make_model(
         "diffusion_beta_end": float(model_config["diffusion_beta_end"]),
         "diffusion_min_std": float(model_config["diffusion_min_std"]),
     }
-    recurrent_kwargs: dict[str, Any] = {}
+    recurrent_kwargs: dict[str, Any] = {
+        "critic_kind": shared_head_kwargs["critic_kind"],
+        "q_value_samples": shared_head_kwargs["q_value_samples"],
+    }
     hidden_dims = model_config["policy_hidden"]
     if method == "gru":
         hidden_dims = comparison_config["gru_encoder_hidden"]
@@ -396,6 +401,29 @@ def _finish_metrics(
     )
 
 
+def _mix_action_value_advantages(
+    heads: Any,
+    features: torch.Tensor,
+    taken_values: torch.Tensor,
+    advantages: torch.Tensor,
+    ppo_config: dict[str, Any],
+) -> torch.Tensor:
+    """Baseline counterpart of :func:`sb_pomdp.ppo.action_value_advantages`."""
+
+    mix = float(ppo_config.get("q_advantage_mix", 1.0))
+    if getattr(heads, "action_value_head", None) is None or mix <= 0.0:
+        return advantages
+    transform = ValueTransform.from_config(ppo_config)
+    with torch.no_grad():
+        expected = heads.expected_action_value(features.detach())
+        q_advantage = transform.to_raw(taken_values.detach()) - transform.to_raw(expected)
+        if ppo_config["normalize_advantage"]:
+            q_advantage = (q_advantage - q_advantage.mean()) / (
+                q_advantage.std(unbiased=False) + 1e-8
+            )
+    return (1.0 - mix) * advantages + mix * q_advantage.to(advantages.dtype)
+
+
 def _optimise_minibatch(
     model: FeedForwardBaselineActorCritic | RecurrentBaseline,
     optimizer: torch.optim.Optimizer,
@@ -474,7 +502,13 @@ def _update_feedforward(
                 optimizer,
                 new_log_prob=evaluation.log_prob,
                 old_log_prob=old_log_prob[indices],
-                advantages=advantages[indices],
+                advantages=_mix_action_value_advantages(
+                    model.heads,
+                    model.encode(inputs[indices]),
+                    evaluation.value,
+                    advantages[indices],
+                    ppo_config,
+                ),
                 new_values=evaluation.value,
                 returns=returns[indices],
                 entropy_values=evaluation.entropy,
@@ -674,7 +708,13 @@ def _update_recurrent(
                 pre_tanh_actions=flat_pre_tanh,
                 diffusion_chains=flat_diffusion_chain,
             )
-            flat_advantages = minibatch_advantages.reshape(transitions)
+            flat_advantages = _mix_action_value_advantages(
+                model.heads,
+                flat_features,
+                evaluation.value,
+                minibatch_advantages.reshape(transitions),
+                ppo_config,
+            )
             flat_old_log_prob = old_log_prob.reshape(
                 transitions,
                 *old_log_prob.shape[2:],

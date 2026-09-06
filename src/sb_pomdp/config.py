@@ -159,6 +159,8 @@ _MODEL_KEYS = frozenset(
         "langevin_observation_anchor",
         "proposal_hidden",
         "encoder_use_scores",
+        "critic_kind",
+        "q_value_samples",
         "energy_network_kind",
         "kan_grid_size",
         "kan_spline_order",
@@ -195,6 +197,7 @@ _PPO_KEYS = frozenset(
         "p3o_eta",
         "p3o_resample_interval",
         "p3o_demo_slots",
+        "q_advantage_mix",
     }
 )
 
@@ -216,6 +219,8 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         "p3o_eta": 1.0,
         "p3o_resample_interval": 5,
         "p3o_demo_slots": 0,
+        # Action-value critic advantages are mixed with GAE by this weight.
+        "q_advantage_mix": 1.0,
     },
     # Langevin tempering and warm starts arrived after the first campaigns; at
     # these defaults the belief update is bit-identical to the original ULA.
@@ -242,6 +247,9 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         "langevin_observation_anchor": False,
         "proposal_hidden": [64],
         "encoder_use_scores": True,
+        # Every earlier run used a state-value critic V(b).
+        "critic_kind": "state",
+        "q_value_samples": 8,
         # Energy networks were plain MLPs before the KAN option existed.
         "energy_network_kind": "mlp",
         "kan_grid_size": 8,
@@ -544,6 +552,11 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
         "encoder_use_scores",
     ):
         _boolean(section[key], f"model.{key}")
+    critic_kind = _nonempty_string(section["critic_kind"], "model.critic_kind")
+    if critic_kind not in {"state", "action"}:
+        raise ConfigError("model.critic_kind must be state or action")
+    if _integer(section["q_value_samples"], "model.q_value_samples") <= 0:
+        raise ConfigError("model.q_value_samples must be positive")
     if section["langevin_transition_proposal"] and not section["langevin_warm_start"]:
         raise ConfigError(
             "model.langevin_transition_proposal requires model.langevin_warm_start"
@@ -660,6 +673,7 @@ def _validate_ppo(value: Any) -> Mapping[str, Any]:
     if _integer(section["p3o_resample_interval"], "ppo.p3o_resample_interval") <= 0:
         raise ConfigError("ppo.p3o_resample_interval must be positive")
     _integer(section["p3o_demo_slots"], "ppo.p3o_demo_slots", minimum=0)
+    _number(section["q_advantage_mix"], "ppo.q_advantage_mix", minimum=0.0, maximum=1.0)
     for key in ("gamma", "gae_lambda"):
         _number(
             section[key],

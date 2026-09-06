@@ -33,6 +33,7 @@ _LEGACY_PPO_DEFAULTS: dict[str, object] = {
     "p3o_eta": 1.0,
     "p3o_resample_interval": 5,
     "p3o_demo_slots": 0,
+    "q_advantage_mix": 1.0,
 }
 _LEGACY_MODEL_DEFAULTS: dict[str, object] = {
     "langevin_temperature": 1.0,
@@ -52,6 +53,8 @@ _LEGACY_MODEL_DEFAULTS: dict[str, object] = {
     "langevin_observation_anchor": False,
     "proposal_hidden": [64],
     "encoder_use_scores": True,
+    "critic_kind": "state",
+    "q_value_samples": 8,
     "energy_network_kind": "mlp",
     "kan_grid_size": 8,
     "kan_spline_order": 3,
