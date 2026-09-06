@@ -26,6 +26,7 @@
 | mountain_hike_ab_warm.json | score_transformer | 100 | 対照: warm のみ(アンカー・補助・g なし) |
 | mountain_hike_ab_aux.json | score_transformer | 100 | 対照: 補助損失のみ(cold、アンカー・g なし) |
 | mountain_hike_v3.json | transformer / alpha / deepsets | 200 | v3 = v2 − warm start − 観測アンカー(cold 連鎖 + 補助損失のみ、g なし) |
+| mountain_hike_v4.json | transformer / alpha / deepsets | 200 | v4 = v3 の逆: warm start + 観測アンカーあり、補助損失なし(g なし) |
 
 ```bash
 pjsub jobs/mountain_hike_v2/debug_v2.sh        # 15 本の gate
