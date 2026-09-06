@@ -1,0 +1,91 @@
+\documentclass[a4paper,11pt]{article}
+\usepackage{mysty}
+\usepackage[margin=24mm]{geometry}
+\usepackage[hidelinks,unicode]{hyperref}
+
+\title{belief への補助損失（次観測予測・報酬予測）の定義 --- 本実装の数式}
+\author{Belief-Score-Based-Model 実装ノート}
+\date{2026-09-07}
+
+\begin{document}
+\maketitle
+
+\section{記号}
+
+\begin{itemize}
+  \item 時刻 $t$ の粒子集合 $X_t=\{x_{t,k}\}_{k=1}^{K}$，$x_{t,k}\in\mathbb{R}^{d_s}$（$K=16$，$d_s=2$）．
+        予測網には粒子の\emph{位置のみ}を渡し，スコアベクトル $\nabla E(x_{t,k})$ は渡さない．
+  \item 時刻 $t$ に実行した行動の特徴 $a_t\in\mathbb{R}^{d_a}$（離散なら one-hot，連続なら行動そのもの）．
+        rollout では「時刻 $t+1$ の直前行動」として保存されている．
+  \item 次の観測 $o_{t+1}\in\mathbb{R}^{d_o}$（Mountain Hike では $d_o=2$），時刻 $t$ の報酬 $r_t\in\mathbb{R}$．
+  \item 予測網 $f_\phi:\ (x,a)\mapsto(\mu,\ \log\sigma)\in\mathbb{R}^{d_o}\times\mathbb{R}^{d_o}$（MLP，隠れ層 $[64]$），
+        $\log\sigma$ は $[-4,\,3]$ にクランプ．報酬側 $g_\psi:\ (x,a)\mapsto(\mu^r,\log\sigma^r)\in\mathbb{R}\times\mathbb{R}$．
+  \item マスク $m_t=\mathbb{1}[\text{step } t \text{ がエピソード終端でない}]$．終端の次は別エピソードなので除外する．
+\end{itemize}
+
+\section{次観測の予測尤度}
+
+粒子ごとの対角ガウスを等重み $1/K$ で混合した予測分布を用いる：
+\begin{equation}
+  q_\phi(o_{t+1}\mid X_t,a_t)
+  = \frac{1}{K}\sum_{k=1}^{K}\ \prod_{j=1}^{d_o}
+    \mathcal{N}\!\bigl(o_{t+1,j};\ \mu_j(x_{t,k},a_t),\ \sigma_j^2(x_{t,k},a_t)\bigr).
+  \label{eq:qobs}
+\end{equation}
+数値的には log-sum-exp で評価する：
+\begin{equation}
+  \log q_\phi(o_{t+1}\mid X_t,a_t)
+  = \operatorname{LSE}_{k}\Bigl[\sum_{j=1}^{d_o}\Bigl(
+      -\tfrac12\Bigl(\tfrac{o_{t+1,j}-\mu_j(x_{t,k},a_t)}{\sigma_j(x_{t,k},a_t)}\Bigr)^{2}
+      -\log\sigma_j(x_{t,k},a_t)-\tfrac12\log 2\pi\Bigr)\Bigr]-\log K .
+  \label{eq:logqobs}
+\end{equation}
+損失はマスク付き平均の負の対数尤度：
+\begin{equation}
+  \mathcal{L}_{\mathrm{obs}}
+  = -\,\frac{\sum_{t} m_t\,\log q_\phi(o_{t+1}\mid X_t,a_t)}{\max\!\bigl(1,\ \sum_t m_t\bigr)} .
+  \label{eq:lobs}
+\end{equation}
+
+\section{報酬の予測尤度（同形のスカラー版）}
+
+\begin{equation}
+  \mathcal{L}_{\mathrm{rew}}
+  = -\,\frac{\sum_{t} m_t\,
+      \log \frac{1}{K}\sum_{k=1}^{K}
+      \mathcal{N}\!\bigl(r_t;\ \mu^r(x_{t,k},a_t),\ \sigma^{r}(x_{t,k},a_t)^{2}\bigr)}
+    {\max\!\bigl(1,\ \sum_t m_t\bigr)} .
+  \label{eq:lrew}
+\end{equation}
+報酬は時刻 $t$ の状態と行動で決まるので，時刻 $t$ の粒子と $a_t$ を条件にする（観測側は $t+1$ の観測を予測する点が異なる）．
+
+\section{全体の損失と勾配の流れ}
+
+\begin{equation}
+  \mathcal{L}
+  = \mathcal{L}_{\mathrm{PPO}}
+  + c_V\,\mathcal{L}_{\mathrm{value}}
+  - c_H\,H
+  + c_{\mathrm{obs}}\,\mathcal{L}_{\mathrm{obs}}
+  + c_{\mathrm{rew}}\,\mathcal{L}_{\mathrm{rew}},
+  \qquad c_{\mathrm{obs}}=c_{\mathrm{rew}}=1\ (\text{v2}).
+  \label{eq:total}
+\end{equation}
+$\mathcal{L}_{\mathrm{obs}},\mathcal{L}_{\mathrm{rew}}$ の勾配は予測網 $\phi,\psi$ と，粒子 $x_{t,k}$ を経由して
+ULA 連鎖（再パラメータ化して再生）$\to$ エネルギー網 $g_0,f,u$，観測アンカー，遷移ドリフト $g$ へ流れる．
+方策ヘッドと価値ヘッドは $q_\phi,\,q_\psi$ の出力を一切使わない（純粋な補助損失）．
+
+\section{注意点}
+
+\begin{enumerate}
+  \item 復元対象は現在の $o_t$ ではなく\emph{次の} $o_{t+1}$．現在観測の復元は粒子を「現在観測の写し」にするだけで
+        時間統合の圧力にならないため，1 ステップ先の予測（予測十分性）にしている．
+  \item 等重み $1/K$ は ULA サンプルに重みがないことの反映．DVRL の ELBO と異なり遷移モデルの KL 項はない．
+  \item Mountain Hike では $o_{t+1}=s_{t+1}+\varepsilon$，$\varepsilon\sim\mathcal{N}(0,3^2 I)$ なので，
+        粒子が真の位置を完全に持っていても最良の予測は $\sigma\approx 3$ にとどまり，観測側の信号は弱い
+        （1 ステップの移動 $\le 0.5$ に対しノイズ 3）．報酬側は地形が位置の決定的関数なので粒子を位置に固定する力が強い．
+  \item 情報量の観点では，$H(o_{t+1}\mid a_t)-\mathcal{L}_{\mathrm{obs}}$ が $I(X_t;\,o_{t+1}\mid a_t)$ の変分下界
+        （Barber--Agakov）になっており，補助損失の最小化は「粒子が次観測について持つ情報量」の下界の最大化である．
+\end{enumerate}
+
+\end{document}
