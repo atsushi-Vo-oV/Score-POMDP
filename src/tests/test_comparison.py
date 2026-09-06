@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -576,6 +577,21 @@ def test_segmented_resume_rejects_a_changed_runtime_identity(tmp_path) -> None:
     rejected = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert rejected["status"] == "failed"
     assert rejected["torch"] == f"{original_torch}-different"
+
+    # An explicit opt-in (MIG -> full GPU after an out-of-memory segment)
+    # continues the run and records the change instead of failing it.
+    monkeypatch_value = os.environ.get("SB_POMDP_ALLOW_RUNTIME_CHANGE")
+    os.environ["SB_POMDP_ALLOW_RUNTIME_CHANGE"] = "1"
+    try:
+        run_comparisons(config, **arguments)
+    finally:
+        if monkeypatch_value is None:
+            os.environ.pop("SB_POMDP_ALLOW_RUNTIME_CHANGE", None)
+        else:
+            os.environ["SB_POMDP_ALLOW_RUNTIME_CHANGE"] = monkeypatch_value
+    accepted = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert accepted["status"] != "failed"
+    assert accepted["runtime_changes"] and "torch" in accepted["runtime_changes"][0]["differences"]
 
 
 def test_first_segment_setup_failure_records_source_and_restarts_without_checkpoint(

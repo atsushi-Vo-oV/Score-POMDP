@@ -6,6 +6,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import re
 import sys
 import traceback
@@ -878,10 +879,17 @@ def run_comparisons(
                     f"{field}: existing={existing!r}, current={current!r}"
                     for field, (existing, current) in runtime_differences.items()
                 )
-                raise ConfigError(
-                    "resumable run runtime identity differs from the segment that "
-                    f"created it ({details})"
-                )
+                if os.environ.get("SB_POMDP_ALLOW_RUNTIME_CHANGE", "") != "1":
+                    raise ConfigError(
+                        "resumable run runtime identity differs from the segment that "
+                        f"created it ({details})"
+                    )
+                # Explicitly allowed (e.g. a MIG slice ran out of memory and the
+                # segment continues on a full GPU): record the change and go on.
+                history = list(root_metadata.get("runtime_changes", []))
+                history.append({"at": _utc_now(), "differences": details})
+                root_metadata["runtime_changes"] = history
+                print(f"Continuing despite a runtime identity change: {details}", file=sys.stderr)
         root_metadata.update(current_runtime)
         if restartable_seed_roots:
             attempt_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
