@@ -18,8 +18,9 @@
   \item 時刻 $t$ に実行した行動の特徴 $a_t\in\mathbb{R}^{d_a}$（離散なら one-hot，連続なら行動そのもの）．
         rollout では「時刻 $t+1$ の直前行動」として保存されている．
   \item 次の観測 $o_{t+1}\in\mathbb{R}^{d_o}$（Mountain Hike では $d_o=2$），時刻 $t$ の報酬 $r_t\in\mathbb{R}$．
-  \item 予測網 $f_\phi:\ (x,a)\mapsto(\mu,\ \log\sigma)\in\mathbb{R}^{d_o}\times\mathbb{R}^{d_o}$（MLP，隠れ層 $[64]$），
-        $\log\sigma$ は $[-4,\,3]$ にクランプ．報酬側 $g_\psi:\ (x,a)\mapsto(\mu^r,\log\sigma^r)\in\mathbb{R}\times\mathbb{R}$．
+  \item 観測予測網 $h_\phi:\ (x,a)\mapsto(\mu,\ \log\sigma)\in\mathbb{R}^{d_o}\times\mathbb{R}^{d_o}$（MLP，隠れ層 $[64]$，実装名 \texttt{ObservationPredictor}），
+        $\log\sigma$ は $[-4,\,3]$ にクランプ．報酬予測網 $h^{r}_\psi:\ (x,a)\mapsto(\mu^r,\log\sigma^r)\in\mathbb{R}\times\mathbb{R}$（\texttt{RewardPredictor}）．
+        これらは補助損失専用の網で，belief のエネルギー網 $g_0,f,u$ や v2g の遷移ドリフト $g$ とは別物である．
   \item マスク $m_t=\mathbb{1}[\text{step } t \text{ がエピソード終端でない}]$．終端の次は別エピソードなので除外する．
 \end{itemize}
 
