@@ -1,0 +1,121 @@
+{
+  "experiment": {
+    "name": "score-belief-pomdp",
+    "label": "mountain-hike-tps-v3",
+    "tasks": [
+      "mountain_hike"
+    ],
+    "seeds": [
+      10
+    ],
+    "device": "cuda",
+    "deterministic": false,
+    "output_dir": "results",
+    "eval_episodes": 10,
+    "eval_interval_updates": 25,
+    "checkpoint_interval_updates": 25,
+    "log_interval_updates": 1
+  },
+  "environment": {
+    "tasks": {
+      "mountain_hike": {
+        "horizon": 75,
+        "observation_noise_std": 3.0,
+        "teleport_probability": 0.03,
+        "observation_symmetry": "abs"
+      }
+    }
+  },
+  "model": {
+    "num_particles": 16,
+    "langevin_steps": 4,
+    "langevin_step_size": 0.02,
+    "particle_clip": 0.0,
+    "score_clip": 0.0,
+    "energy_hidden": [
+      48,
+      48
+    ],
+    "d_model": 64,
+    "num_heads": 4,
+    "num_transformer_layers": 1,
+    "transformer_ff_dim": 128,
+    "dropout": 0.0,
+    "policy_hidden": [
+      96,
+      96
+    ],
+    "diffusion_steps": 5,
+    "diffusion_beta_start": 0.01,
+    "diffusion_beta_end": 0.2,
+    "diffusion_min_std": 0.05,
+    "diffusion_advantage_discount": 0.95,
+    "encoder_kind": "transformer",
+    "continuous_policy_kind": "diffusion",
+    "belief_gradient_mode": "full",
+    "langevin_temperature": 1.0,
+    "langevin_temperature_learnable": false,
+    "langevin_warm_start": false,
+    "langevin_step_size_learnable": false,
+    "policy_head_kind": "mlp",
+    "alpha_pieces": 16,
+    "alpha_temperature": 1.0,
+    "alpha_use_scores": false,
+    "langevin_observation_anchor": false,
+    "reward_prediction_coef": 1.0,
+    "observation_prediction_coef": 1.0,
+    "proposal_hidden": [
+      64
+    ],
+    "reward_predictor_hidden": [
+      64
+    ],
+    "observation_predictor_hidden": [
+      64
+    ],
+    "langevin_transition_proposal": false
+  },
+  "ppo": {
+    "total_steps": 204800,
+    "num_envs": 16,
+    "rollout_steps": 128,
+    "epochs": 4,
+    "minibatch_size": 512,
+    "sequence_microbatch_size": 128,
+    "learning_rate": 0.00025,
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "clip_coef": 0.2,
+    "value_coef": 0.5,
+    "entropy_coef": 0.01,
+    "max_grad_norm": 10.0,
+    "normalize_advantage": true,
+    "value_target_transform": "symlog"
+  },
+  "comparison": {
+    "belief_gradient_modes": [
+      "full"
+    ],
+    "methods": [
+      "score_transformer",
+      "score_alpha",
+      "score_deepsets"
+    ],
+    "gru_encoder_hidden": [
+      234,
+      90
+    ],
+    "gru_hidden_dim": 43,
+    "rnn_encoder_hidden": [
+      149,
+      177
+    ],
+    "rnn_hidden_dim": 64,
+    "pf_hidden": [
+      52,
+      124
+    ],
+    "pf_particle_dim": 16,
+    "pf_soft_alpha": 0.9
+  }
+}

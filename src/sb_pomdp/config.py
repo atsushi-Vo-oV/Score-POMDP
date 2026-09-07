@@ -65,6 +65,7 @@ _MOUNTAIN_HIKE_TASK_KEYS = frozenset(
         "goal_reward",
         "goal_end",
         "teleport_probability",
+        "observation_symmetry",
     }
 )
 
@@ -453,6 +454,10 @@ def _validate_mountain_hike_task(task: Mapping[str, Any], path: str) -> None:
         probability = _number(task["teleport_probability"], f"{path}.teleport_probability", minimum=0.0)
         if probability >= 1.0:
             raise ConfigError(f"{path}.teleport_probability must be below 1")
+    if "observation_symmetry" in task:
+        symmetry = _nonempty_string(task["observation_symmetry"], f"{path}.observation_symmetry")
+        if symmetry not in {"none", "abs"}:
+            raise ConfigError(f"{path}.observation_symmetry must be none or abs")
 
 
 def _validate_light_dark_task(task: Mapping[str, Any], path: str) -> None:
@@ -806,6 +811,7 @@ _MOUNTAIN_HIKE_TASK_DEFAULTS: dict[str, JSONValue] = {
     "goal_reward": 0.0,
     "goal_end": False,
     "teleport_probability": 0.0,
+    "observation_symmetry": "none",
 }
 
 

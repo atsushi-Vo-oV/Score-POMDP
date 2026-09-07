@@ -950,6 +950,7 @@ class MountainHikeEnv(_BaseMaskedEnv):
         goal_reward: float = 0.0,
         goal_end: bool = False,
         teleport_probability: float = 0.0,
+        observation_symmetry: str = "none",
     ) -> None:
         super().__init__(
             horizon=horizon,
@@ -997,6 +998,12 @@ class MountainHikeEnv(_BaseMaskedEnv):
         # by a uniform relocation inside the box, so the belief must be rebuilt.
         self.teleport_probability = float(teleport_probability)
         self._teleported = False
+        if observation_symmetry not in ("none", "abs"):
+            raise ValueError("observation_symmetry must be 'none' or 'abs'")
+        # 'abs': the agent observes |s| + noise, so the observation is invariant to
+        # the sign of each coordinate and the position belief is four-fold ambiguous
+        # until the (asymmetric) terrain reward or the start prior disambiguates it.
+        self.observation_symmetry = str(observation_symmetry)
         self.action_spec = ActionSpec.continuous(-self.max_action, self.max_action, shape=(2,))
 
     def terrain_reward(self, position: np.ndarray) -> float:
@@ -1020,9 +1027,17 @@ class MountainHikeEnv(_BaseMaskedEnv):
         assert self._state is not None
         return bool(np.linalg.norm(self._state - self.goal_position) < self.goal_radius)
 
+    def _observed_state(self) -> np.ndarray:
+        """State as seen by the sensor: the raw position, or |position| under 'abs' symmetry."""
+
+        assert self._state is not None
+        if self.observation_symmetry == "abs":
+            return np.abs(self._state)
+        return self._state
+
     def _observation(self) -> np.ndarray:
         assert self._state is not None
-        return self._add_observation_noise(np.asarray(self._state, dtype=np.float64))
+        return self._add_observation_noise(np.asarray(self._observed_state(), dtype=np.float64))
 
     def _info(self) -> dict[str, Any]:
         info = super()._info()
@@ -1097,6 +1112,7 @@ _MOUNTAIN_HIKE_KEYS = {
     "goal_reward",
     "goal_end",
     "teleport_probability",
+    "observation_symmetry",
 }
 
 _LIGHT_DARK_KEYS = {

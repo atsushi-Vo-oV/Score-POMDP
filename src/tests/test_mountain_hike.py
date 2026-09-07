@@ -188,3 +188,35 @@ def test_teleport_probability_is_a_validated_task_key() -> None:
     assert accepted.to_dict()["environment"]["tasks"]["mountain_hike"]["teleport_probability"] == 0.03
     with pytest.raises(ConfigError):
         config.with_overrides({"environment.tasks.mountain_hike.teleport_probability": 1.5})
+
+
+def test_abs_observation_symmetry_folds_the_sign_and_is_off_by_default() -> None:
+    import numpy as np
+
+    from sb_pomdp.envs import MountainHikeEnv
+
+    plain = MountainHikeEnv(observation_noise_std=0.0, transition_std=0.0)
+    obs, _ = plain.reset(seed=5)
+    assert np.allclose(obs, plain._state)
+    folded = MountainHikeEnv(observation_noise_std=0.0, transition_std=0.0, observation_symmetry="abs")
+    obs, _ = folded.reset(seed=5)
+    assert np.allclose(obs, np.abs(folded._state)) and np.all(obs >= 0)
+    folded._state = np.array([-3.0, 4.0])
+    mirrored = MountainHikeEnv(observation_noise_std=0.0, transition_std=0.0, observation_symmetry="abs")
+    mirrored.reset(seed=5)
+    mirrored._state = np.array([3.0, -4.0])
+    assert np.allclose(folded._observation(), mirrored._observation())
+    assert folded.terrain_reward(folded._state) != mirrored.terrain_reward(mirrored._state)
+    with pytest.raises(ValueError):
+        MountainHikeEnv(observation_symmetry="mirror")
+
+
+def test_observation_symmetry_is_a_validated_task_key() -> None:
+    from sb_pomdp.config import ConfigError, load_config
+
+    config = load_config("config/mountain_hike.json")
+    assert config.to_dict()["environment"]["tasks"]["mountain_hike"]["observation_symmetry"] == "none"
+    accepted = config.with_overrides({"environment.tasks.mountain_hike.observation_symmetry": "abs"})
+    assert accepted.to_dict()["environment"]["tasks"]["mountain_hike"]["observation_symmetry"] == "abs"
+    with pytest.raises(ConfigError):
+        config.with_overrides({"environment.tasks.mountain_hike.observation_symmetry": "mirror"})
