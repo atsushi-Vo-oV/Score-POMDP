@@ -66,11 +66,8 @@ if [[ -n "$SEGMENT_UPDATES" ]]; then
     echo "SB_POMDP_SEGMENT_UPDATES must be a positive integer." >&2
     exit 2
   fi
-  # Only full/score_transformer (indices 1--20) requires segmented resume.
-  if (( 10#$SHARD_INDEX > 20 )); then
-    echo "Segmented production is restricted to full/score_transformer shards 1--20." >&2
-    exit 2
-  fi
+  # Every method (score models and baselines alike) commits resumable
+  # checkpoints, so any shard in 1--EXPECTED_PRODUCTION_SHARDS may segment.
   LOCK_DIR="logs/genkai-locks/$CAMPAIGN_ID"
   LOCK_FILE="$LOCK_DIR/shard${SHARD_TAG}.lock"
   mkdir -p "$LOCK_DIR"
