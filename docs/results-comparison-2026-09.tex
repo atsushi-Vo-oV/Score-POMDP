@@ -1,0 +1,156 @@
+% Experiment comparison: score-based belief models vs. baselines on
+% Mountain Hike and Light-Dark 2D.  Tables are generated from the Genkai job
+% logs (mean-chain evaluation, 10 episodes, 200 PPO updates).
+\documentclass[11pt]{article}
+\usepackage[margin=2cm]{geometry}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage[hidelinks]{hyperref}
+
+\title{Score-Based Belief Models for POMDPs: Experiment Comparison}
+\author{}
+\date{Snapshot of 14 September 2026}
+
+\begin{document}
+\maketitle
+
+\section{Setup}
+
+All arms are trained with PPO for 200 updates ($16$ environments $\times$ $128$ steps per update, $409{,}600$ environment steps) with symlog value targets, and evaluated every 25 updates on 10 held-out episodes with the mean-chain decoding of the belief. The reported number is the evaluation return at update 200 unless marked otherwise. Five seeds (10--14) are run for every arm.
+
+\paragraph{Score-based belief models.}
+The belief is a set of $K=16$ particles moved by $L=4$ unadjusted Langevin steps on a learned energy. Three encoders read the particle set: a one-layer Transformer (\emph{score-transformer}, 75{,}286 parameters), an $\alpha$-vector head with 16 pieces (\emph{score-alpha}, 35{,}525 parameters; the \emph{matched} variant widens the trunk to 75{,}269 parameters via a feed-forward width of 704), and a DeepSets encoder (\emph{score-deepsets}, 67{,}222 parameters). Four designs are compared:
+\begin{itemize}
+  \item \textbf{v1 (cold)}: particles are re-initialised from $\mathcal{N}(0, I)$ at every step; no auxiliary loss.
+  \item \textbf{v2 (warm$+$anchor$+$aux)}: particles are warm-started from the previous step and anchored to the observation; auxiliary reward- and next-observation-prediction losses (coefficient 1).
+  \item \textbf{v3 (cold$+$aux)}: cold start with the auxiliary losses.
+  \item \textbf{v4 (warm$+$anchor)}: warm start and observation anchor without auxiliary losses.
+\end{itemize}
+
+\paragraph{Baselines.}
+A GRU recurrent policy (75{,}674 parameters), a plain RNN policy (75{,}970 parameters), and a particle-filter policy following PF-RNN/DPFRL with soft resampling and parameter count matched to the score models (76{,}080 parameters). Mountain Hike additionally lists the earlier deterministic particle filter (legacy) for seeds 10--12.
+
+\paragraph{Tasks.}
+\emph{Mountain Hike}: 2-D continuous control with horizon 75 and observation noise $\sigma=3$. Scripted reference policies give $-360$ (stationary), $-189$ (observation only) and $-122$ (oracle with the true state). \emph{Light-Dark 2D}: horizon 30, light at $x=5$, initial state $\mathcal{N}(2, 1)$, goal bonus 0, terminal cost 10, and observation noise that grows with the distance from the light (noise gain 5). No scripted reference values have been computed for this task yet; earlier single-seed runs of the same task gave $-25$ (score-transformer) and $-29$ (GRU).
+
+\section{Results}
+
+\begin{table}[htbp]
+\centering
+\footnotesize
+\caption{Mountain Hike: mean-chain evaluation return at update 200 (10 episodes) per seed. $^{*}$ marks arms still running (latest evaluation shown); the last column averages completed seeds only.}
+\label{tab:mh-final}
+\begin{tabular}{llrrrrrc}
+\toprule
+Design & Method & s10 & s11 & s12 & s13 & s14 & Mean $\pm$ SD \\
+\midrule
+v1 (cold) & score-transformer & $-$443 & $-$445 & $-$182 & $-$447 & $-$263 & $-$356 $\pm$ 125 \\
+ & score-alpha & $-$270 & $-$291 & $-$277 & $-$280 & $-$286 & $-$281 $\pm$ 8 \\
+ & score-alpha (matched) & $-$388$^{*}$ & $-$446$^{*}$ & $-$280$^{*}$ & $-$234$^{*}$ & $-$355$^{*}$ & -- \\
+ & score-deepsets & $-$430 & $-$284 & $-$442 & $-$447 & $-$283 & $-$377 $\pm$ 86 \\
+\midrule
+v2 (warm$+$anchor$+$aux) & score-transformer & $-$129 & $-$439 & $-$446 & $-$381 & $-$222 & $-$323 $\pm$ 141 \\
+ & score-alpha & $-$213 & $-$282 & $-$143 & $-$268 & $-$240 & $-$229 $\pm$ 55 \\
+ & score-alpha (matched) & $-$261$^{*}$ & $-$443$^{*}$ & $-$271$^{*}$ & $-$238$^{*}$ & $-$254$^{*}$ & -- \\
+ & score-deepsets & $-$200 & $-$236 & $-$447 & $-$254 & $-$437 & $-$315 $\pm$ 118 \\
+\midrule
+v3 (cold$+$aux) & score-transformer & $-$442 & $-$253 & $-$447 & $-$442 & $-$255 & $-$368 $\pm$ 104 \\
+ & score-alpha & $-$258 & $-$288 & $-$290 & $-$277 & $-$285 & $-$280 $\pm$ 13 \\
+ & score-alpha (matched) & $-$444$^{*}$ & $-$444$^{*}$ & $-$429$^{*}$ & $-$444$^{*}$ & $-$350$^{*}$ & -- \\
+ & score-deepsets & $-$447 & $-$273 & $-$284 & $-$447 & $-$263 & $-$343 $\pm$ 95 \\
+\midrule
+v4 (warm$+$anchor) & score-transformer & $-$277 & $-$285 & $-$276 & $-$279 & $-$227 & $-$269 $\pm$ 24 \\
+ & score-alpha & $-$278 & $-$182 & $-$273 & $-$281 & $-$278 & $-$258 $\pm$ 43 \\
+ & score-alpha (matched) & $-$309$^{*}$ & $-$251$^{*}$ & $-$260$^{*}$ & $-$225$^{*}$ & $-$261$^{*}$ & -- \\
+ & score-deepsets & $-$205 & $-$250 & $-$262 & $-$285 & $-$261 & $-$253 $\pm$ 30 \\
+\midrule
+Baselines & GRU & $-$115 & $-$153 & $-$168 & $-$279 & $-$225 & $-$188 $\pm$ 65 \\
+ & RNN & $-$128 & $-$162 & $-$132 & $-$202 & $-$277 & $-$180 $\pm$ 62 \\
+ & PF (DPFRL, matched) & $-$165 & $-$162 & $-$129 & $-$146 & $-$126 & $-$146 $\pm$ 18 \\
+ & PF (legacy, deterministic) & $-$447 & $-$201 & $-$279 & -- & -- & $-$309 $\pm$ 126 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\footnotesize
+\caption{Light-Dark 2D: mean-chain evaluation return at update 200 (10 episodes) per seed. $^{*}$ as above; -- marks the particle-filter seed that failed with a non-finite gradient.}
+\label{tab:ld2d-final}
+\begin{tabular}{llrrrrrc}
+\toprule
+Design & Method & s10 & s11 & s12 & s13 & s14 & Mean $\pm$ SD \\
+\midrule
+v1 (cold) & score-transformer & $-$29 & $-$161 & $-$94 & $-$46 & $-$62 & $-$78 $\pm$ 52 \\
+ & score-alpha & $-$158 & $-$179 & $-$378 & $-$91 & $-$125 & $-$186 $\pm$ 112 \\
+ & score-alpha (matched) & $-$70$^{*}$ & $-$216$^{*}$ & $-$113$^{*}$ & $-$1404$^{*}$ & $-$115$^{*}$ & -- \\
+ & score-deepsets & $-$29 & $-$91 & $-$63 & $-$70 & $-$48 & $-$60 $\pm$ 23 \\
+\midrule
+v2 (warm$+$anchor$+$aux) & score-transformer & $-$39 & $-$294 & $-$61 & $-$46 & $-$25 & $-$93 $\pm$ 113 \\
+ & score-alpha & $-$85 & $-$304 & $-$226 & $-$44 & $-$196 & $-$171 $\pm$ 106 \\
+ & score-alpha (matched) & $-$888$^{*}$ & $-$464 & $-$115$^{*}$ & $-$189 & $-$489$^{*}$ & $-$326 $\pm$ 194 \\
+ & score-deepsets & $-$55 & $-$69 & $-$79 & $-$33 & $-$68 & $-$61 $\pm$ 18 \\
+\midrule
+v3 (cold$+$aux) & score-transformer & $-$48 & $-$120 & $-$300 & $-$102 & $-$239 & $-$162 $\pm$ 104 \\
+ & score-alpha & $-$51 & $-$565 & $-$217 & $-$468 & $-$292 & $-$318 $\pm$ 204 \\
+ & score-alpha (matched) & $-$160$^{*}$ & $-$201$^{*}$ & $-$1331$^{*}$ & $-$146$^{*}$ & $-$43$^{*}$ & -- \\
+ & score-deepsets & $-$23 & $-$209 & $-$96 & $-$371 & $-$140 & $-$168 $\pm$ 132 \\
+\midrule
+v4 (warm$+$anchor) & score-transformer & $-$47 & $-$119 & $-$94 & $-$75 & $-$173 & $-$102 $\pm$ 48 \\
+ & score-alpha & $-$106 & $-$437 & $-$168 & $-$101 & $-$373 & $-$237 $\pm$ 157 \\
+ & score-alpha (matched) & $-$296$^{*}$ & $-$460$^{*}$ & $-$297$^{*}$ & $-$459$^{*}$ & $-$444$^{*}$ & -- \\
+ & score-deepsets & $-$63 & $-$125 & $-$246 & $-$43 & $-$141 & $-$124 $\pm$ 80 \\
+\midrule
+Baselines & GRU & $-$29 & $-$104 & $-$70 & $-$69 & $-$70 & $-$68 $\pm$ 27 \\
+ & RNN & $-$74 & $-$59 & $-$92 & $-$65 & $-$50 & $-$68 $\pm$ 16 \\
+ & PF (DPFRL, matched) & fail & $-$53 & $-$72 & $-$55 & $-$57 & $-$59 $\pm$ 9 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\footnotesize
+\caption{Light-Dark 2D: mean of the last four evaluations (updates 125--200) per seed, which damps the update-to-update volatility of the score-alpha evaluations.}
+\label{tab:ld2d-tail4}
+\begin{tabular}{llrrrrrc}
+\toprule
+Design & Method & s10 & s11 & s12 & s13 & s14 & Mean $\pm$ SD \\
+\midrule
+v1 (cold) & score-transformer & $-$218 & $-$89 & $-$67 & $-$58 & $-$79 & $-$102 $\pm$ 66 \\
+ & score-alpha & $-$266 & $-$166 & $-$201 & $-$322 & $-$207 & $-$232 $\pm$ 62 \\
+ & score-alpha (matched) & $-$184$^{*}$ & $-$521$^{*}$ & $-$366$^{*}$ & $-$853$^{*}$ & $-$436$^{*}$ & -- \\
+ & score-deepsets & $-$228 & $-$57 & $-$116 & $-$72 & $-$45 & $-$104 $\pm$ 75 \\
+\midrule
+v2 (warm$+$anchor$+$aux) & score-transformer & $-$110 & $-$181 & $-$260 & $-$126 & $-$134 & $-$162 $\pm$ 60 \\
+ & score-alpha & $-$152 & $-$305 & $-$150 & $-$230 & $-$563 & $-$280 $\pm$ 171 \\
+ & score-alpha (matched) & $-$1647$^{*}$ & $-$867 & $-$310$^{*}$ & $-$735 & $-$554$^{*}$ & $-$801 $\pm$ 94 \\
+ & score-deepsets & $-$136 & $-$90 & $-$53 & $-$202 & $-$227 & $-$142 $\pm$ 73 \\
+\midrule
+v3 (cold$+$aux) & score-transformer & $-$362 & $-$130 & $-$156 & $-$71 & $-$216 & $-$187 $\pm$ 111 \\
+ & score-alpha & $-$213 & $-$246 & $-$89 & $-$359 & $-$359 & $-$253 $\pm$ 113 \\
+ & score-alpha (matched) & $-$361$^{*}$ & $-$394$^{*}$ & $-$1947$^{*}$ & $-$211$^{*}$ & $-$467$^{*}$ & -- \\
+ & score-deepsets & $-$199 & $-$176 & $-$86 & $-$419 & $-$220 & $-$220 $\pm$ 122 \\
+\midrule
+v4 (warm$+$anchor) & score-transformer & $-$127 & $-$117 & $-$100 & $-$64 & $-$149 & $-$111 $\pm$ 32 \\
+ & score-alpha & $-$272 & $-$429 & $-$142 & $-$365 & $-$290 & $-$300 $\pm$ 108 \\
+ & score-alpha (matched) & $-$331$^{*}$ & $-$271$^{*}$ & $-$539$^{*}$ & $-$1270$^{*}$ & $-$341$^{*}$ & -- \\
+ & score-deepsets & $-$154 & $-$117 & $-$229 & $-$168 & $-$190 & $-$172 $\pm$ 42 \\
+\midrule
+Baselines & GRU & $-$41 & $-$82 & $-$57 & $-$54 & $-$85 & $-$64 $\pm$ 19 \\
+ & RNN & $-$78 & $-$55 & $-$70 & $-$47 & $-$57 & $-$62 $\pm$ 12 \\
+ & PF (DPFRL, matched) & fail & $-$58 & $-$77 & $-$51 & $-$65 & $-$63 $\pm$ 11 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Reading the tables}
+
+\begin{itemize}
+  \item \textbf{Mountain Hike.} No score-based design reaches the recurrent or particle-filter baselines ($-146$ to $-188$ on average) or the observation-only reference ($-189$). Warm-started designs (v2, v4) avoid the $-440$ trap more often than cold ones, and score-alpha is the most stable encoder ($-258$ to $-281$ across designs, standard deviation below 55). The auxiliary losses do not prevent the trap (v3). The single strong v2 transformer seed ($-129$) does not reproduce on the other four seeds.
+  \item \textbf{Light-Dark 2D.} score-deepsets in v1 and v2 ($-60$ and $-61$ on average) matches the baselines ($-59$ to $-68$). score-transformer is competitive except for one collapsed seed per design. score-alpha is worse on average and its evaluation swings between $-25$ and $-1500$ from one evaluation to the next, so the update-200 value is largely a sampling artefact; Table~\ref{tab:ld2d-tail4} averages the last four evaluations to damp this.
+  \item \textbf{Parameter-matched score-alpha.} Widening the $\alpha$ trunk to the transformer's parameter count does not help: on Mountain Hike it pushes v1 and v3 into the trap on most seeds, and on Light-Dark 2D it makes the evaluations even more volatile. These runs are still in progress; asterisks mark the latest available evaluation.
+  \item \textbf{Failure.} Light-Dark 2D particle filter seed 10 stops at update 46 with a non-finite gradient norm; a resume reproduces the failure because the stored rollout is replayed deterministically.
+\end{itemize}
+
+\end{document}
