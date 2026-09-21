@@ -163,6 +163,7 @@ _MODEL_KEYS = frozenset(
         "encoder_use_scores",
         "critic_kind",
         "q_value_samples",
+        "value_encoder",
         "energy_network_kind",
         "kan_grid_size",
         "kan_spline_order",
@@ -252,6 +253,8 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         # Every earlier run used a state-value critic V(b).
         "critic_kind": "state",
         "q_value_samples": 8,
+        # The critic shared the policy encoder in every earlier run.
+        "value_encoder": "shared",
         # Energy networks were plain MLPs before the KAN option existed.
         "energy_network_kind": "mlp",
         "kan_grid_size": 8,
@@ -565,6 +568,9 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
     critic_kind = _nonempty_string(section["critic_kind"], "model.critic_kind")
     if critic_kind not in {"state", "action"}:
         raise ConfigError("model.critic_kind must be state or action")
+    value_encoder = _nonempty_string(section["value_encoder"], "model.value_encoder")
+    if value_encoder not in {"shared", "separate", "detached"}:
+        raise ConfigError("model.value_encoder must be shared, separate, or detached")
     if _integer(section["q_value_samples"], "model.q_value_samples") <= 0:
         raise ConfigError("model.q_value_samples must be positive")
     if section["langevin_transition_proposal"] and not section["langevin_warm_start"]:

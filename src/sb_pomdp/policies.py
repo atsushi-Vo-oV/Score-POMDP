@@ -435,31 +435,42 @@ class ScoreBeliefActorCritic(nn.Module):
             proposal_hidden=list(model_config.get("proposal_hidden", [64])),
         )
         encoder_use_scores = bool(model_config.get("encoder_use_scores", True))
-        if self.encoder_kind == "transformer":
-            self.encoder: nn.Module = BeliefSetEncoder(
+        self.value_encoder_mode = str(model_config.get("value_encoder", "shared"))
+        if self.value_encoder_mode not in {"shared", "separate", "detached"}:
+            raise ValueError("value_encoder must be shared, separate, or detached")
+
+        def build_encoder() -> nn.Module:
+            if self.encoder_kind == "transformer":
+                return BeliefSetEncoder(
+                    state_dim=state_dim,
+                    d_model=model_config["d_model"],
+                    num_heads=model_config["num_heads"],
+                    num_layers=model_config["num_transformer_layers"],
+                    feedforward_dim=model_config["transformer_ff_dim"],
+                    dropout=model_config["dropout"],
+                    use_scores=encoder_use_scores,
+                )
+            if self.encoder_kind == "alpha_pool":
+                return AlphaPoolBeliefEncoder(
+                    state_dim=state_dim,
+                    d_model=model_config["d_model"],
+                    feedforward_dim=model_config["transformer_ff_dim"],
+                    use_scores=bool(model_config.get("alpha_use_scores", False)),
+                )
+            return DeepSetsBeliefEncoder(
                 state_dim=state_dim,
                 d_model=model_config["d_model"],
-                num_heads=model_config["num_heads"],
-                num_layers=model_config["num_transformer_layers"],
                 feedforward_dim=model_config["transformer_ff_dim"],
                 dropout=model_config["dropout"],
                 use_scores=encoder_use_scores,
             )
-        elif self.encoder_kind == "alpha_pool":
-            self.encoder = AlphaPoolBeliefEncoder(
-                state_dim=state_dim,
-                d_model=model_config["d_model"],
-                feedforward_dim=model_config["transformer_ff_dim"],
-                use_scores=bool(model_config.get("alpha_use_scores", False)),
-            )
-        else:
-            self.encoder = DeepSetsBeliefEncoder(
-                state_dim=state_dim,
-                d_model=model_config["d_model"],
-                feedforward_dim=model_config["transformer_ff_dim"],
-                dropout=model_config["dropout"],
-                use_scores=encoder_use_scores,
-            )
+
+        self.encoder: nn.Module = build_encoder()
+        # ``separate``: the critic reads the particles through its own encoder, so
+        # the value loss never shapes the policy's belief representation.
+        self.value_encoder: nn.Module | None = (
+            build_encoder() if self.value_encoder_mode == "separate" else None
+        )
         condition_dim = model_config["d_model"]
         self.observation_prediction_coef = float(
             model_config.get("observation_prediction_coef", 0.0)
@@ -561,6 +572,26 @@ class ScoreBeliefActorCritic(nn.Module):
 
     def encode(self, particles: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:
         return self.encoder(particles, scores)
+
+    def encode_value(self, particles: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:
+        """Condition vector for the critic (own encoder, detached shared, or shared)."""
+
+        if self.value_encoder is not None:
+            return self.value_encoder(particles, scores)
+        condition = self.encoder(particles, scores)
+        return condition.detach() if self.value_encoder_mode == "detached" else condition
+
+    def encode_both(
+        self, particles: torch.Tensor, scores: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Policy and critic conditions, sharing one encoder pass when possible."""
+
+        condition = self.encoder(particles, scores)
+        if self.value_encoder is not None:
+            return condition, self.value_encoder(particles, scores)
+        if self.value_encoder_mode == "detached":
+            return condition, condition.detach()
+        return condition, condition
 
     def value(self, condition: torch.Tensor) -> torch.Tensor:
         """State value: the critic output, or ``E_pi Q`` for the action-value critic."""

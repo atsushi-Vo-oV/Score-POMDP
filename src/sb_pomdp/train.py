@@ -31,7 +31,7 @@ from .config import ExperimentConfig, load_config, normalize_legacy_resolved_con
 from .envs import ActionSpec, make_env
 from .networks import NetworkKinds, use_network_kinds
 from .policies import ScoreBeliefActorCritic
-from .ppo import update_ppo
+from .ppo import encode_conditions, encode_value_condition, update_ppo
 from .value_transform import ValueTransform
 
 LOGGER = logging.getLogger("sb_pomdp")
@@ -713,13 +713,13 @@ def _policy_from_particles(
     torch.Tensor | None,
     torch.Tensor,
 ]:
-    condition = model.encode(particles, scores)
+    condition, value_condition = encode_conditions(model, particles, scores)
     sample = model.sample_policy(
         condition,
         deterministic=deterministic,
         generator=generator,
     )
-    value = model.value(condition)
+    value = model.value(value_condition)
     return (
         sample.action,
         sample.log_prob,
@@ -818,7 +818,7 @@ def truncation_bootstrap_values(
     with torch.no_grad():
         final_particles, final_scores = _sample_belief(model, final_context, model_config)
         bootstrap = (value_transform or ValueTransform()).to_raw(
-            model.value(model.encode(final_particles, final_scores))
+            model.value(encode_value_condition(model, final_particles, final_scores))
         )
     values.index_copy_(0, selector, bootstrap.detach().to(dtype=values.dtype))
     return values
@@ -2189,7 +2189,7 @@ def train_single(
         bootstrap_particles, bootstrap_scores = _sample_belief(model, context, model_config)
         with torch.no_grad():
             last_value = value_transform.to_raw(
-                model.value(model.encode(bootstrap_particles, bootstrap_scores))
+                model.value(encode_value_condition(model, bootstrap_particles, bootstrap_scores))
             )
         p3o_wml_weights = (
             torch.as_tensor(

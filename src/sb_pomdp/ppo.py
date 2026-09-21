@@ -150,6 +150,27 @@ def _clipped_policy_loss(
     return loss, approximate_kl, clip_fraction
 
 
+def encode_conditions(
+    model: ScoreBeliefActorCritic, particles: torch.Tensor, scores: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Policy and critic conditions; models without a critic encoder share one."""
+
+    encode_both = getattr(model, "encode_both", None)
+    if encode_both is None:
+        condition = model.encode(particles, scores)
+        return condition, condition
+    return encode_both(particles, scores)
+
+
+def encode_value_condition(
+    model: ScoreBeliefActorCritic, particles: torch.Tensor, scores: torch.Tensor
+) -> torch.Tensor:
+    encode_value = getattr(model, "encode_value", None)
+    if encode_value is None:
+        return model.encode(particles, scores)
+    return encode_value(particles, scores)
+
+
 def _time_environment_flatten(value: torch.Tensor) -> torch.Tensor:
     """Flatten a selected ``[time, environment, ...]`` sequence minibatch."""
 
@@ -614,13 +635,14 @@ def update_ppo(
                     environment_indices,
                     model_config,
                 )
-                condition = model.encode(
+                condition, value_condition = encode_conditions(
+                    model,
                     _time_environment_flatten(particles),
                     _time_environment_flatten(scores),
                 )
                 if getattr(model, "action_value_head", None) is not None:
                     taken = _time_environment_flatten(rollout.actions[:, environment_indices])
-                    new_values = model.action_value(condition, taken)
+                    new_values = model.action_value(value_condition, taken)
                     minibatch_advantages = action_value_advantages(
                         model,
                         condition,
@@ -631,7 +653,7 @@ def update_ppo(
                         ppo_config,
                     )
                 else:
-                    new_values = model.value(condition)
+                    new_values = model.value(value_condition)
                     minibatch_advantages = advantages
                 policy_loss, approximate_kl, clip_fraction, entropy = policy_objective(
                     model,

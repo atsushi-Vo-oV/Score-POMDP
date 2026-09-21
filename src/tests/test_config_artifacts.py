@@ -55,6 +55,7 @@ _LEGACY_MODEL_DEFAULTS: dict[str, object] = {
     "encoder_use_scores": True,
     "critic_kind": "state",
     "q_value_samples": 8,
+    "value_encoder": "shared",
     "energy_network_kind": "mlp",
     "kan_grid_size": 8,
     "kan_spline_order": 3,

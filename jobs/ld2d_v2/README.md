@@ -12,3 +12,7 @@
 ```bash
 pjsub jobs/ld2d_v2/debug_ld2d.sh   # 合格後にゲートが 75 本を投入
 ```
+
+## 別エンコーダ(critic 専用)比較 — sepenc
+
+`model.value_encoder = separate`: 価値ヘッドが粒子集合を自前の集合エンコーダで読む(方策エンコーダと belief は共有、価値損失は方策エンコーダに届かない)。v2 設定 × 3 エンコーダ × seeds 10–14 = 15 本(config/ld2d_v2_sepenc.json、campaign ld2d-v2-sepenc-v1)。DEBUG: jobs/mountain_hike_v2/debug_sepenc.sh(両課題共通)。
