@@ -10,7 +10,7 @@
 
 \title{Learned-Energy Particle Beliefs for Continuous POMDPs:\\ Experimental Comparison}
 \author{}
-\date{Results snapshot, 14 September 2026}
+\date{Results snapshot, 22 September 2026}
 
 \begin{document}
 \maketitle
@@ -47,7 +47,7 @@ A GRU policy (75{,}674 parameters), a plain RNN policy (75{,}970 parameters), an
 \begin{table}[htbp]
 \centering
 \footnotesize
-\caption{Mountain Hike: evaluation return after 200 updates (deterministic policy, 10 held-out episodes) for each training seed. Designs A--D are defined in Section~\ref{sec:setup}. $^{*}$: run still in progress, latest evaluation shown. The last column averages completed seeds only.}
+\caption{Mountain Hike: evaluation return after 200 updates (deterministic policy, 10 held-out episodes) for each training seed. Designs A--D are defined in Section~\ref{sec:setup}. $^{*}$: run stopped at update 175 (wall-time limit), latest evaluation shown. The last column averages completed seeds only.}
 \label{tab:mh-final}
 \begin{tabular}{llrrrrrc}
 \toprule
@@ -55,22 +55,22 @@ Design & Policy & Seed 10 & Seed 11 & Seed 12 & Seed 13 & Seed 14 & Mean $\pm$ S
 \midrule
 A & Transformer encoder & $-$443 & $-$445 & $-$182 & $-$447 & $-$263 & $-$356 $\pm$ 125 \\
  & $\alpha$-vector head & $-$270 & $-$291 & $-$277 & $-$280 & $-$286 & $-$281 $\pm$ 8 \\
- & $\alpha$-vector head (parameter-matched) & $-$388$^{*}$ & $-$446$^{*}$ & $-$280$^{*}$ & $-$234$^{*}$ & $-$355$^{*}$ & -- \\
+ & $lpha$-vector head (parameter-matched) & $-$270 & $-$447 & $-$278 & $-$293 & $-$295 & $-$317 $\pm$ 66 \\
  & DeepSets encoder & $-$430 & $-$284 & $-$442 & $-$447 & $-$283 & $-$377 $\pm$ 86 \\
 \midrule
 B & Transformer encoder & $-$129 & $-$439 & $-$446 & $-$381 & $-$222 & $-$323 $\pm$ 141 \\
  & $\alpha$-vector head & $-$213 & $-$282 & $-$143 & $-$268 & $-$240 & $-$229 $\pm$ 55 \\
- & $\alpha$-vector head (parameter-matched) & $-$261$^{*}$ & $-$443$^{*}$ & $-$271$^{*}$ & $-$238$^{*}$ & $-$254$^{*}$ & -- \\
+ & $lpha$-vector head (parameter-matched) & $-$198 & $-$436 & $-$250 & $-$183 & $-$232 & $-$260 $\pm$ 91 \\
  & DeepSets encoder & $-$200 & $-$236 & $-$447 & $-$254 & $-$437 & $-$315 $\pm$ 118 \\
 \midrule
 C & Transformer encoder & $-$442 & $-$253 & $-$447 & $-$442 & $-$255 & $-$368 $\pm$ 104 \\
  & $\alpha$-vector head & $-$258 & $-$288 & $-$290 & $-$277 & $-$285 & $-$280 $\pm$ 13 \\
- & $\alpha$-vector head (parameter-matched) & $-$444$^{*}$ & $-$444$^{*}$ & $-$429$^{*}$ & $-$444$^{*}$ & $-$350$^{*}$ & -- \\
+ & $lpha$-vector head (parameter-matched) & $-$448$^{*}$ & $-$196 & $-$335$^{*}$ & $-$447$^{*}$ & $-$258$^{*}$ & $-$196 $\pm$ 0 \\
  & DeepSets encoder & $-$447 & $-$273 & $-$284 & $-$447 & $-$263 & $-$343 $\pm$ 95 \\
 \midrule
 D & Transformer encoder & $-$277 & $-$285 & $-$276 & $-$279 & $-$227 & $-$269 $\pm$ 24 \\
  & $\alpha$-vector head & $-$278 & $-$182 & $-$273 & $-$281 & $-$278 & $-$258 $\pm$ 43 \\
- & $\alpha$-vector head (parameter-matched) & $-$309$^{*}$ & $-$251$^{*}$ & $-$260$^{*}$ & $-$225$^{*}$ & $-$261$^{*}$ & -- \\
+ & $lpha$-vector head (parameter-matched) & $-$267 & $-$274 & $-$284 & $-$269 & $-$275 & $-$274 $\pm$ 6 \\
  & DeepSets encoder & $-$205 & $-$250 & $-$262 & $-$285 & $-$261 & $-$253 $\pm$ 30 \\
 \midrule
 Baselines & GRU policy & $-$115 & $-$153 & $-$168 & $-$279 & $-$225 & $-$188 $\pm$ 65 \\
@@ -92,22 +92,22 @@ Design & Policy & Seed 10 & Seed 11 & Seed 12 & Seed 13 & Seed 14 & Mean $\pm$ S
 \midrule
 A & Transformer encoder & $-$29 & $-$161 & $-$94 & $-$46 & $-$62 & $-$78 $\pm$ 52 \\
  & $\alpha$-vector head & $-$158 & $-$179 & $-$378 & $-$91 & $-$125 & $-$186 $\pm$ 112 \\
- & $\alpha$-vector head (parameter-matched) & $-$70$^{*}$ & $-$216$^{*}$ & $-$113$^{*}$ & $-$1404$^{*}$ & $-$115$^{*}$ & -- \\
+ & $lpha$-vector head (parameter-matched) & $-$313 & $-$133 & $-$394 & $-$25 & $-$285 & $-$230 $\pm$ 133 \\
  & DeepSets encoder & $-$29 & $-$91 & $-$63 & $-$70 & $-$48 & $-$60 $\pm$ 23 \\
 \midrule
 B & Transformer encoder & $-$39 & $-$294 & $-$61 & $-$46 & $-$25 & $-$93 $\pm$ 113 \\
  & $\alpha$-vector head & $-$85 & $-$304 & $-$226 & $-$44 & $-$196 & $-$171 $\pm$ 106 \\
- & $\alpha$-vector head (parameter-matched) & $-$888$^{*}$ & $-$464 & $-$115$^{*}$ & $-$189 & $-$489$^{*}$ & $-$326 $\pm$ 194 \\
+ & $lpha$-vector head (parameter-matched) & $-$3956 & $-$464 & $-$4998 & $-$189 & $-$450 & $-$2011 $\pm$ 2043 \\
  & DeepSets encoder & $-$55 & $-$69 & $-$79 & $-$33 & $-$68 & $-$61 $\pm$ 18 \\
 \midrule
 C & Transformer encoder & $-$48 & $-$120 & $-$300 & $-$102 & $-$239 & $-$162 $\pm$ 104 \\
  & $\alpha$-vector head & $-$51 & $-$565 & $-$217 & $-$468 & $-$292 & $-$318 $\pm$ 204 \\
- & $\alpha$-vector head (parameter-matched) & $-$160$^{*}$ & $-$201$^{*}$ & $-$1331$^{*}$ & $-$146$^{*}$ & $-$43$^{*}$ & -- \\
+ & $lpha$-vector head (parameter-matched) & $-$41 & $-$95 & $-$111 & $-$54 & $-$1043 & $-$269 $\pm$ 388 \\
  & DeepSets encoder & $-$23 & $-$209 & $-$96 & $-$371 & $-$140 & $-$168 $\pm$ 132 \\
 \midrule
 D & Transformer encoder & $-$47 & $-$119 & $-$94 & $-$75 & $-$173 & $-$102 $\pm$ 48 \\
  & $\alpha$-vector head & $-$106 & $-$437 & $-$168 & $-$101 & $-$373 & $-$237 $\pm$ 157 \\
- & $\alpha$-vector head (parameter-matched) & $-$296$^{*}$ & $-$460$^{*}$ & $-$297$^{*}$ & $-$459$^{*}$ & $-$444$^{*}$ & -- \\
+ & $lpha$-vector head (parameter-matched) & $-$307 & $-$211 & $-$74 & $-$202 & $-$163 & $-$191 $\pm$ 75 \\
  & DeepSets encoder & $-$63 & $-$125 & $-$246 & $-$43 & $-$141 & $-$124 $\pm$ 80 \\
 \midrule
 Baselines & GRU policy & $-$29 & $-$104 & $-$70 & $-$69 & $-$70 & $-$68 $\pm$ 27 \\
@@ -128,22 +128,22 @@ Design & Policy & Seed 10 & Seed 11 & Seed 12 & Seed 13 & Seed 14 & Mean $\pm$ S
 \midrule
 A & Transformer encoder & $-$218 & $-$89 & $-$67 & $-$58 & $-$79 & $-$102 $\pm$ 66 \\
  & $\alpha$-vector head & $-$266 & $-$166 & $-$201 & $-$322 & $-$207 & $-$232 $\pm$ 62 \\
- & $\alpha$-vector head (parameter-matched) & $-$184$^{*}$ & $-$521$^{*}$ & $-$366$^{*}$ & $-$853$^{*}$ & $-$436$^{*}$ & -- \\
+ & $lpha$-vector head (parameter-matched) & $-$434 & $-$411 & $-$318 & $-$607 & $-$466 & $-$447 $\pm$ 94 \\
  & DeepSets encoder & $-$228 & $-$57 & $-$116 & $-$72 & $-$45 & $-$104 $\pm$ 75 \\
 \midrule
 B & Transformer encoder & $-$110 & $-$181 & $-$260 & $-$126 & $-$134 & $-$162 $\pm$ 60 \\
  & $\alpha$-vector head & $-$152 & $-$305 & $-$150 & $-$230 & $-$563 & $-$280 $\pm$ 171 \\
- & $\alpha$-vector head (parameter-matched) & $-$1647$^{*}$ & $-$867 & $-$310$^{*}$ & $-$735 & $-$554$^{*}$ & $-$801 $\pm$ 94 \\
+ & $lpha$-vector head (parameter-matched) & $-$2495 & $-$867 & $-$1452 & $-$735 & $-$635 & $-$1237 $\pm$ 690 \\
  & DeepSets encoder & $-$136 & $-$90 & $-$53 & $-$202 & $-$227 & $-$142 $\pm$ 73 \\
 \midrule
 C & Transformer encoder & $-$362 & $-$130 & $-$156 & $-$71 & $-$216 & $-$187 $\pm$ 111 \\
  & $\alpha$-vector head & $-$213 & $-$246 & $-$89 & $-$359 & $-$359 & $-$253 $\pm$ 113 \\
- & $\alpha$-vector head (parameter-matched) & $-$361$^{*}$ & $-$394$^{*}$ & $-$1947$^{*}$ & $-$211$^{*}$ & $-$467$^{*}$ & -- \\
+ & $lpha$-vector head (parameter-matched) & $-$283 & $-$213 & $-$575 & $-$105 & $-$426 & $-$320 $\pm$ 165 \\
  & DeepSets encoder & $-$199 & $-$176 & $-$86 & $-$419 & $-$220 & $-$220 $\pm$ 122 \\
 \midrule
 D & Transformer encoder & $-$127 & $-$117 & $-$100 & $-$64 & $-$149 & $-$111 $\pm$ 32 \\
  & $\alpha$-vector head & $-$272 & $-$429 & $-$142 & $-$365 & $-$290 & $-$300 $\pm$ 108 \\
- & $\alpha$-vector head (parameter-matched) & $-$331$^{*}$ & $-$271$^{*}$ & $-$539$^{*}$ & $-$1270$^{*}$ & $-$341$^{*}$ & -- \\
+ & $lpha$-vector head (parameter-matched) & $-$396 & $-$270 & $-$356 & $-$1272 & $-$332 & $-$525 $\pm$ 376 \\
  & DeepSets encoder & $-$154 & $-$117 & $-$229 & $-$168 & $-$190 & $-$172 $\pm$ 42 \\
 \midrule
 Baselines & GRU policy & $-$41 & $-$82 & $-$57 & $-$54 & $-$85 & $-$64 $\pm$ 19 \\
@@ -159,7 +159,7 @@ Baselines & GRU policy & $-$41 & $-$82 & $-$57 & $-$54 & $-$85 & $-$64 $\pm$ 19 
 \begin{itemize}
   \item \textbf{Mountain Hike.} No belief design reaches the recurrent or particle-filter baselines ($-146$ to $-188$ on average) or the observation-only reference ($-189$). Persistent particles (Designs B and D) avoid the degenerate policy that scores about $-445$ more often than re-drawn particles (A and C). The $\alpha$-vector head is the most stable encoder ($-258$ to $-281$ across designs, standard deviation below 55 in every design), but it also plateaus there. Auxiliary prediction losses on their own (Design C) do not prevent the degenerate policy. The single strong Transformer run in Design B (seed 10, $-129$) is not reproduced by the other four seeds.
   \item \textbf{Light-Dark 2D.} The DeepSets encoder in Designs A and B ($-60$ and $-61$ on average) matches the baselines ($-59$ to $-68$). The Transformer encoder is competitive except for one collapsed seed per design. The $\alpha$-vector head is worse on average, and its evaluation return swings between about $-25$ and $-1500$ from one evaluation to the next, so a single update-200 value is largely a sampling artefact; Table~\ref{tab:ld2d-tail4} averages the last four evaluations to damp this.
-  \item \textbf{Parameter-matched $\alpha$-vector head.} Widening the $\alpha$-vector trunk to the Transformer's parameter budget does not help: on Mountain Hike it pushes Designs A and C into the degenerate policy on most seeds, and on Light-Dark 2D it makes the evaluations even more volatile. These runs are still in progress; asterisks mark the latest available evaluation.
+  \item \textbf{Parameter-matched $\alpha$-vector head.} Widening the $\alpha$-vector trunk to the Transformer's parameter budget does not help: on Mountain Hike it pushes Designs A and C into the degenerate policy on most seeds, and on Light-Dark 2D it makes the evaluations even more volatile. On Mountain Hike four Design-C seeds stopped at update 175 (wall-time limit); asterisks mark their latest evaluation.
   \item \textbf{Seed effects.} Because all methods share the held-out episodes of a given seed, per-seed columns are directly comparable across rows. The held-out sets of the five seeds are of similar difficulty (their across-method mean returns differ by less than 10 on both tasks), so the differences between columns reflect training variability rather than evaluation difficulty. On Light-Dark 2D the apparent advantage of seed 10 in the update-200 table disappears in the last-four-evaluation average.
   \item \textbf{Divergence.} One particle-filter run on Light-Dark 2D (seed 10) stopped at update 46 with a non-finite gradient norm; resuming from its checkpoint reproduces the failure because the stored rollout is replayed deterministically.
 \end{itemize}
