@@ -1,0 +1,91 @@
+\documentclass[a4paper,11pt]{article}
+\usepackage{mysty}
+\usepackage[margin=24mm]{geometry}
+\usepackage[hidelinks,unicode]{hyperref}
+\usepackage{booktabs}
+
+\title{補助予測網による次観測予測 NLL の事後評価 --- 何を計算しているか}
+\author{Belief-Score-Based-Model 実装ノート}
+\date{2026-09-25}
+
+\begin{document}
+\maketitle
+
+\section{目的}
+
+補助損失つきの設計（B: warm start $+$ 観測アンカー $+$ 補助損失，C: cold $+$ 補助損失）は，
+粒子集合から次の観測と報酬を予測する補助網を学習時に持つ．
+学習ログにはこの補助損失の値を記録していなかったため，
+学習済み checkpoint の予測網を学習に使っていないエピソードで評価し，
+粒子集合が次観測についてどれだけの情報を持っているかを nats 単位で測る．
+
+\section{データ}
+
+学習済み checkpoint の方策（確率的）で，学習時と別の seed（9000--9019）の 20 エピソードを走らせる．
+粒子のノイズと方策のサンプルには，エピソードごとに seed を固定した乱数生成器を渡す．
+各ステップで次を記録する．
+\begin{itemize}
+  \item 粒子集合 $X_t=\{x_{t,k}\}_{k=1}^{K}$（$K=16$）と実行した行動 $a_t$
+  \item 次の観測 $o_{t+1}$ と報酬 $r_t$
+  \item 真の位置 $s_t$（物差しの計算にだけ使い，予測網には渡さない）
+\end{itemize}
+エピソード最終ステップは次観測がないので観測側の評価から除く．
+
+\section{評価量}
+
+学習時の補助損失と同じ式を，未知のデータで評価する．
+観測予測網 $h_\phi:(x,a)\mapsto(\mu,\log\sigma)$ を用いて
+\begin{equation}
+  \mathrm{NLL}_{\mathrm{obs}}
+  = \frac{1}{T}\sum_{t}\left[
+    -\log \frac{1}{K}\sum_{k=1}^{K}
+    \mathcal{N}\!\bigl(o_{t+1};\ \mu(x_{t,k},a_t),\ \operatorname{diag}\sigma^{2}(x_{t,k},a_t)\bigr)
+  \right].
+  \label{eq:nllobs}
+\end{equation}
+報酬側は $o_{t+1}$ を $r_t$ に，$h_\phi$ を報酬予測網 $h^{r}_\psi$ に置き換えた同形の量 $\mathrm{NLL}_{\mathrm{rew}}$ である．
+単位は 1 ステップあたりの nats（観測は 2 次元の合計）．小さいほど予測が当たっている．
+
+\section{物差し（同じデータで計算）}
+
+Mountain Hike の観測は $o=s+\varepsilon$，$\varepsilon\sim\mathcal{N}(0,3^2I)$，
+遷移は $s'=s+\operatorname{clip}(a)+\eta$，$\eta\sim\mathcal{N}(0,0.25^2I)$ である．
+
+\paragraph{理論下限（oracle）．} 真の位置 $s_t$ が分かっているときの最良の予測：
+\begin{equation}
+  o_{t+1}\mid s_t,a_t \sim \mathcal{N}\!\bigl(s_t+\operatorname{clip}(a_t),\ (3^2+0.25^2)\,I\bigr)
+  \quad\Rightarrow\quad \text{約 } 5.06 \text{ nats}.
+\end{equation}
+どの belief もこれより小さくはならない．
+
+\paragraph{観測のみ（obsonly）．} 位置の代わりに現在の観測 $o_t$ を使う記憶なしの予測：
+\begin{equation}
+  o_{t+1}\mid o_t,a_t \sim \mathcal{N}\!\bigl(o_t+\operatorname{clip}(a_t),\ (2\cdot 3^2+0.25^2)\,I\bigr)
+  \quad\Rightarrow\quad \text{約 } 5.71 \text{ nats}.
+\end{equation}
+現在の観測のノイズが加わるので分散がほぼ 2 倍になる．
+
+\section{読み方}
+
+$\mathrm{NLL}_{\mathrm{obs}}$ が obsonly に近ければ粒子は観測 1 回分の情報しか持たず，
+oracle に近ければ真の位置に近い情報を持つ．
+両者の差 $\mathrm{obsonly}-\mathrm{oracle}\approx 0.65$ nats のうちどれだけを取れたか，
+\begin{equation}
+  \rho=\frac{\mathrm{obsonly}-\mathrm{NLL}_{\mathrm{obs}}}{\mathrm{obsonly}-\mathrm{oracle}},
+\end{equation}
+を「位置情報の取得率」として読む．
+これは，$H(o_{t+1}\mid a_t)-\mathrm{NLL}_{\mathrm{obs}}$ が $I(X_t;o_{t+1}\mid a_t)$ の変分下界（Barber--Agakov）であることに基づく．
+例として v2 transformer（seed 10）は $\mathrm{NLL}_{\mathrm{obs}}=5.21$，oracle $5.06$，obsonly $5.71$ で，$\rho\approx 0.77$ である．
+
+\section{注意点}
+
+\begin{enumerate}
+  \item 物差しは箱の縁（外側で報酬と挙動が変わる）と行動の上限処理を近似しており，$\pm 0.02$ nats 程度の誤差がある．
+  \item 予測網を持つのは B / C のみ．A / D と baseline（GRU・RNN・粒子フィルタ）はこの方法では測れず，
+        状態復元プローブ（$R^2$）で比較する．
+  \item NLL は予測網の当てはまりの良さも含む．予測網が不十分なら粒子に情報があっても NLL は下がらないので，
+        $\rho$ は粒子の情報量の下界として読む．
+  \item 方策ごとに訪れる状態分布が異なる（箱外に出る腕では観測が箱外の値になる）ため，設計間の比較には分布の違いが混ざる．
+\end{enumerate}
+
+\end{document}
