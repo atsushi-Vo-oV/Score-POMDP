@@ -77,6 +77,44 @@ oracle に近ければ真の位置に近い情報を持つ．
 これは，$H(o_{t+1}\mid a_t)-\mathrm{NLL}_{\mathrm{obs}}$ が $I(X_t;o_{t+1}\mid a_t)$ の変分下界（Barber--Agakov）であることに基づく．
 例として v2 transformer（seed 10）は $\mathrm{NLL}_{\mathrm{obs}}=5.21$，oracle $5.06$，obsonly $5.71$ で，$\rho\approx 0.77$ である．
 
+
+\section{結果（Mountain Hike，seeds 10--14）}
+
+各 seed 20 エピソード．oracle は $5.058$，obsonly は $5.705$ nats（全 run でほぼ一定）．
+$\rho$ の後ろの $\dagger$ は，その seed の 200 update 後の評価 return が $-430$ 以下（箱外に出続ける退化方策）であることを示す．
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{llccccccc}
+\toprule
+設計 & エンコーダ & \multicolumn{5}{c}{$\rho$（seed 10 / 11 / 12 / 13 / 14）} & $\mathrm{NLL}_{\mathrm{obs}}$ 平均 & $\rho$ 平均 \
+\midrule
+B & Transformer   & 0.76 & 0.28$^\dagger$ & 0.26$^\dagger$ & 0.00 & 0.42 & 5.48 $\pm$ 0.16 & 0.34 $\pm$ 0.25 \
+  & $\alpha$-vector & 0.55 & 0.52 & 0.54 & 0.50 & 0.55 & 5.36 $\pm$ 0.01 & \textbf{0.53 $\pm$ 0.02} \
+  & DeepSets      & 0.50 & 0.60 & 0.07$^\dagger$ & 0.74 & $-$0.18$^\dagger$ & 5.48 $\pm$ 0.23 & 0.35 $\pm$ 0.35 \
+\midrule
+C & Transformer   & $-$2.62$^\dagger$ & 0.22 & $-$1.02$^\dagger$ & $-$0.95$^\dagger$ & 0.22 & 6.24 $\pm$ 0.68 & $-$0.83 $\pm$ 1.05 \
+  & $\alpha$-vector & 0.18 & 0.22 & 0.24 & 0.17 & 0.26 & 5.57 $\pm$ 0.02 & 0.21 $\pm$ 0.03 \
+  & DeepSets      & $-$1.80$^\dagger$ & 0.47 & $-$0.82 & $-$2.66$^\dagger$ & 0.07 & 6.32 $\pm$ 0.75 & $-$0.95 $\pm$ 1.16 \
+\bottomrule
+\end{tabular}
+\caption{次観測予測の位置情報取得率 $\rho$（1 が oracle，0 が観測のみ，負は観測のみより悪い予測）．}
+\end{table}
+
+\paragraph{読み．}
+\begin{enumerate}
+  \item 退化方策に落ちていない run では $\rho$ は 0.2--0.76 で，粒子は観測 1 回より多くの次観測情報を持つ．
+        最良は B の Transformer seed 10（0.76），最も安定しているのは B の $\alpha$-vector（5 seed とも 0.50--0.55）．
+  \item B（warm start あり）は C（cold）より一貫して高い（$\alpha$-vector で 0.53 対 0.21）．
+        補助損失があるとき，warm start は粒子の予測情報を約 2.5 倍にする．
+  \item 退化方策の run では $\rho$ が大きく負になる（最悪 $-2.66$）．エージェントが箱の外へ遠くまで歩き，
+        観測の値が学習時に稀だった範囲に広がるため，予測網が過信した誤った予測を出すと考えられる．
+        このとき報酬は $-6$ で一定なので報酬 NLL はかえって小さくなる（負の値）．
+        C の DeepSets seed 12 は退化していないが $\rho=-0.82$ で，例外として残る．
+  \item 状態復元プローブ（$R^2$）の順位（B $\alpha$ $>$ C $\alpha$）と整合する．
+\end{enumerate}
+
 \section{注意点}
 
 \begin{enumerate}
