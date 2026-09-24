@@ -72,13 +72,16 @@ def action_value_advantages(
     environment_indices: torch.Tensor,
     value_transform: ValueTransform,
     ppo_config: dict,
+    *,
+    critic_condition: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Advantages for the action-value critic, mixed with GAE by ``q_advantage_mix``.
 
-    ``A_Q = Q(b, a) - E_{a' ~ pi} Q(b, a')`` in raw return units (detached), so
-    the policy step no longer depends on the state-value bootstrap; ``mix``
-    interpolates towards the stored GAE advantages (Q-Prop / IPG style).  The
-    returned tensor has the rollout's full ``[time, environment]`` shape.
+    ``A_Q = Q(c_critic, a) - E_{a' ~ pi(.|c_policy)} Q(c_critic, a')`` in raw
+    return units (detached), so the policy step no longer depends on the
+    state-value bootstrap; ``mix`` interpolates towards the stored GAE
+    advantages (Q-Prop / IPG style).  The returned tensor has the rollout's
+    full ``[time, environment]`` shape.
     """
 
     mix = float(ppo_config.get("q_advantage_mix", 1.0))
@@ -86,7 +89,11 @@ def action_value_advantages(
         return advantages
     steps = advantages.shape[0]
     with torch.no_grad():
-        expected = model.expected_action_value(condition)
+        expected = (
+            model.expected_action_value(condition)
+            if critic_condition is None or critic_condition is condition
+            else model.expected_action_value(condition, critic_condition)
+        )
         q_advantage = value_transform.to_raw(taken_values.detach()) - value_transform.to_raw(expected)
         q_advantage = q_advantage.reshape(steps, -1)
         if ppo_config["normalize_advantage"]:
@@ -158,7 +165,10 @@ def encode_conditions(
     encode_both = getattr(model, "encode_both", None)
     if encode_both is None:
         condition = model.encode(particles, scores)
-        return condition, condition
+        encode_value = getattr(model, "encode_value", None)
+        if encode_value is None:
+            return condition, condition
+        return condition, encode_value(particles, scores)
     return encode_both(particles, scores)
 
 
@@ -169,6 +179,18 @@ def encode_value_condition(
     if encode_value is None:
         return model.encode(particles, scores)
     return encode_value(particles, scores)
+
+
+def value_from_conditions(
+    model: ScoreBeliefActorCritic,
+    policy_condition: torch.Tensor,
+    critic_condition: torch.Tensor,
+) -> torch.Tensor:
+    """Evaluate a value while preserving the shared-condition call path."""
+
+    if policy_condition is critic_condition:
+        return model.value(policy_condition)
+    return model.value(policy_condition, critic_condition)
 
 
 def _time_environment_flatten(value: torch.Tensor) -> torch.Tensor:
@@ -651,9 +673,10 @@ def update_ppo(
                         environment_indices,
                         value_transform,
                         ppo_config,
+                        critic_condition=value_condition,
                     )
                 else:
-                    new_values = model.value(value_condition)
+                    new_values = value_from_conditions(model, condition, value_condition)
                     minibatch_advantages = advantages
                 policy_loss, approximate_kl, clip_fraction, entropy = policy_objective(
                     model,

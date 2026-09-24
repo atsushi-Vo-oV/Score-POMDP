@@ -94,8 +94,57 @@ def test_shared_mode_value_loss_reaches_the_encoder() -> None:
 
 
 @pytest.mark.parametrize("mode", ["shared", "separate", "detached"])
+def test_action_value_uses_policy_and_critic_conditions(mode: str) -> None:
+    model, _, _ = _model(mode, **{"model.critic_kind": "action"})
+    assert model.action_value_head is not None
+    condition_dim = model.action_value_head.network[0].in_features
+    policy_condition = torch.zeros(2, condition_dim)
+    policy_condition[:, :2] = torch.tensor([[2.0, 0.0], [0.0, 2.0]])
+    critic_condition = torch.zeros(2, condition_dim)
+    critic_condition[:, :2] = torch.tensor([[3.0, -1.0], [-2.0, 4.0]])
+    policy_head = torch.nn.Linear(condition_dim, 2, bias=False)
+    critic_head = torch.nn.Linear(condition_dim, 2, bias=False)
+    with torch.no_grad():
+        policy_head.weight.zero_()
+        policy_head.weight[:, :2] = torch.eye(2)
+        critic_head.weight.zero_()
+        critic_head.weight[:, :2] = torch.eye(2)
+    model.categorical_head = policy_head
+    model.action_value_head.network = critic_head
+
+    expected = model.expected_action_value(policy_condition, critic_condition)
+    manual = (
+        torch.softmax(model.categorical_head(policy_condition), dim=-1)
+        * model.action_value_head.all_values(critic_condition)
+    ).sum(dim=-1)
+    torch.testing.assert_close(expected, manual)
+    torch.testing.assert_close(model.value(policy_condition, critic_condition), manual)
+
+
+def test_shared_action_value_matches_the_single_condition_path() -> None:
+    model, _, _ = _model("shared", **{"model.critic_kind": "action"})
+    assert model.action_value_head is not None
+    condition = torch.randn(3, model.action_value_head.network[0].in_features)
+    assert torch.equal(
+        model.expected_action_value(condition),
+        model.expected_action_value(condition, condition),
+    )
+    assert torch.equal(model.value(condition), model.value(condition, condition))
+
+
+@pytest.mark.parametrize("mode", ["shared", "separate", "detached"])
 def test_update_ppo_runs_in_every_mode(mode: str) -> None:
     model, model_config, ppo_config = _model(mode)
+    rollout = _rollout_for(model, batch=4, steps=4, weights=None)
+    metrics = update_ppo(
+        model, build_optimizer(model, ppo_config), rollout, model_config, ppo_config
+    )
+    assert metrics.value_loss == metrics.value_loss  # finite, not NaN
+
+
+@pytest.mark.parametrize("mode", ["shared", "separate", "detached"])
+def test_action_value_update_ppo_runs_in_every_mode(mode: str) -> None:
+    model, model_config, ppo_config = _model(mode, **{"model.critic_kind": "action"})
     rollout = _rollout_for(model, batch=4, steps=4, weights=None)
     metrics = update_ppo(
         model, build_optimizer(model, ppo_config), rollout, model_config, ppo_config

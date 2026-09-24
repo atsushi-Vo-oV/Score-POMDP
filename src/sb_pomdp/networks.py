@@ -680,17 +680,21 @@ def expected_action_value(
     head: ActionValueHead,
     condition: torch.Tensor,
     *,
+    policy_condition: torch.Tensor | None = None,
     categorical_logits: torch.Tensor | None = None,
     sample_actions=None,
     num_samples: int = 8,
 ) -> torch.Tensor:
-    """``V(c) = E_{a ~ pi(.|c)} Q(c, a)`` without gradient.
+    """``E_{a ~ pi(.|policy)} Q(critic, a)`` without gradient.
 
     Exact for discrete policies (``categorical_logits``); a Monte Carlo average
     over ``num_samples`` policy samples otherwise (``sample_actions`` maps a
-    condition batch to actions).  Sampling uses the policy's own RNG path.
+    policy-condition batch to actions).  Omitting ``policy_condition`` preserves
+    the shared-condition path.  Sampling uses the policy's own RNG path.
     """
 
+    if policy_condition is None:
+        policy_condition = condition
     with torch.no_grad():
         if head.discrete:
             if categorical_logits is None:
@@ -699,9 +703,10 @@ def expected_action_value(
             return (probabilities * head.all_values(condition)).sum(dim=-1)
         if sample_actions is None or num_samples <= 0:
             raise ValueError("continuous expected values need an action sampler and samples")
-        repeated = condition.repeat_interleave(num_samples, dim=0)
-        actions = sample_actions(repeated)
-        return head(repeated, actions).reshape(condition.shape[0], num_samples).mean(dim=1)
+        repeated_policy = policy_condition.repeat_interleave(num_samples, dim=0)
+        repeated_critic = condition.repeat_interleave(num_samples, dim=0)
+        actions = sample_actions(repeated_policy)
+        return head(repeated_critic, actions).reshape(condition.shape[0], num_samples).mean(dim=1)
 
 
 class RewardPredictor(nn.Module):

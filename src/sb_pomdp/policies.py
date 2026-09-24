@@ -593,29 +593,42 @@ class ScoreBeliefActorCritic(nn.Module):
             return condition, condition.detach()
         return condition, condition
 
-    def value(self, condition: torch.Tensor) -> torch.Tensor:
+    def value(
+        self,
+        policy_condition: torch.Tensor,
+        critic_condition: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """State value: the critic output, or ``E_pi Q`` for the action-value critic."""
 
+        if critic_condition is None:
+            critic_condition = policy_condition
         if self.action_value_head is not None:
-            return self.expected_action_value(condition)
+            return self.expected_action_value(policy_condition, critic_condition)
         assert self.value_head is not None
-        return self.value_head(condition).squeeze(-1)
+        return self.value_head(critic_condition).squeeze(-1)
 
     def action_value(self, condition: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
         if self.action_value_head is None:
             raise ValueError("the model has no action-value critic")
         return self.action_value_head(condition, action)
 
-    def expected_action_value(self, condition: torch.Tensor) -> torch.Tensor:
+    def expected_action_value(
+        self,
+        policy_condition: torch.Tensor,
+        critic_condition: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         if self.action_value_head is None:
             raise ValueError("the model has no action-value critic")
+        if critic_condition is None:
+            critic_condition = policy_condition
         logits = None
         if self.action_kind == "discrete":
             assert self.categorical_head is not None
-            logits = self.categorical_head(condition)
+            logits = self.categorical_head(policy_condition)
         return expected_action_value(
             self.action_value_head,
-            condition,
+            critic_condition,
+            policy_condition=policy_condition,
             categorical_logits=logits,
             sample_actions=lambda c: self.sample_policy(c, deterministic=False).action,
             num_samples=self.q_value_samples,
