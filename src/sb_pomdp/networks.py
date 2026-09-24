@@ -188,9 +188,7 @@ class AlphaPoolBeliefEncoder(nn.Module):
             raise ValueError(
                 f"expected [batch, particles, {self.state_dim}], got {tuple(particles.shape)}"
             )
-        inputs = (
-            torch.cat((particles, scores), dim=-1) if self.use_scores else particles
-        )
+        inputs = torch.cat((particles, scores), dim=-1) if self.use_scores else particles
         return self.trunk(inputs).mean(dim=1)
 
 
@@ -229,11 +227,9 @@ class KANLinear(nn.Module):
         self.grid_size = int(grid_size)
         self.spline_order = int(spline_order)
         spacing = 2.0 * float(grid_range) / self.grid_size
-        knots = (
-            torch.arange(-self.spline_order, self.grid_size + self.spline_order + 1)
-            * spacing
-            - float(grid_range)
-        )
+        knots = torch.arange(
+            -self.spline_order, self.grid_size + self.spline_order + 1
+        ) * spacing - float(grid_range)
         self.register_buffer("grid", knots)
         self.base_weight = nn.Parameter(torch.empty(self.out_features, self.in_features))
         self.spline_weight = nn.Parameter(
@@ -767,6 +763,107 @@ class RewardPredictor(nn.Module):
         return torch.logsumexp(per_particle, dim=1) - math.log(num_particles)
 
 
+class SetMixturePredictor(nn.Module):
+    """Mixture-density predictor read from the whole particle set (DeepSets -> MDN).
+
+    Alternative to the per-particle predictors: a permutation-invariant DeepSets
+    network ``rho(mean_k phi(x_k, a))`` maps the particle set and the action to
+    the parameters of an ``M``-component diagonal-Gaussian mixture over the
+    target (next observation or reward).  Unlike the per-particle mixture, the
+    component count is decoupled from ``K`` and the components can represent
+    structure that no single particle carries (e.g. the set's spread).  Same
+    ``log_likelihood`` interface, so the auxiliary losses are unchanged.
+    """
+
+    _LOG_STD_MIN = -4.0
+    _LOG_STD_MAX = 3.0
+
+    def __init__(
+        self,
+        state_dim: int,
+        action_feature_dim: int,
+        target_dim: int,
+        hidden_dims: Sequence[int],
+        *,
+        components: int = 4,
+    ) -> None:
+        super().__init__()
+        if state_dim <= 0 or action_feature_dim < 0 or target_dim <= 0:
+            raise ValueError("set mixture predictor dimensions must be positive")
+        if components <= 0:
+            raise ValueError("components must be positive")
+        widths = list(hidden_dims)
+        if not widths:
+            raise ValueError("hidden_dims must not be empty")
+        self.state_dim = state_dim
+        self.action_feature_dim = action_feature_dim
+        self.target_dim = target_dim
+        self.components = int(components)
+        feature_dim = widths[-1]
+        self.element_network = make_mlp(state_dim + action_feature_dim, widths[:-1], feature_dim)
+        self.pooled_network = make_mlp(
+            feature_dim + action_feature_dim,
+            widths,
+            self.components * (1 + 2 * target_dim),
+        )
+        # Spread the initial component means so the mixture does not start (and
+        # stay) collapsed on one Gaussian; a symmetric start is a stationary point.
+        last = [m for m in self.pooled_network.modules() if isinstance(m, nn.Linear)][-1]
+        with torch.no_grad():
+            offsets = (
+                torch.linspace(-1.0, 1.0, self.components)
+                if self.components > 1
+                else torch.zeros(1)
+            )
+            mean_bias = last.bias[self.components : self.components + self.components * target_dim]
+            mean_bias.copy_(offsets[:, None].expand(self.components, target_dim).reshape(-1))
+
+    def mixture_parameters(
+        self, particles: torch.Tensor, action_features: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Log-weights ``[batch, M]``, means and log-stds ``[batch, M, target_dim]``."""
+
+        if particles.ndim != 3 or particles.shape[-1] != self.state_dim:
+            raise ValueError(
+                f"expected particles [batch, K, {self.state_dim}], got {tuple(particles.shape)}"
+            )
+        batch, num_particles = particles.shape[0], particles.shape[1]
+        if action_features.shape != (batch, self.action_feature_dim):
+            raise ValueError("action features must have shape [batch, action_feature_dim]")
+        tiled = action_features[:, None, :].expand(batch, num_particles, self.action_feature_dim)
+        pooled = functional.silu(self.element_network(torch.cat((particles, tiled), dim=-1))).mean(
+            dim=1
+        )
+        outputs = self.pooled_network(torch.cat((pooled, action_features), dim=-1))
+        m, d = self.components, self.target_dim
+        log_weights = torch.log_softmax(outputs[:, :m], dim=-1)
+        means = outputs[:, m : m + m * d].reshape(batch, m, d)
+        log_std = (
+            outputs[:, m + m * d :].reshape(batch, m, d).clamp(self._LOG_STD_MIN, self._LOG_STD_MAX)
+        )
+        return log_weights, means, log_std
+
+    def log_likelihood(
+        self,
+        particles: torch.Tensor,
+        action_features: torch.Tensor,
+        target: torch.Tensor,
+    ) -> torch.Tensor:
+        """``log sum_m w_m N(target; mu_m, diag sigma_m^2)`` per batch row."""
+
+        if target.ndim == 1 and self.target_dim == 1:
+            target = target[:, None]
+        if target.shape != (particles.shape[0], self.target_dim):
+            raise ValueError(f"target must have shape [batch, {self.target_dim}]")
+        log_weights, means, log_std = self.mixture_parameters(particles, action_features)
+        per_dim = (
+            -0.5 * ((target[:, None, :] - means) / log_std.exp()).square()
+            - log_std
+            - 0.5 * math.log(2.0 * math.pi)
+        )
+        return torch.logsumexp(log_weights + per_dim.sum(dim=-1), dim=1)
+
+
 class AlphaLSEHead(nn.Module):
     """Tempered log-sum-exp over linear pieces: a learned PWLC belief functional.
 
@@ -802,6 +899,4 @@ class AlphaLSEHead(nn.Module):
     def forward(self, condition: torch.Tensor) -> torch.Tensor:
         values = self.linear(condition)
         values = values.view(*values.shape[:-1], self.outputs, self.pieces)
-        return self.temperature * torch.logsumexp(
-            values / self.temperature, dim=-1
-        )
+        return self.temperature * torch.logsumexp(values / self.temperature, dim=-1)

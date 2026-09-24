@@ -20,6 +20,7 @@ from .networks import (
     DeepSetsBeliefEncoder,
     ObservationPredictor,
     RewardPredictor,
+    SetMixturePredictor,
     expected_action_value,
     init_final_linear,
     make_head_network,
@@ -475,24 +476,44 @@ class ScoreBeliefActorCritic(nn.Module):
         self.observation_prediction_coef = float(
             model_config.get("observation_prediction_coef", 0.0)
         )
+        self.aux_predictor_kind = str(model_config.get("aux_predictor_kind", "particle"))
+        if self.aux_predictor_kind not in {"particle", "set_mixture"}:
+            raise ValueError("aux_predictor_kind must be particle or set_mixture")
+        aux_components = int(model_config.get("aux_mixture_components", 4))
         if self.observation_prediction_coef > 0.0:
-            self.observation_predictor: ObservationPredictor | None = (
-                ObservationPredictor(
+            if self.aux_predictor_kind == "set_mixture":
+                self.observation_predictor: nn.Module | None = SetMixturePredictor(
+                    state_dim,
+                    action_feature_dim,
+                    observation_dim,
+                    model_config.get("observation_predictor_hidden", [64]),
+                    components=aux_components,
+                )
+            else:
+                self.observation_predictor = ObservationPredictor(
                     state_dim,
                     action_feature_dim,
                     observation_dim,
                     model_config.get("observation_predictor_hidden", [64]),
                 )
-            )
         else:
             self.observation_predictor = None
         self.reward_prediction_coef = float(model_config.get("reward_prediction_coef", 0.0))
         if self.reward_prediction_coef > 0.0:
-            self.reward_predictor: RewardPredictor | None = RewardPredictor(
-                state_dim,
-                action_feature_dim,
-                model_config.get("reward_predictor_hidden", [64]),
-            )
+            if self.aux_predictor_kind == "set_mixture":
+                self.reward_predictor: nn.Module | None = SetMixturePredictor(
+                    state_dim,
+                    action_feature_dim,
+                    1,
+                    model_config.get("reward_predictor_hidden", [64]),
+                    components=aux_components,
+                )
+            else:
+                self.reward_predictor = RewardPredictor(
+                    state_dim,
+                    action_feature_dim,
+                    model_config.get("reward_predictor_hidden", [64]),
+                )
         else:
             self.reward_predictor = None
         self.critic_kind = str(model_config.get("critic_kind", "state"))

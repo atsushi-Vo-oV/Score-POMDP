@@ -49,6 +49,8 @@ _LEGACY_MODEL_DEFAULTS: dict[str, object] = {
     "observation_predictor_hidden": [64],
     "reward_prediction_coef": 0.0,
     "reward_predictor_hidden": [64],
+    "aux_predictor_kind": "particle",
+    "aux_mixture_components": 4,
     "langevin_transition_proposal": False,
     "langevin_observation_anchor": False,
     "proposal_hidden": [64],

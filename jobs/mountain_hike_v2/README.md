@@ -56,3 +56,7 @@ pjsub jobs/mountain_hike_v2/v2g_liteK32_alpha.sh
 ## 別エンコーダ(critic 専用)比較 — sepenc
 
 `model.value_encoder = separate`: 価値ヘッドが粒子集合を自前の集合エンコーダで読む(方策エンコーダと belief は共有、価値損失は方策エンコーダに届かない)。v2 設定 × 3 エンコーダ × seeds 10–14 = 15 本(config/mountain_hike_v2_sepenc.json、campaign mountain-hike-v2-sepenc-v1)。DEBUG: jobs/mountain_hike_v2/debug_sepenc.sh(両課題共通)。
+
+## 集合混合密度の補助予測網 — v5 / v6
+
+`model.aux_predictor_kind = set_mixture`: 補助損失の予測網を「粒子ごとのガウスの等重み平均」から「粒子集合を DeepSets で読み、4 成分の対角ガウス混合を出す MDN」に置き換える(観測・報酬とも、隠れ層 [64, 64])。v5 = v2 + set_mixture(warm + アンカー + 補助)、v6 = v3 + set_mixture(cold + 補助)。3 エンコーダ × seeds 10–14、config/mountain_hike_v5.json / mountain_hike_v6.json、campaign mountain-hike-v5-v1 / -v6-v1。DEBUG: jobs/mountain_hike_v2/debug_mdn.sh(両課題共通)。

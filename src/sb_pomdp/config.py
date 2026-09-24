@@ -157,6 +157,8 @@ _MODEL_KEYS = frozenset(
         "observation_predictor_hidden",
         "reward_prediction_coef",
         "reward_predictor_hidden",
+        "aux_predictor_kind",
+        "aux_mixture_components",
         "langevin_transition_proposal",
         "langevin_observation_anchor",
         "proposal_hidden",
@@ -246,6 +248,10 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         # sampler and the encoder inputs unchanged.
         "reward_prediction_coef": 0.0,
         "reward_predictor_hidden": [64],
+        # The auxiliary predictors averaged one Gaussian per particle before the
+        # set-level mixture-density option existed.
+        "aux_predictor_kind": "particle",
+        "aux_mixture_components": 4,
         "langevin_transition_proposal": False,
         "langevin_observation_anchor": False,
         "proposal_hidden": [64],
@@ -558,6 +564,11 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
     )
     _number(section["reward_prediction_coef"], "model.reward_prediction_coef", minimum=0.0)
     _positive_integer_list(section["reward_predictor_hidden"], "model.reward_predictor_hidden")
+    aux_kind = _nonempty_string(section["aux_predictor_kind"], "model.aux_predictor_kind")
+    if aux_kind not in {"particle", "set_mixture"}:
+        raise ConfigError("model.aux_predictor_kind must be particle or set_mixture")
+    if _integer(section["aux_mixture_components"], "model.aux_mixture_components") <= 0:
+        raise ConfigError("model.aux_mixture_components must be positive")
     _positive_integer_list(section["proposal_hidden"], "model.proposal_hidden")
     for key in (
         "langevin_transition_proposal",
