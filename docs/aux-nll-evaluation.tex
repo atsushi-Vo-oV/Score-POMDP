@@ -88,15 +88,15 @@ $\rho$ の後ろの $\dagger$ は，その seed の 200 update 後の評価 retu
 \small
 \begin{tabular}{llccccccc}
 \toprule
-設計 & エンコーダ & \multicolumn{5}{c}{$\rho$（seed 10 / 11 / 12 / 13 / 14）} & $\mathrm{NLL}_{\mathrm{obs}}$ 平均 & $\rho$ 平均 \
+設計 & エンコーダ & \multicolumn{5}{c}{$\rho$（seed 10 / 11 / 12 / 13 / 14）} & $\mathrm{NLL}_{\mathrm{obs}}$ 平均 & $\rho$ 平均 \\
 \midrule
-B & Transformer   & 0.76 & 0.28$^\dagger$ & 0.26$^\dagger$ & 0.00 & 0.42 & 5.48 $\pm$ 0.16 & 0.34 $\pm$ 0.25 \
-  & $\alpha$-vector & 0.55 & 0.52 & 0.54 & 0.50 & 0.55 & 5.36 $\pm$ 0.01 & \textbf{0.53 $\pm$ 0.02} \
-  & DeepSets      & 0.50 & 0.60 & 0.07$^\dagger$ & 0.74 & $-$0.18$^\dagger$ & 5.48 $\pm$ 0.23 & 0.35 $\pm$ 0.35 \
+B & Transformer   & 0.76 & 0.28$^\dagger$ & 0.26$^\dagger$ & 0.00 & 0.42 & 5.48 $\pm$ 0.16 & 0.34 $\pm$ 0.25 \\
+  & $\alpha$-vector & 0.55 & 0.52 & 0.54 & 0.50 & 0.55 & 5.36 $\pm$ 0.01 & \textbf{0.53 $\pm$ 0.02} \\
+  & DeepSets      & 0.50 & 0.60 & 0.07$^\dagger$ & 0.74 & $-$0.18$^\dagger$ & 5.48 $\pm$ 0.23 & 0.35 $\pm$ 0.35 \\
 \midrule
-C & Transformer   & $-$2.62$^\dagger$ & 0.22 & $-$1.02$^\dagger$ & $-$0.95$^\dagger$ & 0.22 & 6.24 $\pm$ 0.68 & $-$0.83 $\pm$ 1.05 \
-  & $\alpha$-vector & 0.18 & 0.22 & 0.24 & 0.17 & 0.26 & 5.57 $\pm$ 0.02 & 0.21 $\pm$ 0.03 \
-  & DeepSets      & $-$1.80$^\dagger$ & 0.47 & $-$0.82 & $-$2.66$^\dagger$ & 0.07 & 6.32 $\pm$ 0.75 & $-$0.95 $\pm$ 1.16 \
+C & Transformer   & $-$2.62$^\dagger$ & 0.22 & $-$1.02$^\dagger$ & $-$0.95$^\dagger$ & 0.22 & 6.24 $\pm$ 0.68 & $-$0.83 $\pm$ 1.05 \\
+  & $\alpha$-vector & 0.18 & 0.22 & 0.24 & 0.17 & 0.26 & 5.57 $\pm$ 0.02 & 0.21 $\pm$ 0.03 \\
+  & DeepSets      & $-$1.80$^\dagger$ & 0.47 & $-$0.82 & $-$2.66$^\dagger$ & 0.07 & 6.32 $\pm$ 0.75 & $-$0.95 $\pm$ 1.16 \\
 \bottomrule
 \end{tabular}
 \caption{次観測予測の位置情報取得率 $\rho$（1 が oracle，0 が観測のみ，負は観測のみより悪い予測）．}
