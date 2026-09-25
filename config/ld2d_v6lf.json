@@ -1,0 +1,138 @@
+{
+  "experiment": {
+    "name": "score-belief-pomdp",
+    "label": "ld2d-v6lf",
+    "tasks": [
+      "light_dark"
+    ],
+    "seeds": [
+      10,
+      11,
+      12,
+      13,
+      14
+    ],
+    "device": "cuda",
+    "deterministic": false,
+    "output_dir": "results",
+    "eval_episodes": 10,
+    "eval_interval_updates": 25,
+    "checkpoint_interval_updates": 25,
+    "log_interval_updates": 1
+  },
+  "environment": {
+    "tasks": {
+      "light_dark": {
+        "horizon": 30,
+        "observation_noise_std": 0.01,
+        "dimension": 2,
+        "light_position": 5.0,
+        "initial_mean": 2.0,
+        "initial_std": 1.0,
+        "state_cost": 0.0,
+        "action_cost": 0.001,
+        "goal_radius": 1e-06,
+        "goal_bonus": 0.0,
+        "noise_gain": 5.0,
+        "terminal_cost": 10.0,
+        "process_noise_std": 0.01
+      }
+    }
+  },
+  "model": {
+    "num_particles": 4,
+    "langevin_steps": 2,
+    "langevin_step_size": 0.02,
+    "particle_clip": 0.0,
+    "score_clip": 0.0,
+    "energy_hidden": [
+      32,
+      32
+    ],
+    "d_model": 64,
+    "num_heads": 4,
+    "num_transformer_layers": 1,
+    "transformer_ff_dim": 128,
+    "dropout": 0.0,
+    "policy_hidden": [
+      96,
+      96
+    ],
+    "diffusion_steps": 5,
+    "diffusion_beta_start": 0.01,
+    "diffusion_beta_end": 0.2,
+    "diffusion_min_std": 0.05,
+    "diffusion_advantage_discount": 0.95,
+    "encoder_kind": "transformer",
+    "continuous_policy_kind": "diffusion",
+    "belief_gradient_mode": "full",
+    "langevin_temperature": 1.0,
+    "langevin_temperature_learnable": false,
+    "langevin_warm_start": false,
+    "langevin_step_size_learnable": false,
+    "policy_head_kind": "mlp",
+    "alpha_pieces": 16,
+    "alpha_temperature": 1.0,
+    "alpha_use_scores": false,
+    "langevin_observation_anchor": false,
+    "reward_prediction_coef": 1.0,
+    "observation_prediction_coef": 1.0,
+    "proposal_hidden": [
+      64
+    ],
+    "reward_predictor_hidden": [
+      64,
+      64
+    ],
+    "observation_predictor_hidden": [
+      64,
+      64
+    ],
+    "langevin_transition_proposal": false,
+    "aux_predictor_kind": "set_mixture",
+    "aux_mixture_components": 4
+  },
+  "ppo": {
+    "total_steps": 409600,
+    "num_envs": 16,
+    "rollout_steps": 128,
+    "epochs": 4,
+    "minibatch_size": 512,
+    "sequence_microbatch_size": 128,
+    "learning_rate": 0.00025,
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "clip_coef": 0.2,
+    "value_coef": 0.5,
+    "entropy_coef": 0.01,
+    "max_grad_norm": 10.0,
+    "normalize_advantage": true,
+    "value_target_transform": "symlog"
+  },
+  "comparison": {
+    "belief_gradient_modes": [
+      "full"
+    ],
+    "methods": [
+      "score_transformer",
+      "score_alpha",
+      "score_deepsets"
+    ],
+    "gru_encoder_hidden": [
+      234,
+      90
+    ],
+    "gru_hidden_dim": 43,
+    "rnn_encoder_hidden": [
+      149,
+      177
+    ],
+    "rnn_hidden_dim": 64,
+    "pf_hidden": [
+      52,
+      124
+    ],
+    "pf_particle_dim": 16,
+    "pf_soft_alpha": 0.9
+  }
+}
