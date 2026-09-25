@@ -20,3 +20,7 @@ pjsub jobs/ld2d_v2/debug_ld2d.sh   # 合格後にゲートが 75 本を投入
 ## 集合混合密度の補助予測網 — v5 / v6
 
 `model.aux_predictor_kind = set_mixture`: 補助損失の予測網を「粒子ごとのガウスの等重み平均」から「粒子集合を DeepSets で読み、4 成分の対角ガウス混合を出す MDN」に置き換える(観測・報酬とも、隠れ層 [64, 64])。v5 = v2 + set_mixture(warm + アンカー + 補助)、v6 = v3 + set_mixture(cold + 補助)。3 エンコーダ × seeds 10–14、config/ld2d_v5.json / ld2d_v6.json、campaign ld2d-v5-v1 / -v6-v1。DEBUG: jobs/mountain_hike_v2/debug_mdn.sh(両課題共通)。
+
+## FLOPs 一致版 — v2lf
+
+v2 の連鎖を K=4 粒子・L=2 ステップ・エネルギー MLP [32,32] に縮めたもの(推論 0.68–0.72 MFLOP/step。gru 0.46、PF 原典準拠 0.87 の間。v2 本来は 14.7–16.2 MFLOP)。パラメータ数は transformer 72.5k、alpha 32.8k で既定とほぼ同じ。3 エンコーダ × seeds 10–14、campaign *-v2lf-v1。DEBUG: jobs/mountain_hike_v2/debug_lf.sh(3 課題共通)。
