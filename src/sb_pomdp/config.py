@@ -66,6 +66,11 @@ _MOUNTAIN_HIKE_TASK_KEYS = frozenset(
         "goal_end",
         "teleport_probability",
         "observation_symmetry",
+        "mirror_symmetry",
+        "signpost_width",
+        "signpost_noise_std",
+        "start_distribution",
+        "terrain_ridges",
     }
 )
 
@@ -467,6 +472,32 @@ def _validate_mountain_hike_task(task: Mapping[str, Any], path: str) -> None:
         symmetry = _nonempty_string(task["observation_symmetry"], f"{path}.observation_symmetry")
         if symmetry not in {"none", "abs"}:
             raise ConfigError(f"{path}.observation_symmetry must be none or abs")
+    if "mirror_symmetry" in task:
+        _boolean(task["mirror_symmetry"], f"{path}.mirror_symmetry")
+    if "signpost_width" in task:
+        _positive_number(task["signpost_width"], f"{path}.signpost_width")
+    if "signpost_noise_std" in task:
+        _number(task["signpost_noise_std"], f"{path}.signpost_noise_std", minimum=0.0)
+    if "start_distribution" in task:
+        start = _nonempty_string(task["start_distribution"], f"{path}.start_distribution")
+        if start not in {"normal", "mirror_corners", "uniform"}:
+            raise ConfigError(f"{path}.start_distribution must be normal, mirror_corners or uniform")
+    if "terrain_ridges" in task:
+        ridges = task["terrain_ridges"]
+        if (
+            not isinstance(ridges, list)
+            or not ridges
+            or any(isinstance(r, bool) or not isinstance(r, int) or r not in (0, 1, 2) for r in ridges)
+            or len(set(ridges)) != len(ridges)
+        ):
+            raise ConfigError(f"{path}.terrain_ridges must be a non-empty subset of [0, 1, 2]")
+    if task.get("mirror_symmetry") is True:
+        if task.get("observation_symmetry", "none") != "none":
+            raise ConfigError(f"{path}.mirror_symmetry cannot be combined with observation_symmetry")
+        if task.get("start_distribution", "normal") == "normal":
+            raise ConfigError(
+                f"{path}.mirror_symmetry needs start_distribution mirror_corners or uniform"
+            )
 
 
 def _validate_light_dark_task(task: Mapping[str, Any], path: str) -> None:
@@ -829,6 +860,11 @@ _MOUNTAIN_HIKE_TASK_DEFAULTS: dict[str, JSONValue] = {
     "goal_end": False,
     "teleport_probability": 0.0,
     "observation_symmetry": "none",
+    "mirror_symmetry": False,
+    "signpost_width": 2.0,
+    "signpost_noise_std": 0.2,
+    "start_distribution": "normal",
+    "terrain_ridges": [0, 1, 2],
 }
 
 

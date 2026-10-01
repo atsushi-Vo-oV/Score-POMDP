@@ -885,6 +885,7 @@ def mountain_hike_terrain(
     *,
     hill_height: float = 4.0,
     shaping_power: float = 4.0,
+    ridges: Sequence[int] | None = None,
 ) -> np.ndarray:
     """The Mountain Hike reward map ``r(x, y)`` in internal ``[-1, 1]^2`` coordinates.
 
@@ -893,16 +894,25 @@ def mountain_hike_terrain(
     Gaussian ridges (``factor * pdf / 3``), shaped as ``1 - (1 - Z)^p``, scaled
     by the hill height, shifted by ``-(0.5 + h)``, plus the linear tilt
     ``(x + y) / 4``.  Note that the reference code passes the ``sigma``
-    entries to ``bivariate_normal`` as standard deviations.
+    entries to ``bivariate_normal`` as standard deviations.  ``ridges`` keeps a
+    subset of the three ridges (indices 0, 1, 2; default all) with the per-ridge
+    scale ``factor / 3`` unchanged, so the map equals the reference wherever a
+    kept ridge dominates.
     """
 
     x_arr = np.asarray(x, dtype=np.float64)
     y_arr = np.asarray(y, dtype=np.float64)
     z = np.zeros(np.broadcast(x_arr, y_arr).shape, dtype=np.float64)
     count = len(_MOUNTAIN_HIKE_MEANS)
-    for (mu_x, mu_y), (sigma_x, sigma_y), factor in zip(
-        _MOUNTAIN_HIKE_MEANS, _MOUNTAIN_HIKE_SIGMAS, _MOUNTAIN_HIKE_FACTORS
-    ):
+    selected = range(count) if ridges is None else [int(index) for index in ridges]
+    if any(index < 0 or index >= count for index in selected):
+        raise ValueError("ridges must index the three reference ridges (0, 1, 2)")
+    for index in selected:
+        (mu_x, mu_y), (sigma_x, sigma_y), factor = (
+            _MOUNTAIN_HIKE_MEANS[index],
+            _MOUNTAIN_HIKE_SIGMAS[index],
+            _MOUNTAIN_HIKE_FACTORS[index],
+        )
         z = np.maximum(
             z, factor * _bivariate_normal(x_arr, y_arr, sigma_x, sigma_y, mu_x, mu_y) / count
         )
@@ -951,6 +961,11 @@ class MountainHikeEnv(_BaseMaskedEnv):
         goal_end: bool = False,
         teleport_probability: float = 0.0,
         observation_symmetry: str = "none",
+        mirror_symmetry: bool = False,
+        signpost_width: float = 2.0,
+        signpost_noise_std: float = 0.2,
+        start_distribution: str = "normal",
+        terrain_ridges: Sequence[int] | None = None,
     ) -> None:
         super().__init__(
             horizon=horizon,
@@ -1004,6 +1019,42 @@ class MountainHikeEnv(_BaseMaskedEnv):
         # the sign of each coordinate and the position belief is four-fold ambiguous
         # until the (asymmetric) terrain reward or the start prior disambiguates it.
         self.observation_symmetry = str(observation_symmetry)
+        # Mirror worlds: the body frame is the world frame reflected by an unknown
+        # m in {+-1}^2 drawn at reset.  The agent observes m*s (+ noise) and its action
+        # moves the world state by m*a, so every mirror hypothesis explains every
+        # observation sequence; only the signpost near the origin (two extra observation
+        # components m * exp(-|s|^2 / 2 w^2) + noise) and the asymmetric terrain reward
+        # tell the four worlds apart.  The start must then be symmetric, or the first
+        # observation would reveal the frame.
+        if not isinstance(mirror_symmetry, (bool, np.bool_)):
+            raise ValueError("mirror_symmetry must be boolean")
+        if start_distribution not in ("normal", "mirror_corners", "uniform"):
+            raise ValueError("start_distribution must be normal, mirror_corners or uniform")
+        if not np.isfinite(signpost_width) or signpost_width <= 0:
+            raise ValueError("signpost_width must be positive")
+        if not np.isfinite(signpost_noise_std) or signpost_noise_std < 0:
+            raise ValueError("signpost_noise_std must be non-negative")
+        self.mirror_symmetry = bool(mirror_symmetry)
+        self.signpost_width = float(signpost_width)
+        self.signpost_noise_std = float(signpost_noise_std)
+        self.start_distribution = str(start_distribution)
+        if terrain_ridges is None:
+            self.terrain_ridges: tuple[int, ...] | None = None
+        else:
+            ridges = tuple(int(index) for index in terrain_ridges)
+            if not ridges or len(set(ridges)) != len(ridges) or any(i not in (0, 1, 2) for i in ridges):
+                raise ValueError("terrain_ridges must be a non-empty subset of (0, 1, 2)")
+            self.terrain_ridges = ridges
+        if self.mirror_symmetry:
+            if self.observation_symmetry != "none":
+                raise ValueError("mirror_symmetry and observation_symmetry cannot be combined")
+            if self.start_distribution == "normal":
+                raise ValueError(
+                    "mirror_symmetry needs a symmetric start (mirror_corners or uniform); "
+                    "a fixed start corner would reveal the mirror frame"
+                )
+            self.observation_dim = 4
+        self._mirror = np.ones(2, dtype=np.float64)
         self.action_spec = ActionSpec.continuous(-self.max_action, self.max_action, shape=(2,))
 
     def terrain_reward(self, position: np.ndarray) -> float:
@@ -1016,8 +1067,18 @@ class MountainHikeEnv(_BaseMaskedEnv):
                 internal[1],
                 hill_height=self.hill_height,
                 shaping_power=self.shaping_power,
+                ridges=self.terrain_ridges,
             )
         )
+
+    def signpost_signal(self, position: np.ndarray | None = None) -> float:
+        """Noise-free signpost strength exp(-|s|^2 / 2 w^2) at a world position."""
+
+        if position is None:
+            assert self._state is not None
+            position = self._state
+        squared = float(np.dot(position, position))
+        return float(np.exp(-0.5 * squared / self.signpost_width**2))
 
     def _outside_box(self) -> bool:
         assert self._state is not None
@@ -1031,13 +1092,21 @@ class MountainHikeEnv(_BaseMaskedEnv):
         """State as seen by the sensor: the raw position, or |position| under 'abs' symmetry."""
 
         assert self._state is not None
+        if self.mirror_symmetry:
+            return self._mirror * self._state
         if self.observation_symmetry == "abs":
             return np.abs(self._state)
         return self._state
 
     def _observation(self) -> np.ndarray:
         assert self._state is not None
-        return self._add_observation_noise(np.asarray(self._observed_state(), dtype=np.float64))
+        observed = self._add_observation_noise(np.asarray(self._observed_state(), dtype=np.float64))
+        if not self.mirror_symmetry:
+            return observed
+        signpost = self._mirror * self.signpost_signal()
+        if self.signpost_noise_std > 0.0:
+            signpost = signpost + self._rng.normal(loc=0.0, scale=self.signpost_noise_std, size=2)
+        return np.concatenate([observed, np.asarray(signpost, dtype=np.float32)]).astype(np.float32)
 
     def _info(self) -> dict[str, Any]:
         info = super()._info()
@@ -1045,7 +1114,56 @@ class MountainHikeEnv(_BaseMaskedEnv):
         info["outside_box"] = self._outside_box()
         info["distance_to_goal"] = float(np.linalg.norm(self._state - self.goal_position))
         info["teleported"] = bool(self._teleported)
+        if self.mirror_symmetry:
+            info["mirror"] = self._mirror.copy()
+            info["signpost"] = self.signpost_signal()
         return info
+
+    def state_dict(self) -> dict[str, Any]:
+        state = super().state_dict()
+        if self.mirror_symmetry:
+            state["mirror"] = self._mirror.copy()
+        return state
+
+    def load_state_dict(self, state_dict: Mapping[str, Any]) -> None:
+        if not isinstance(state_dict, Mapping):
+            raise TypeError("environment state_dict must be a mapping")
+        payload = dict(state_dict)
+        mirror = payload.pop("mirror", None)
+        if self.mirror_symmetry:
+            if mirror is None:
+                raise ValueError("a mirror-symmetric environment state_dict needs 'mirror'")
+            mirror = np.asarray(mirror, dtype=np.float64)
+            if mirror.shape != (2,) or not np.all(np.isin(mirror, (-1.0, 1.0))):
+                raise ValueError("environment mirror must be a 2-vector of +-1")
+        elif mirror is not None:
+            raise ValueError("'mirror' is only valid for mirror-symmetric environments")
+        super().load_state_dict(payload)
+        if self.mirror_symmetry:
+            self._mirror = mirror.copy()
+
+    def state_dict(self) -> dict[str, Any]:
+        state = super().state_dict()
+        if self.mirror_symmetry:
+            state["mirror"] = self._mirror.copy()
+        return state
+
+    def load_state_dict(self, state_dict: Mapping[str, Any]) -> None:
+        if not isinstance(state_dict, Mapping):
+            raise TypeError("environment state_dict must be a mapping")
+        payload = dict(state_dict)
+        mirror = payload.pop("mirror", None)
+        if self.mirror_symmetry:
+            if mirror is None:
+                raise ValueError("a mirror-symmetric environment state_dict needs 'mirror'")
+            mirror = np.asarray(mirror, dtype=np.float64)
+            if mirror.shape != (2,) or not np.all(np.isin(mirror, (-1.0, 1.0))):
+                raise ValueError("environment mirror must be a 2-vector of +-1")
+        elif mirror is not None:
+            raise ValueError("'mirror' is only valid for mirror-symmetric environments")
+        super().load_state_dict(payload)
+        if self.mirror_symmetry:
+            self._mirror = mirror.copy()
 
     def oracle_features(self) -> np.ndarray:
         """Noise-free position squashed to (-1, 1)."""
@@ -1057,11 +1175,20 @@ class MountainHikeEnv(_BaseMaskedEnv):
     def reset(self, seed: int | None = None) -> tuple[np.ndarray, dict[str, Any]]:
         self._start_reset(seed)
         self._teleported = False
-        self._state = self._rng.normal(
-            loc=self.start_mean,
-            scale=self.start_std,
-            size=2,
-        ).astype(np.float64)
+        if self.start_distribution == "uniform":
+            self._state = self._rng.uniform(-self.box_scale, self.box_scale, size=2).astype(np.float64)
+        else:
+            centre = self.start_mean
+            if self.start_distribution == "mirror_corners":
+                # One of the four mirror images of the start corner, independent of the frame.
+                centre = centre * self._rng.choice(np.array([-1.0, 1.0]), size=2)
+            self._state = self._rng.normal(
+                loc=centre,
+                scale=self.start_std,
+                size=2,
+            ).astype(np.float64)
+        if self.mirror_symmetry:
+            self._mirror = self._rng.choice(np.array([-1.0, 1.0]), size=2).astype(np.float64)
         return self._observation(), self._info()
 
     def step(self, action: Any) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
@@ -1073,6 +1200,8 @@ class MountainHikeEnv(_BaseMaskedEnv):
         action_penalty = self.action_cost * norm
         if norm > self.max_action:
             proposed = proposed / norm * self.max_action
+        if self.mirror_symmetry:
+            proposed = self._mirror * proposed  # commanded in the body frame
         noise = (
             self._rng.normal(loc=0.0, scale=self.transition_std, size=2)
             if self.transition_std > 0.0
@@ -1113,6 +1242,11 @@ _MOUNTAIN_HIKE_KEYS = {
     "goal_end",
     "teleport_probability",
     "observation_symmetry",
+    "mirror_symmetry",
+    "signpost_width",
+    "signpost_noise_std",
+    "start_distribution",
+    "terrain_ridges",
 }
 
 _LIGHT_DARK_KEYS = {
