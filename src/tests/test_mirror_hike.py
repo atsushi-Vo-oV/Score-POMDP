@@ -179,12 +179,16 @@ def test_config_validates_and_fills_the_mirror_keys() -> None:
         )
 
 
-@pytest.mark.parametrize("design", ["v1", "v2", "v3", "v4", "v5", "v6"])
+@pytest.mark.parametrize("design", ["v1", "v2", "v3", "v4", "v5", "v6", "v1lf", "v2lf", "v3lf", "v4lf", "v5lf", "v6lf"])
 def test_mirror_grid_configs_load_and_build_the_task(design: str) -> None:
     config = load_config(f"config/mirror_{design}.json")
-    task = config.to_dict()["environment"]["tasks"]["mountain_hike"]
+    resolved = config.to_dict()
+    task = resolved["environment"]["tasks"]["mountain_hike"]
     assert task["mirror_symmetry"] is True and task["start_distribution"] == "mirror_corners"
     assert task["terrain_ridges"] == [0] and task["horizon"] == 100
+    if design.endswith("lf"):  # FLOPs-matched chain
+        model = resolved["model"]
+        assert (model["num_particles"], model["langevin_steps"], model["energy_hidden"]) == (4, 2, [32, 32])
     env = make_env("mountain_hike", task, seed=0)
     obs, info = env.reset()
     assert obs.shape == (4,) and "mirror" in info

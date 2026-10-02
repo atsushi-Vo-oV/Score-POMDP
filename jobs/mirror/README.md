@@ -30,3 +30,7 @@ pjsub jobs/mirror/debug_mirror.sh   # 合格後にゲートが全腕を投入(sc
 | 静止 | — | −491 | — |
 
 読み: m を解く価値(標識戦略 − 折衷)≈ 125、2 座標の時間平均の価値(Kalman − 生観測)≈ 56、標識への迂回コスト(m 既知 − 標識戦略)≈ 33。真 belief は標識を読むまで 4 峰(各峰は 2 次元ガウス)で、読んだ瞬間に 1 峰へ崩れる。
+
+## FLOPs 一致版 — v1lf〜v6lf
+
+score 系の連鎖を K=4・L=2・エネルギー MLP [32,32] に縮めたもの(推論 0.68〜0.72 MFLOP/step、gru 0.46 と PF 0.87 の間)。baseline は元から同予算なのでそのまま。config/mirror_v{1..6}lf.json、campaign mirror-vNlf-v1、v1lf は 6 手法(30 shards)、v2lf〜v6lf は score 3 エンコーダ(15 shards)× seeds 10〜14 = 105 腕。DEBUG: jobs/mirror/debug_mirror_lf.sh(合格後にゲートが全腕を投入、score 36h / baseline 24h)。
