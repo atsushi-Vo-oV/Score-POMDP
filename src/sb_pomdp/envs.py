@@ -495,6 +495,8 @@ class MaskedPendulumEnv(_BaseMaskedEnv):
         gravity: float = 10.0,
         mass: float = 1.0,
         length: float = 1.0,
+        initial_angle_range: float = np.pi,
+        initial_speed_range: float = 1.0,
     ) -> None:
         super().__init__(
             horizon=horizon,
@@ -511,12 +513,22 @@ class MaskedPendulumEnv(_BaseMaskedEnv):
         }
         if any(not np.isfinite(value) or value <= 0 for value in positive.values()):
             raise ValueError("Pendulum physical parameters and limits must be positive")
+        # Start distribution: theta ~ U(-angle_range, angle_range) around upright (theta = 0)
+        # and theta_dot ~ U(-speed_range, speed_range).  The defaults (pi, 1) are the gym
+        # swing-up start; a small angle range gives the balancing variant.
+        for name, value in (("initial_angle_range", initial_angle_range), ("initial_speed_range", initial_speed_range)):
+            if not np.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be a finite non-negative number")
+        if initial_angle_range > np.pi:
+            raise ValueError("initial_angle_range cannot exceed pi")
         self.max_speed = float(max_speed)
         self.max_torque = float(max_torque)
         self.dt = float(dt)
         self.gravity = float(gravity)
         self.mass = float(mass)
         self.length = float(length)
+        self.initial_angle_range = float(initial_angle_range)
+        self.initial_speed_range = float(initial_speed_range)
         self.action_spec = ActionSpec.continuous(-self.max_torque, self.max_torque)
 
     @staticmethod
@@ -543,7 +555,10 @@ class MaskedPendulumEnv(_BaseMaskedEnv):
     def reset(self, seed: int | None = None) -> tuple[np.ndarray, dict[str, Any]]:
         self._start_reset(seed)
         self._state = np.array(
-            [self._rng.uniform(-np.pi, np.pi), self._rng.uniform(-1.0, 1.0)],
+            [
+                self._rng.uniform(-self.initial_angle_range, self.initial_angle_range),
+                self._rng.uniform(-self.initial_speed_range, self.initial_speed_range),
+            ],
             dtype=np.float64,
         )
         return self._observation(), self._info()
@@ -853,6 +868,8 @@ _PENDULUM_KEYS = {
     "gravity",
     "mass",
     "length",
+    "initial_angle_range",
+    "initial_speed_range",
 }
 _MOUNTAIN_CAR_KEYS = {
     "horizon",
