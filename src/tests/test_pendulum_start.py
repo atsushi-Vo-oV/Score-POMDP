@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from sb_pomdp.config import load_config
+from sb_pomdp.config import ConfigError, load_config
 from sb_pomdp.envs import MaskedPendulumEnv, make_env
 
 
@@ -30,6 +30,21 @@ def test_balancing_variant_starts_near_upright() -> None:
         MaskedPendulumEnv(initial_angle_range=4.0)
     with pytest.raises(ValueError):
         MaskedPendulumEnv(initial_speed_range=float("nan"))
+
+
+def test_config_layer_fills_and_validates_the_start_keys() -> None:
+    swing_up = load_config("config/pendulum_v1.json").to_dict()["environment"]["tasks"]["masked_pendulum"]
+    assert swing_up["initial_angle_range"] == pytest.approx(np.pi)
+    assert swing_up["initial_speed_range"] == 1.0
+    balance = load_config("config/pendulum_balance_v1.json")
+    task = balance.to_dict()["environment"]["tasks"]["masked_pendulum"]
+    assert task["initial_angle_range"] == 0.5 and task["initial_speed_range"] == 1.0
+    env = make_env("masked_pendulum", task, seed=0)
+    assert env.initial_angle_range == 0.5
+    with pytest.raises(ConfigError):
+        balance.with_overrides({"environment.tasks.masked_pendulum.initial_angle_range": 4.0})
+    with pytest.raises(ConfigError):
+        balance.with_overrides({"environment.tasks.masked_pendulum.initial_speed_range": -1.0})
 
 
 @pytest.mark.parametrize("name", ["v1lf", "v2lf", "v3lf", "v4lf", "v5lf", "v6lf", "v2", "v4", "v5"])

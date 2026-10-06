@@ -47,6 +47,11 @@ _ENVIRONMENT_KEYS = frozenset({"tasks"})
 _ENVIRONMENT_TASK_KEYS = frozenset({"horizon", "observation_noise_std"})
 _LIGHT_DARK_ALIASES = frozenset({"lightdark", "lightdarknd"})
 _MOUNTAIN_HIKE_ALIASES = frozenset({"mountainhike", "mountainhikev0", "deathvalley", "deathvalleyv0"})
+_PENDULUM_ALIASES = frozenset({"maskedpendulum", "pendulum", "pendulumv0", "pendulumv1"})
+# Masked pendulum start distribution (theta ~ U(-angle, angle) around upright, theta_dot ~
+# U(-speed, speed)); the legacy defaults (pi, 1) are the gym swing-up start.
+_PENDULUM_TASK_KEYS = _ENVIRONMENT_TASK_KEYS | frozenset({"initial_angle_range", "initial_speed_range"})
+_PENDULUM_TASK_DEFAULTS: dict[str, Any] = {"initial_angle_range": math.pi, "initial_speed_range": 1.0}
 _MOUNTAIN_HIKE_TASK_KEYS = frozenset(
     {
         "horizon",
@@ -536,11 +541,14 @@ def _validate_environment(value: Any, requested_tasks: Sequence[str]) -> Mapping
         normalized_name = _normalized_task_name(task_name)
         is_light_dark = normalized_name in _LIGHT_DARK_ALIASES
         is_mountain_hike = normalized_name in _MOUNTAIN_HIKE_ALIASES
+        is_pendulum = normalized_name in _PENDULUM_ALIASES
         expected_keys = (
             _LIGHT_DARK_TASK_KEYS
             if is_light_dark
             else _MOUNTAIN_HIKE_TASK_KEYS
             if is_mountain_hike
+            else _PENDULUM_TASK_KEYS
+            if is_pendulum
             else _ENVIRONMENT_TASK_KEYS
         )
         path = f"environment.tasks.{task_name}"
@@ -555,6 +563,11 @@ def _validate_environment(value: Any, requested_tasks: Sequence[str]) -> Mapping
             _validate_light_dark_task(task, path)
         if is_mountain_hike:
             _validate_mountain_hike_task(task, path)
+        if is_pendulum:
+            angle = _number(task["initial_angle_range"], f"{path}.initial_angle_range", minimum=0.0)
+            if angle > math.pi:
+                raise ConfigError(f"{path}.initial_angle_range cannot exceed pi")
+            _number(task["initial_speed_range"], f"{path}.initial_speed_range", minimum=0.0)
 
     missing = [task for task in requested_tasks if task not in tasks]
     if missing:
@@ -886,6 +899,24 @@ def _fill_mountain_hike_task_defaults(config: dict[str, Any]) -> None:
             task.setdefault(key, deepcopy(default))
 
 
+def _fill_pendulum_task_defaults(config: dict[str, Any]) -> None:
+    """Insert the masked-pendulum start-distribution defaults in *config*, in place."""
+
+    environment = config.get("environment")
+    if not isinstance(environment, dict):
+        return
+    tasks = environment.get("tasks")
+    if not isinstance(tasks, dict):
+        return
+    for task_name, task in tasks.items():
+        if not isinstance(task_name, str) or not isinstance(task, dict):
+            continue
+        if _normalized_task_name(task_name) not in _PENDULUM_ALIASES:
+            continue
+        for key, default in _PENDULUM_TASK_DEFAULTS.items():
+            task.setdefault(key, deepcopy(default))
+
+
 def _fill_light_dark_task_defaults(config: dict[str, Any]) -> None:
     """Insert the Light-Dark post-campaign task keys in *config*, in place."""
 
@@ -930,6 +961,7 @@ def normalize_legacy_resolved_config(config: Mapping[str, Any]) -> dict[str, Any
             values.setdefault(key, deepcopy(default))
     _fill_light_dark_task_defaults(result)
     _fill_mountain_hike_task_defaults(result)
+    _fill_pendulum_task_defaults(result)
     return result
 
 
