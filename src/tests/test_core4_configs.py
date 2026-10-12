@@ -13,8 +13,8 @@ def test_core4_configs_hold_the_group_definition(task: str) -> None:
     assert resolved["comparison"]["methods"] == ["score_transformer", "gru", "rnn", "particle_filter"]
     assert resolved["comparison"]["pf_variant"] == "dpfrl"
     model = resolved["model"]
-    # k16f: 16 particles, one Langevin step, energy [12,12], d_model 32, ff 64 (0.81 MFLOP/step)
-    assert (model["num_particles"], model["langevin_steps"], model["energy_hidden"]) == (16, 1, [12, 12])
+    # k16f: 16 particles, 12 Langevin steps, energy [8] (one SiLU hidden layer), d_model 32, ff 64 (1.11 MFLOP/step)
+    assert (model["num_particles"], model["langevin_steps"], model["energy_hidden"]) == (16, 12, [8])
     assert (model["d_model"], model["transformer_ff_dim"], model["num_heads"]) == (32, 64, 4)
     # v2 belief design for the transformer
     assert model["langevin_warm_start"] is True and model["langevin_observation_anchor"] is True

@@ -41,13 +41,12 @@
   },
   "model": {
     "num_particles": 16,
-    "langevin_steps": 1,
+    "langevin_steps": 12,
     "langevin_step_size": 0.02,
     "particle_clip": 0.0,
     "score_clip": 0.0,
     "energy_hidden": [
-      12,
-      12
+      8
     ],
     "d_model": 32,
     "num_heads": 4,

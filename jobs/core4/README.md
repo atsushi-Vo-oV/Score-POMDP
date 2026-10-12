@@ -1,6 +1,6 @@
 # core4 — 比較の中核 4 手法を同じ推論予算で並べる実験グループ
 
-**core4** = gru、rnn、DPFRL 粒子フィルタ、score transformer の 4 手法。score 側は 16 粒子を保ったまま FLOPs を baseline に合わせた **k16f** 設定: K=16、Langevin 1 step、エネルギー MLP [12,12]、d_model 32、ff 64 → 推論 0.81 MFLOP/step(gru 0.46、rnn 0.46、PF 0.87; 本来サイズ v2 は 14.7、旧 lf の K=4 は 0.68)。パラメータ数は 38k(baseline 76k)。belief 設計は v2(warm start + 観測アンカー + 粒子別補助損失)。cold 連鎖は 1 step では意味を持たないので入れない。
+**core4** = gru、rnn、DPFRL 粒子フィルタ、score transformer の 4 手法。score 側は 16 粒子を保ったまま FLOPs を baseline に合わせた **k16f** 設定: K=16、Langevin 12 step、エネルギー MLP [8](SiLU 隠れ層 1 枚、8 ユニット)、d_model 32、ff 64 → 推論 1.11 MFLOP/step(gru 0.46、rnn 0.46、PF 0.87; 本来サイズ v2 は 14.7、旧 lf の K=4 は 0.68)。パラメータ数は 37k(baseline 76k)。belief 設計は v2(warm start + 観測アンカー + 粒子別補助損失)。壁時間は L に比例するので score 腕は 96h 枠 + 再投入 1〜2 回を見込む。
 
 | task | config | campaign | shards |
 |---|---|---|---|
