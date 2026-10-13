@@ -112,16 +112,19 @@ $K$ 個の粒子が位置 $x_i \in \RR^d$ と速度 $v_i \in \RR^d$ を持ち，
 1 反復の更新は式~\eqref{eq:pso-v}--\eqref{eq:pso-x} であり，$r_1, r_2$ は反復・粒子・次元ごとに独立に引く一様乱数 $\mathcal U(0,1)$，
 $\odot$ は成分ごとの積である．典型値は $w \approx 0.7$，$c_1 = c_2 \approx 1.5$--$2.0$．
 \begin{itemize}
-  \item 慣性項 $w v_i$: 前の速度を引き継ぐ運動量．$w < 1$ なら減衰し，$w$ が大きいほど探索的になる．
-  \item 認知項 $c_1 r_1 \odot (p_i - x_i)$: 自分の最良点への引力．粒子ごとの記憶．
-  \item 社会項 $c_2 r_2 \odot (g - x_i)$: 群の最良点への引力．粒子間の唯一の情報交換．
-  \item 乱数 $r_1, r_2$ は引力の強さを毎回変える乗法的な揺らぎで，ULA の加法的雑音とは違い，目標点に着けば揺らぎも消える．
+  \item 慣性項（inertia term）$w v_i$: 前の速度を引き継ぐ運動量（momentum）．$w < 1$ なら減衰し，$w$ が大きいほど探索的（exploratory）になる．
+  \item 認知項（cognitive component）$c_1 r_1 \odot (p_i - x_i)$: 自己最良点（personal best）への引力．粒子ごとの記憶．
+  \item 社会項（social component）$c_2 r_2 \odot (g - x_i)$: 群最良点（global best）への引力．粒子間の唯一の情報交換．
+  \item 乱数 $r_1, r_2$ は引力の強さを毎回変える乗法的な揺らぎ（multiplicative noise）で，ULA の加法的雑音（additive noise）とは違い，目標点に着けば揺らぎも消える．
+  \item 自己最良点と群最良点の違い: $p_i$ は粒子 $i$ 自身の軌跡の中での最良（粒子ごとに 1 つ），$g$ は全粒子の $p_i$ の中での最良（群で 1 つ）で，常に $J(g) \ge J(p_i)$．
+        認知項は粒子を各自の記憶へ戻して群を散らし（探索の維持），社会項は全粒子を同じ点へ寄せる（収束）．
+        初期は $p_i = x_i$ で認知項が 0，収束時は $p_i = g = x_i$ で両方の引力が消える．
 \end{itemize}
 
 \paragraph{歴史的な 3 つの形}
-原型（1995）は $w = 1$ で速度上限 $v_{\max}$ により発散を抑えた．
-慣性重み版（Shi \& Eberhart 1998）が上の式で，$w$ を $0.9$ から $0.4$ へ線形に下げる運用が多い．
-収縮係数版（Clerc \& Kennedy 2002）は
+原型（1995）は $w = 1$ で速度上限（velocity clamping）$v_{\max}$ により発散を抑えた．
+慣性重み（inertia weight）版（Shi \& Eberhart 1998）が上の式で，$w$ を $0.9$ から $0.4$ へ線形に下げる運用が多い．
+収縮係数（constriction coefficient）版（Clerc \& Kennedy 2002）は
 \begin{equation}
   v_i \leftarrow \chi \big[ v_i + c_1 r_1 \odot (p_i - x_i) + c_2 r_2 \odot (g - x_i) \big], \qquad
   \chi = \frac{2}{\lvert 2 - \varphi - \sqrt{\varphi^2 - 4\varphi} \rvert}, \quad \varphi = c_1 + c_2 > 4
@@ -135,8 +138,9 @@ $\odot$ は成分ごとの積である．典型値は $w \approx 0.7$，$c_1 = c
   x_{t+1} = (1 + w - \varphi)\, x_t - w\, x_{t-1} + \varphi\, \bar p
   \label{eq:pso-recurrence}
 \end{equation}
-という 2 階の線形漸化式になる．これはばね定数 $\varphi$ で $\bar p$ に引かれ，減衰 $(1 - w)$ を受ける減衰振動子であり，
-特性方程式 $\lambda^2 - (1 + w - \varphi)\lambda + w = 0$ の根の絶対値が 1 未満，すなわち
+という 2 階の線形漸化式（second-order linear recurrence）になる．これはばね定数（spring constant）$\varphi$ で $\bar p$ に引かれ，
+減衰（damping）$(1 - w)$ を受ける減衰振動子（damped oscillator）であり，
+特性方程式（characteristic equation）$\lambda^2 - (1 + w - \varphi)\lambda + w = 0$ の根の絶対値が 1 未満，すなわち
 \begin{equation}
   \lvert w \rvert < 1 \quad\text{かつ}\quad 0 < \varphi < 2(1 + w)
   \label{eq:pso-stability}
@@ -144,8 +148,8 @@ $\odot$ は成分ごとの積である．典型値は $w \approx 0.7$，$c_1 = c
 のとき $\bar p$ のまわりの振動が減衰して収束する．$c_1 = c_2 = 2$ のとき $\varphi$ の期待値は 2 で，$w = 0.7$ なら上限 $3.4$ の内側にある．
 収束とは「速度が 0 になり，全粒子が $\bar p$ に集まる」ことなので，PSO は本質的に 1 点へ潰れる最適化器である．
 
-\paragraph{近傍構造}
-$g$ を群全体で共有する gbest と，リング状の近傍の中だけで共有する lbest がある．
+\paragraph{近傍構造（neighbourhood topology）}
+$g$ を群全体で共有する gbest（global-best topology）と，リング状の近傍（ring topology）の中だけで共有する lbest（local best）がある．
 lbest は情報の伝播が遅い分だけ複数の谷に分かれて探索し，多峰関数で全員が同じ局所解に落ちるのを防ぐ．
 種分割（niching）はこの考えを明示化したものである．
 
