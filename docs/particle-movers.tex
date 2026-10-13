@@ -65,8 +65,11 @@ SVGD（Liu \& Wang 2016）は，粒子集合を Kullback--Leibler（KL）ダイ�
   \label{eq:svgd}
 \end{equation}
 で動かす: $x_i \leftarrow x_i + \varepsilon\, \phi^*(x_i)$．
-核は通常ガウス核（radial basis function，RBF）$k(x, x') = \exp(-\nrm{x - x'}^2 / h)$ で，
-帯域 $h$（確率密度の記法 $\exp(-\nrm{x-x'}^2/2\sigma^2)$ では $h = 2\sigma^2$）はメディアン則 $h = \mathrm{med}^2 / \log K$
+核は通常ガウス核（radial basis function，RBF）
+\begin{equation}
+  k(x, x') = \exp\!\big(-\nrm{x - x'}^2 / h\big)
+\end{equation}
+で，帯域 $h$（確率密度の記法 $\exp(-\nrm{x-x'}^2/2\sigma^2)$ では $h = 2\sigma^2$）はメディアン則 $h = \mathrm{med}^2 / \log K$
 （$\mathrm{med}$ は粒子間距離の中央値，各粒子から見た核の総重みが約 1 になる尺度）で決める．
 第 1 項は近傍粒子のスコアを核で平滑化した引力，第 2 項は
 \begin{equation}
