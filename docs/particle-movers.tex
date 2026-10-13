@@ -103,6 +103,68 @@ PSO は最適化器であり，群は $\arg\max J$ の 1 点に収束する．
 belief の広がりを表す目的には，そのままでは使えない（ULA の $\tau$，SVGD の反発項に当たるものがない）．
 一方で，自己最良 $p_i$ は「過去に見た高尤度の状態」の記憶であり，粒子が無情報な領域へ流れても引き戻す力になる．
 
+{\color{blue}
+\subsection{補足: PSO の式の詳細（2026-10-14 追記）}
+
+\paragraph{状態と更新式}
+$K$ 個の粒子が位置 $x_i \in \RR^d$ と速度 $v_i \in \RR^d$ を持ち，目的関数 $J(x)$（大きいほど良い）を評価する．
+各粒子は自分がこれまでに見た最良点 $p_i$（personal best）を覚え，群全体の最良点 $g$（global best）を共有する．
+1 反復の更新は式~\eqref{eq:pso-v}--\eqref{eq:pso-x} であり，$r_1, r_2$ は反復・粒子・次元ごとに独立に引く一様乱数 $\mathcal U(0,1)$，
+$\odot$ は成分ごとの積である．典型値は $w \approx 0.7$，$c_1 = c_2 \approx 1.5$--$2.0$．
+\begin{itemize}
+  \item 慣性項 $w v_i$: 前の速度を引き継ぐ運動量．$w < 1$ なら減衰し，$w$ が大きいほど探索的になる．
+  \item 認知項 $c_1 r_1 \odot (p_i - x_i)$: 自分の最良点への引力．粒子ごとの記憶．
+  \item 社会項 $c_2 r_2 \odot (g - x_i)$: 群の最良点への引力．粒子間の唯一の情報交換．
+  \item 乱数 $r_1, r_2$ は引力の強さを毎回変える乗法的な揺らぎで，ULA の加法的雑音とは違い，目標点に着けば揺らぎも消える．
+\end{itemize}
+
+\paragraph{歴史的な 3 つの形}
+原型（1995）は $w = 1$ で速度上限 $v_{\max}$ により発散を抑えた．
+慣性重み版（Shi \& Eberhart 1998）が上の式で，$w$ を $0.9$ から $0.4$ へ線形に下げる運用が多い．
+収縮係数版（Clerc \& Kennedy 2002）は
+\begin{equation}
+  v_i \leftarrow \chi \big[ v_i + c_1 r_1 \odot (p_i - x_i) + c_2 r_2 \odot (g - x_i) \big], \qquad
+  \chi = \frac{2}{\lvert 2 - \varphi - \sqrt{\varphi^2 - 4\varphi} \rvert}, \quad \varphi = c_1 + c_2 > 4
+\end{equation}
+で，$\varphi = 4.1$ なら $\chi \approx 0.730$ となり，慣性重み版の $w = 0.730$，$c_1 = c_2 = 1.496$ と同じ式になる．
+
+\paragraph{力学として読む}
+乱数を期待値で置き換えて 1 次元で見ると，合成引力係数 $\varphi = c_1 r_1 + c_2 r_2$ と
+合成目標点 $\bar p = (c_1 r_1 p_i + c_2 r_2 g)/\varphi$ を使って
+\begin{equation}
+  x_{t+1} = (1 + w - \varphi)\, x_t - w\, x_{t-1} + \varphi\, \bar p
+  \label{eq:pso-recurrence}
+\end{equation}
+という 2 階の線形漸化式になる．これはばね定数 $\varphi$ で $\bar p$ に引かれ，減衰 $(1 - w)$ を受ける減衰振動子であり，
+特性方程式 $\lambda^2 - (1 + w - \varphi)\lambda + w = 0$ の根の絶対値が 1 未満，すなわち
+\begin{equation}
+  \lvert w \rvert < 1 \quad\text{かつ}\quad 0 < \varphi < 2(1 + w)
+  \label{eq:pso-stability}
+\end{equation}
+のとき $\bar p$ のまわりの振動が減衰して収束する．$c_1 = c_2 = 2$ のとき $\varphi$ の期待値は 2 で，$w = 0.7$ なら上限 $3.4$ の内側にある．
+収束とは「速度が 0 になり，全粒子が $\bar p$ に集まる」ことなので，PSO は本質的に 1 点へ潰れる最適化器である．
+
+\paragraph{近傍構造}
+$g$ を群全体で共有する gbest と，リング状の近傍の中だけで共有する lbest がある．
+lbest は情報の伝播が遅い分だけ複数の谷に分かれて探索し，多峰関数で全員が同じ局所解に落ちるのを防ぐ．
+種分割（niching）はこの考えを明示化したものである．
+
+\paragraph{本プロジェクトの mover として使うときの注意}
+目的関数を $J(x) = \log \ptil(x)$ とし，各 env step で前粒子から始めて $L$ 反復回す使い方になる．効いてくる点は 3 つある．
+\begin{itemize}
+  \item 記憶の扱い: $p_i$ と $g$ は過去の最良点だが，エネルギーは観測ごとに変わるので前 step の $p_i$ は古くなる．
+        step ごとに $p_i = x_i$ にリセットするか減衰させる必要があり，リセットすれば認知項は消えて社会項だけの群になる．
+  \item 分布を表せない: 式~\eqref{eq:pso-stability} のとおり群は 1 点に潰れるので，belief の広がりには反発項（SVGD）か
+        合意点からの距離に比例した雑音（CBO/CBS）が要る．Kennedy 自身の bare-bones PSO（2003）は速度を捨てて
+        $x_i \sim \mathcal N\big((p_i + g)/2,\ \lvert p_i - g \rvert\big)$ と標本化する形で，これが CBS の雛形である．
+  \item 勾配が流れない: ULA では粒子位置が $\nabla_x \log \ptil$ を通じてエネルギーの重み $\theta$ に微分可能に依存するので，
+        PPO と補助損失の勾配がエネルギー網に届く．PSO の粒子位置は $J$ の値の大小比較（$\arg\max$）でしか $\theta$ に依存しないため
+        ほぼ至るところで勾配が 0 になり，エネルギー網が学習されない．
+        gbest を softmax 重み付き平均 $\sum_j \mathrm{softmax}_j(\beta J(x_j))\, x_j$ に置き換えると微分可能になり，これはそのまま CBO の合意点 $m_\beta$ である．
+        本プロジェクトで PSO 系を使うなら，実装すべきは古典 PSO ではなく CBO/CBS の形になる．
+\end{itemize}
+}
+
 \subsection{PSO-PF}
 重み付き粒子フィルタ（Particle Filter，PF）の退化対策として，リサンプリングの前に PSO の数ステップで粒子を観測尤度の高い領域へ寄せる手法群である．
 $J(x) = \log p(o_t \mid x)$（または 1 段事後）とし，式~\eqref{eq:pso-v}--\eqref{eq:pso-x} を数回適用したのち
