@@ -40,7 +40,7 @@ $p(x_t \mid o_{1:t}) \propto p(o_t \mid x_t) \frac1K \sum_j p(x_t \mid x_{t-1}^j
 $C_u$ を $u_\theta$ を $K \times K$ 対で評価する費用とする．
 $K = 16$ では $C_u$ が支配的である（遷移対が 256 対）．
 
-\section{現行: Langevin（ULA）}
+\section{現行: 未調整 Langevin 法（Unadjusted Langevin Algorithm，ULA）}
 
 連鎖の初期値を $x^{(0)}_i$（cold なら $\mathcal N(0, I)$，warm なら $x_{t-1}^i$，初期ステップは観測アンカー
 $\mu_\theta(o_0) + \sigma_\theta(o_0) \odot \xi_i$）として，$L$ 回
@@ -53,19 +53,21 @@ $\mu_\theta(o_0) + \sigma_\theta(o_0) \odot \xi_i$）として，$L$ 回
 性質: (i) $\alpha \to 0$，$L \to \infty$ で粒子は $\ptil$ に従うサンプルになる（不偏ではなく離散化誤差を持つ）．
 (ii) 1 ステップあたりの移動量は $\alpha \nrm{s} + \sqrt{2\alpha\tau}$ 程度で，$L \alpha$ の予算を超える跳びには追従できない．
 (iii) 粒子間に相互作用はなく（遷移項を通じて前粒子に依存するだけ），同じ谷に全粒子が落ちることを妨げない．
-(iv) 乱数 $\xi$ を外生入力として保存し，PPO の再生で同じ連鎖を復元する．
+(iv) 乱数 $\xi$ を外生入力として保存し，方策学習（Proximal Policy Optimization，PPO）の再生で同じ連鎖を復元する．
 費用: スコアは自動微分で得るので，1 ステップに前向き $+$ 逆向きで約 $3(C_f + C_u)$，連鎖全体で $3L(C_f + C_u)$ に最終スコア 1 回分が加わる．
 
-\section{SVGD（Stein particle filter）}
+\section{Stein 変分勾配降下（Stein Variational Gradient Descent，SVGD）と Stein particle filter}
 
-Stein 変分勾配降下（Liu \& Wang 2016）は，粒子集合を KL ダイバージェンス $\mathrm{KL}(q \,\|\, \ptil)$ の
-再生核ヒルベルト空間における最急降下方向
+SVGD（Liu \& Wang 2016）は，粒子集合を Kullback--Leibler（KL）ダイバージェンス $\mathrm{KL}(q \,\|\, \ptil)$ の
+再生核ヒルベルト空間（Reproducing Kernel Hilbert Space，RKHS）における最急降下方向
 \begin{equation}
   \phi^*(x) = \frac1K \sum_{j=1}^K \Big[ k(x_j, x)\, s(x_j) + \nabla_{x_j} k(x_j, x) \Big]
   \label{eq:svgd}
 \end{equation}
 で動かす: $x_i \leftarrow x_i + \varepsilon\, \phi^*(x_i)$．
-核は通常 RBF $k(x, x') = \exp(-\nrm{x - x'}^2 / h)$ で，帯域はメディアン則 $h = \mathrm{med}^2 / \log K$．
+核は通常ガウス核（radial basis function，RBF）$k(x, x') = \exp(-\nrm{x - x'}^2 / h)$ で，
+帯域 $h$（確率密度の記法 $\exp(-\nrm{x-x'}^2/2\sigma^2)$ では $h = 2\sigma^2$）はメディアン則 $h = \mathrm{med}^2 / \log K$
+（$\mathrm{med}$ は粒子間距離の中央値，各粒子から見た核の総重みが約 1 になる尺度）で決める．
 第 1 項は近傍粒子のスコアを核で平滑化した引力，第 2 項は
 \begin{equation}
   \nabla_{x_j} k(x_j, x) = \frac{2}{h}\,(x - x_j)\, k(x_j, x)
@@ -78,9 +80,9 @@ ULA との違い: (i) 乱数を使わない決定論的写像で，粒子集合�
 (ii) 反発項が粒子の重なりを防ぐので，$K$ が小さくても縮退しにくい．
 (iii) 固定点は $\ptil$ の近似であり，粒子数有限では分散を過小評価する傾向がある（ノイズ項がないため）．
 (iv) 多峰の $\ptil$ では核の帯域より離れた谷の間を粒子は移動しない: 谷に粒子を配る役目は初期値（warm start）が担う．
-費用: スコア計算は ULA と同じ $3(C_f + C_u)$ に，核とその勾配の $K^2$ 回の評価（$d$ 次元ベクトルの差とスカラー指数関数，MLP ではない）が加わる．
+費用: スコア計算は ULA と同じ $3(C_f + C_u)$ に，核とその勾配の $K^2$ 回の評価（$d$ 次元ベクトルの差とスカラー指数関数で，多層パーセプトロン（multilayer perceptron，MLP）の評価ではない）が加わる．
 
-\section{粒子群最適化（PSO）と PSO-PF}
+\section{粒子群最適化（Particle Swarm Optimization，PSO）と粒子フィルタとの併用（PSO-PF）}
 
 \subsection{標準 PSO}
 Kennedy \& Eberhart（1995）の規則は，各粒子が速度 $v_i$，自己最良 $p_i$ を持ち，群最良 $g$ と合わせて
@@ -99,13 +101,13 @@ belief の広がりを表す目的には，そのままでは使えない（ULA 
 一方で，自己最良 $p_i$ は「過去に見た高尤度の状態」の記憶であり，粒子が無情報な領域へ流れても引き戻す力になる．
 
 \subsection{PSO-PF}
-重み付き粒子フィルタの退化対策として，リサンプリングの前に PSO の数ステップで粒子を観測尤度の高い領域へ寄せる手法群である．
+重み付き粒子フィルタ（Particle Filter，PF）の退化対策として，リサンプリングの前に PSO の数ステップで粒子を観測尤度の高い領域へ寄せる手法群である．
 $J(x) = \log p(o_t \mid x)$（または 1 段事後）とし，式~\eqref{eq:pso-v}--\eqref{eq:pso-x} を数回適用したのち
 重み $w_i \propto p(o_t \mid x_i)$ を計算してリサンプリングする．
 重みと移動を併用する点で，本プロジェクトの「重みを持たず移動だけで belief を表す」設計とは異なるが，
 「観測で粒子の位置を動かす」という思想は同じ側にある．
 
-\section{合意形成ダイナミクス（CBO / CBS）}
+\section{合意形成ダイナミクス（Consensus-Based Optimization，CBO / Consensus-Based Sampling，CBS）}
 
 Pinnau ら（2017），Carrillo ら（2018）の CBO は PSO の確率微分方程式版で，
 エネルギー $E$ に対する重み付き平均（Laplace 原理による $\arg\min E$ の近似）
@@ -129,7 +131,7 @@ $C_\beta = \sum_i (x_i - m_\beta)(x_i - m_\beta)^\top e^{-\beta E(x_i)} / \sum_i
 収束率が目標によらない（affine 不変）．導関数は不要で，$E$ の前向き評価だけで動く．
 PSO から CBO への対応（Grassi \& Pareschi 2021）も平均場の枠で示されている．
 
-ULA との違い: (i) 勾配不要なので $3(C_f + C_u)$ が $(C_f + C_u)$ に落ち，同じ FLOPs で約 3 倍のステップを回せる．
+ULA との違い: (i) 勾配不要なので $3(C_f + C_u)$ が $(C_f + C_u)$ に落ち，同じ浮動小数点演算数（floating-point operations，FLOPs）で約 3 倍のステップを回せる．
 (ii) 雑音の大きさが群の広がり $C_\beta$ で決まるので，群が縮むと雑音も縮む（最適化側）か，
 目標の共分散に落ち着く（サンプリング側）．
 (iii) 単峰のガウス近似が前提にあり，多峰の $\ptil$ では 1 つの合意点 $m_\beta$ に引き寄せられて峰を 1 つ失う．
