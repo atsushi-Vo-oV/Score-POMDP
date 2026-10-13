@@ -56,6 +56,65 @@ $\mu_\theta(o_0) + \sigma_\theta(o_0) \odot \xi_i$）として，$L$ 回
 (iv) 乱数 $\xi$ を外生入力として保存し，方策学習（Proximal Policy Optimization，PPO）の再生で同じ連鎖を復元する．
 費用: スコアは自動微分で得るので，1 ステップに前向き $+$ 逆向きで約 $3(C_f + C_u)$，連鎖全体で $3L(C_f + C_u)$ に最終スコア 1 回分が加わる．
 
+\section{サンプリングと最適化の接続 --- ULA を最適化として読む}
+
+ULA はサンプラー（sampler）だが，「何を最適化しているか」を 2 つの階層で見ると最適化との接続が明確になる．
+
+\paragraph{粒子の階層: 雑音つき勾配上昇（noisy gradient ascent）}
+式~\eqref{eq:ula} は目的関数 $\log \ptil$ に対する勾配上昇（gradient ascent）に，温度（temperature）$\tau$ で大きさが決まる雑音を足したものである．
+\begin{itemize}
+  \item $\tau = 0$: 純粋な勾配上昇で，粒子は $\log \ptil$ の極大（mode）に収束する．これは最適化である．
+  \item $\tau > 0$: 定常分布（stationary distribution）は $\ptil^{1/\tau}$ に比例し，$\tau = 1$ でちょうど $\ptil$ からのサンプリングになる．
+  \item $\tau$ を反復とともに下げる（annealing）と $\ptil^{1/\tau}$ は $\arg\max$ に集中し，焼きなまし法（simulated annealing）として大域最適化になる．
+\end{itemize}
+つまり ULA は温度 1 個で「サンプリング $\leftrightarrow$ 最適化」を連続的につなぐ族であり，最適化は $\tau \to 0$ の端点である．
+PSO の群最良への引力は勾配の代わり，乱数 $r_1, r_2$ は乗法的な雑音で，温度に当たるものを持たないので最適化の端点に固定されている．
+
+\paragraph{分布の階層: KL ダイバージェンスの勾配流（gradient flow）}
+ランジュバン拡散に従う粒子の密度 $\rho_t$ はフォッカー・プランク方程式（Fokker--Planck equation）
+\begin{equation}
+  \partial_t \rho = \nabla \cdot (\rho \nabla E) + \tau \Delta \rho, \qquad E = -\log \ptil
+\end{equation}
+に従い，Jordan, Kinderlehrer, Otto（1998）はこれが自由エネルギー（free energy）
+\begin{equation}
+  F(\rho) = \int E \, d\rho + \tau \int \rho \log \rho = \tau\, \mathrm{KL}\big(\rho \,\|\, \ptil^{1/\tau}\big) + \text{const}
+\end{equation}
+のワッサースタイン距離（Wasserstein-2 distance）$W_2$ に関する最急降下流（steepest-descent flow）であることを示した．離散時間では JKO スキーム
+\begin{equation}
+  \rho_{k+1} = \arg\min_{\rho} \Big[ F(\rho) + \frac{W_2^2(\rho, \rho_k)}{2h} \Big]
+\end{equation}
+という近接点法（proximal method）になり，これは分布の空間での勾配降下そのものである．
+サンプリングとは分布の空間で KL を最小化する最適化であり，粒子はその勾配流の離散化である（Wibisono 2018）．
+ULA の雑音項 $\sqrt{2\alpha\tau}\,\xi$ は，分布の階層ではエントロピー項 $\tau \int \rho \log \rho$ の勾配（拡散 $\tau \Delta \rho$）に対応する．
+
+この見方で各手法を並べると，違いは「目的関数」と「幾何（geometry）」の選び方だけになる．
+
+\begin{center}
+\small
+\begin{tabular}{p{44mm}p{34mm}p{34mm}p{22mm}p{24mm}}
+\toprule
+手法 & 最小化する量 & 動かすもの & エントロピー項 & 収束先 \\
+\midrule
+勾配上昇 / PSO / CBO & $E(x)$ & 点 $x$ & なし & 極大の 1 点 \\
+ULA（$\tau > 0$） & $\int E\,d\rho + \tau \int \rho \log \rho$ & 分布 $\rho$，$W_2$ 幾何 & $\tau \int \rho \log \rho$ & $\ptil^{1/\tau}$ \\
+SVGD & $\mathrm{KL}(\rho \,\|\, \ptil)$ & 分布 $\rho$，Stein（核）幾何 & 反発項が担う & $\ptil$ の近似 \\
+CBS & ガウス族内の KL に相当 & ガウス近似（平均・共分散） & 距離比例の雑音 & $\ptil$ のガウス近似 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+SVGD は拡散項を乱数の代わりに核の反発項（repulsive term）で決定論的に実現したものであり，
+PSO と CBO はエントロピー項を落としたので分布ではなく点に収束し，CBS が雑音を戻してサンプラーに復帰する．
+
+\paragraph{本プロジェクトでの意味}
+連鎖の長さ $L$ と歩幅 $\alpha$ は，分布空間の勾配流を 1 env step あたり何回・どれだけ進めるかであり，$L\alpha$ が移動予算（movement budget）である．
+$\tau = 1$ は目標が $\ptil$ そのものだという宣言になる．
+温度と歩幅を学習させた実験（2026 年 8 月末，$\tau$ study）では学習された $\tau$ が $0.003$--$0.03$ まで落ち，$\alpha$ が上限に張り付いて
+決定論的な最大歩幅の輸送に収束した．方策学習から見ると，粒子を $\ptil$ からサンプルするより $\log \ptil$ の極大に置く方が報酬が高かった，
+つまり学習は最適化の端点を選んだということである．belief の広がりが消えたのはこのためで，観測雑音を表すには広がりが要るという
+補助損失（auxiliary loss）側の要請と衝突していた．mover の切り替えは上の表の行を替えることに当たり，
+どれを選んでも学習されるのは $E = -\log \ptil$ であり，$E$ の学習信号（PPO と補助損失）は共通である．
+
 \section{Stein 変分勾配降下（Stein Variational Gradient Descent，SVGD）と Stein particle filter}
 
 SVGD（Liu \& Wang 2016）は，粒子集合を Kullback--Leibler（KL）ダイバージェンス $\mathrm{KL}(q \,\|\, \ptil)$ の
@@ -267,6 +326,8 @@ CBS は費用面で有利だが単峰近似を内包する．種分割は多峰�
   \item Kennedy, J., Eberhart, R. (1995). Particle swarm optimization. \emph{ICNN}.
   \item Clerc, M., Kennedy, J. (2002). The particle swarm: explosion, stability, and convergence in a multidimensional complex space. \emph{IEEE TEC}.
   \item Li, X. (2004). Adaptively choosing neighbourhood bests using species in a particle swarm optimizer for multimodal function optimization. \emph{GECCO}.
+  \item Jordan, R., Kinderlehrer, D., Otto, F. (1998). The variational formulation of the Fokker--Planck equation. \emph{SIAM J. Math. Anal.}
+  \item Wibisono, A. (2018). Sampling as optimization in the space of measures: the Langevin dynamics as a composite optimization problem. \emph{COLT}.
   \item Liu, Q., Wang, D. (2016). Stein variational gradient descent. \emph{NeurIPS}.
   \item Fan, J., Taghvaei, A., Chen, Y. (2021). Stein particle filtering. arXiv:2106.10568.
   \item Maken, F. A., Ramos, F., Ott, L. (2022). Stein particle filter for nonlinear, non-Gaussian state estimation. arXiv:2202.04213.
