@@ -71,21 +71,65 @@ ULA はサンプラー（sampler）だが，「何を最適化しているか」
 PSO の群最良への引力は勾配の代わり，乱数 $r_1, r_2$ は乗法的な雑音で，温度に当たるものを持たないので最適化の端点に固定されている．
 
 \paragraph{分布の階層: KL ダイバージェンスの勾配流（gradient flow）}
-ランジュバン拡散に従う粒子の密度 $\rho_t$ はフォッカー・プランク方程式（Fokker--Planck equation）
+
+{\color{red}
+\begin{defi}[ランジュバン拡散と時刻 $t$ の周辺密度]
+$E: \RR^d \to \RR$ を $C^1$ 級で $\nabla E$ がリプシッツ連続（Lipschitz continuous）とし，$\tau > 0$ とする．
+$d$ 次元ブラウン運動（Brownian motion）$W_t$ と，それと独立な初期値 $X_0 \sim \rho_0$ に対し，確率微分方程式（stochastic differential equation）
 \begin{equation}
-  \partial_t \rho = \nabla \cdot (\rho \nabla E) + \tau \Delta \rho, \qquad E = -\log \ptil
+  dX_t = -\nabla E(X_t)\, dt + \sqrt{2\tau}\, dW_t
+  \label{eq:langevin-sde}
 \end{equation}
-に従い，Jordan, Kinderlehrer, Otto（1998）はこれが自由エネルギー（free energy）
+の強解（strong solution）$(X_t)_{t \ge 0}$ をランジュバン拡散（Langevin diffusion）と呼ぶ（リプシッツ条件の下で一意に存在する）．
+各時刻 $t$ を固定したときの確率変数 $X_t$ の分布（law）$\rho_t = \mathrm{Law}(X_t)$ を時刻 $t$ の周辺密度（time-marginal density）と呼ぶ．
+$\rho_t$ は時間の決定論的な関数であり，粒子 $\{x_i\}$ とは $\rho_t$ からの独立な標本（または経験測度 $\frac1K \sum_i \delta_{x_i}$ による近似）である．
+\end{defi}
+
+\begin{prop}[フォッカー・プランク方程式]
+定義の設定で，$\rho_t$ は（弱い意味で）
 \begin{equation}
-  F(\rho) = \int E \, d\rho + \tau \int \rho \log \rho = \tau\, \mathrm{KL}\big(\rho \,\|\, \ptil^{1/\tau}\big) + \text{const}
+  \partial_t \rho_t = \nabla \cdot (\rho_t \nabla E) + \tau \Delta \rho_t, \qquad \rho_t|_{t=0} = \rho_0
+  \label{eq:fokker-planck}
 \end{equation}
-のワッサースタイン距離（Wasserstein-2 distance）$W_2$ に関する最急降下流（steepest-descent flow）であることを示した．離散時間では JKO スキーム
+を満たす．証明の要点: 任意の試験関数 $\varphi \in C_c^\infty(\RR^d)$ に伊藤の公式（It\^o's formula）を適用すると
+$\frac{d}{dt}\, \mathbb{E}[\varphi(X_t)] = \mathbb{E}\big[-\nabla E \cdot \nabla \varphi + \tau \Delta \varphi\big](X_t)
+= \int \varphi\, \big(\nabla \cdot (\rho_t \nabla E) + \tau \Delta \rho_t\big)\, dx$ となる（最後は部分積分）．
+$Z_\tau = \int e^{-E/\tau} dx < \infty$ なら $\pi_\tau = e^{-E/\tau}/Z_\tau$ が定常解（stationary solution）である．
+本ノートの記法では $E = -\log \ptil$，$\pi_\tau \propto \ptil^{1/\tau}$，$\tau = 1$ で $\pi_1 \propto \ptil$ となる．
+\end{prop}
+
+\begin{thm}[Jordan--Kinderlehrer--Otto 1998]
+$E$ を上の仮定に加えて滑らかかつ下に有界で多項式増大（polynomial growth）とし，$\rho_0$ は有限な 2 次モーメントと有限なエントロピーを持つとする．
+自由エネルギー（free energy）を
 \begin{equation}
-  \rho_{k+1} = \arg\min_{\rho} \Big[ F(\rho) + \frac{W_2^2(\rho, \rho_k)}{2h} \Big]
+  F(\rho) = \int E \, d\rho + \tau \int \rho \log \rho \, dx
+  = \tau\, \mathrm{KL}(\rho \,\|\, \pi_\tau) - \tau \log Z_\tau
+  \label{eq:free-energy}
 \end{equation}
-という近接点法（proximal method）になり，これは分布の空間での勾配降下そのものである．
+と定め，時間刻み $h > 0$ に対して JKO スキーム（近接点法，proximal method）
+\begin{equation}
+  \rho^h_{k+1} = \arg\min_{\rho} \Big[ F(\rho) + \frac{W_2^2(\rho, \rho^h_k)}{2h} \Big], \qquad \rho^h_0 = \rho_0
+  \label{eq:jko}
+\end{equation}
+を定義する（$W_2$ はワッサースタイン距離，Wasserstein-2 distance）．このとき各段の最小化子は一意に存在し，
+区分的に一定な補間 $\rho^h(t) = \rho^h_k$（$t \in [kh, (k+1)h)$）は $h \to 0$ で
+フォッカー・プランク方程式~\eqref{eq:fokker-planck} の一意解 $\rho_t$ に収束する（$L^1((0,T) \times \RR^d)$ の弱収束）．
+すなわちランジュバン拡散の周辺密度の時間発展は，$W_2$ 幾何に関する $F$ の最急降下流（steepest-descent flow，勾配流）であり，
+$F(\rho_t)$ は $t$ について単調非増加で，その唯一の最小点は $\pi_\tau$ である．
+\end{thm}
+
+\begin{rem}[ULA との関係，および「1 step の確率変数」との違い]
+ULA の 1 反復 $x^{(l+1)} = x^{(l)} - \alpha \nabla E(x^{(l)}) + \sqrt{2\alpha\tau}\, \xi^{(l)}$ は，
+式~\eqref{eq:langevin-sde} の刻み幅 $\alpha$ のオイラー・丸山離散化（Euler--Maruyama discretization）である．
+$X^{(0)} \sim \rho_0$ から 1 反復進めた確率変数 $X^{(1)}$ の分布 $\rho^{(1)}$ は，連続時間の周辺密度 $\rho_\alpha$ の近似であり，一致はしない．
+$l$ 反復後の分布 $\rho^{(l)}$ は $\rho_{l\alpha}$ を $O(\alpha)$ の誤差で近似し，$l \to \infty$ の極限分布も $\pi_\tau$ から $O(\alpha)$ だけずれる（未調整，unadjusted の名の由来）．
+したがって「ランジュバン拡散に従う粒子の密度」は，離散 1 step の出力の密度ではなく，連続時間の過程 $X_t$ の時刻 $t$ における分布のことである．
+粒子 $K$ 個を独立に走らせたとき，その経験測度は $\rho^{(l)}$ の近似であり，連鎖の雑音項 $\sqrt{2\alpha\tau}\,\xi$ は
+式~\eqref{eq:fokker-planck} の拡散項 $\tau \Delta \rho$，すなわち $F$ のエントロピー項 $\tau \int \rho \log \rho$ の勾配に対応する．
+\end{rem}
+}
+
 サンプリングとは分布の空間で KL を最小化する最適化であり，粒子はその勾配流の離散化である（Wibisono 2018）．
-ULA の雑音項 $\sqrt{2\alpha\tau}\,\xi$ は，分布の階層ではエントロピー項 $\tau \int \rho \log \rho$ の勾配（拡散 $\tau \Delta \rho$）に対応する．
 
 この見方で各手法を並べると，違いは「目的関数」と「幾何（geometry）」の選び方だけになる．
 
