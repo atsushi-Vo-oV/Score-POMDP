@@ -1,0 +1,209 @@
+\documentclass[a4paper,11pt]{article}
+\usepackage{mysty}
+\usepackage[margin=24mm]{geometry}
+\usepackage[hidelinks,unicode]{hyperref}
+\usepackage{booktabs}
+\usepackage{array}
+
+\newcommand{\RR}{\mathbb{R}}
+\newcommand{\ptil}{\tilde p_t}
+\newcommand{\nrm}[1]{\left\lVert #1 \right\rVert}
+
+\title{粒子を動かす規則の比較 --- 学習エネルギー + ULA，SVGD，粒子群最適化，合意形成ダイナミクス}
+\author{Belief-Score-Based-Model 実装ノート}
+\date{2026-10-14}
+
+\begin{document}
+\maketitle
+
+\section{設定と記法}
+
+時刻 $t$ の潜在状態 $x_t \in \RR^d$ の belief を $K$ 個の粒子 $\{x_t^i\}_{i=1}^K$ で表す．
+観測 $o_t$，直前の行動 $a_{t-1}$，前時刻の粒子 $\{x_{t-1}^j\}$ が与えられたとき，
+本プロジェクトの belief は学習した非正規化対数密度
+\begin{equation}
+  \log \ptil(x) =
+  \begin{cases}
+    g_\theta(x; o_0) - \tfrac12 \nrm{x}^2 & (t = 0),\\[2pt]
+    f_\theta(x; o_t, a_{t-1}) + \log \dfrac1K \sum_{j=1}^K \exp u_\theta(x, x_{t-1}^j, a_{t-1}) & (t \ge 1)
+  \end{cases}
+  \label{eq:energy}
+\end{equation}
+を使う．$f_\theta$ は観測項，$u_\theta$ は遷移項で，第 2 式は
+「前粒子を祖先とする混合遷移事前分布 $\times$ 観測尤度」という 1 段の事後分布
+$p(x_t \mid o_{1:t}) \propto p(o_t \mid x_t) \frac1K \sum_j p(x_t \mid x_{t-1}^j, a_{t-1})$
+の学習版である．以下では $E(x) = -\log \ptil(x)$ をエネルギー，$s(x) = \nabla_x \log \ptil(x)$ をスコアと呼ぶ．
+粒子を動かす規則（mover）を替えても式~\eqref{eq:energy} は共通で，変わるのは
+「$\ptil$ をどう使って $\{x_{t-1}^i\}$ から $\{x_t^i\}$ を作るか」だけである．
+
+費用の比較のため，$C_f$ を $f_\theta$ を $K$ 個の問合せ点で評価する前向き計算の費用，
+$C_u$ を $u_\theta$ を $K \times K$ 対で評価する費用とする．
+$K = 16$ では $C_u$ が支配的である（遷移対が 256 対）．
+
+\section{現行: Langevin（ULA）}
+
+連鎖の初期値を $x^{(0)}_i$（cold なら $\mathcal N(0, I)$，warm なら $x_{t-1}^i$，初期ステップは観測アンカー
+$\mu_\theta(o_0) + \sigma_\theta(o_0) \odot \xi_i$）として，$L$ 回
+\begin{equation}
+  x_i^{(l+1)} = x_i^{(l)} + \alpha\, s\big(x_i^{(l)}\big) + \sqrt{2 \alpha \tau}\; \xi_i^{(l)}, \qquad \xi_i^{(l)} \sim \mathcal N(0, I)
+  \label{eq:ula}
+\end{equation}
+を繰り返し，$x_t^i = x_i^{(L)}$ とする（$\alpha = 0.02$，$\tau = 1$）．方策はスコア $s(x_t^i)$ も受け取る．
+
+性質: (i) $\alpha \to 0$，$L \to \infty$ で粒子は $\ptil$ に従うサンプルになる（不偏ではなく離散化誤差を持つ）．
+(ii) 1 ステップあたりの移動量は $\alpha \nrm{s} + \sqrt{2\alpha\tau}$ 程度で，$L \alpha$ の予算を超える跳びには追従できない．
+(iii) 粒子間に相互作用はなく（遷移項を通じて前粒子に依存するだけ），同じ谷に全粒子が落ちることを妨げない．
+(iv) 乱数 $\xi$ を外生入力として保存し，PPO の再生で同じ連鎖を復元する．
+費用: スコアは自動微分で得るので，1 ステップに前向き $+$ 逆向きで約 $3(C_f + C_u)$，連鎖全体で $3L(C_f + C_u)$ に最終スコア 1 回分が加わる．
+
+\section{SVGD（Stein particle filter）}
+
+Stein 変分勾配降下（Liu \& Wang 2016）は，粒子集合を KL ダイバージェンス $\mathrm{KL}(q \,\|\, \ptil)$ の
+再生核ヒルベルト空間における最急降下方向
+\begin{equation}
+  \phi^*(x) = \frac1K \sum_{j=1}^K \Big[ k(x_j, x)\, s(x_j) + \nabla_{x_j} k(x_j, x) \Big]
+  \label{eq:svgd}
+\end{equation}
+で動かす: $x_i \leftarrow x_i + \varepsilon\, \phi^*(x_i)$．
+核は通常 RBF $k(x, x') = \exp(-\nrm{x - x'}^2 / h)$ で，帯域はメディアン則 $h = \mathrm{med}^2 / \log K$．
+第 1 項は近傍粒子のスコアを核で平滑化した引力，第 2 項は
+\begin{equation}
+  \nabla_{x_j} k(x_j, x) = \frac{2}{h}\,(x - x_j)\, k(x_j, x)
+\end{equation}
+で粒子どうしを押し離す反発項である．Stein particle filter（Fan, Taghvaei, Chen 2021; Maken, Ramos, Ott 2022）は
+予測と更新を 1 段の事後分布（式~\eqref{eq:energy} と同じ形）にまとめ，その上で SVGD を回す粒子フィルタで，
+全粒子が等重み，リサンプリングなし，である．
+
+ULA との違い: (i) 乱数を使わない決定論的写像で，粒子集合の関数として再生できる（外生ノイズの保存が不要）．
+(ii) 反発項が粒子の重なりを防ぐので，$K$ が小さくても縮退しにくい．
+(iii) 固定点は $\ptil$ の近似であり，粒子数有限では分散を過小評価する傾向がある（ノイズ項がないため）．
+(iv) 多峰の $\ptil$ では核の帯域より離れた谷の間を粒子は移動しない: 谷に粒子を配る役目は初期値（warm start）が担う．
+費用: スコア計算は ULA と同じ $3(C_f + C_u)$ に，核とその勾配の $K^2$ 回の評価（$d$ 次元ベクトルの差とスカラー指数関数，MLP ではない）が加わる．
+
+\section{粒子群最適化（PSO）と PSO-PF}
+
+\subsection{標準 PSO}
+Kennedy \& Eberhart（1995）の規則は，各粒子が速度 $v_i$，自己最良 $p_i$ を持ち，群最良 $g$ と合わせて
+\begin{align}
+  v_i &\leftarrow w\, v_i + c_1 r_1 \odot (p_i - x_i) + c_2 r_2 \odot (g - x_i), \qquad r_1, r_2 \sim \mathcal U(0,1)^d, \label{eq:pso-v}\\
+  x_i &\leftarrow x_i + v_i, \label{eq:pso-x}\\
+  p_i &\leftarrow \arg\max\{ J(p_i), J(x_i) \}, \qquad g \leftarrow \arg\max_i J(p_i),
+\end{align}
+で動く．目的関数 $J$ をここでは $J(x) = \log \ptil(x)$ と取る．勾配は不要で，$J$ の前向き評価だけを使う．
+慣性 $w$ と係数 $c_1, c_2$ は Clerc \& Kennedy（2002）の収縮係数
+$\chi = 2 / \lvert 2 - \varphi - \sqrt{\varphi^2 - 4\varphi} \rvert$，$\varphi = c_1 + c_2 > 4$
+で安定化するのが標準である．
+
+PSO は最適化器であり，群は $\arg\max J$ の 1 点に収束する．
+belief の広がりを表す目的には，そのままでは使えない（ULA の $\tau$，SVGD の反発項に当たるものがない）．
+一方で，自己最良 $p_i$ は「過去に見た高尤度の状態」の記憶であり，粒子が無情報な領域へ流れても引き戻す力になる．
+
+\subsection{PSO-PF}
+重み付き粒子フィルタの退化対策として，リサンプリングの前に PSO の数ステップで粒子を観測尤度の高い領域へ寄せる手法群である．
+$J(x) = \log p(o_t \mid x)$（または 1 段事後）とし，式~\eqref{eq:pso-v}--\eqref{eq:pso-x} を数回適用したのち
+重み $w_i \propto p(o_t \mid x_i)$ を計算してリサンプリングする．
+重みと移動を併用する点で，本プロジェクトの「重みを持たず移動だけで belief を表す」設計とは異なるが，
+「観測で粒子の位置を動かす」という思想は同じ側にある．
+
+\section{合意形成ダイナミクス（CBO / CBS）}
+
+Pinnau ら（2017），Carrillo ら（2018）の CBO は PSO の確率微分方程式版で，
+エネルギー $E$ に対する重み付き平均（Laplace 原理による $\arg\min E$ の近似）
+\begin{equation}
+  m_\beta = \frac{\sum_i x_i\, e^{-\beta E(x_i)}}{\sum_i e^{-\beta E(x_i)}}
+\end{equation}
+へ引き寄せつつ，合意点からの距離に比例した雑音を加える:
+\begin{equation}
+  dx_i = -\lambda\,(x_i - m_\beta)\, dt + \sigma\, \nrm{x_i - m_\beta}\, dW_i
+  \qquad(\text{異方版は } \sigma\, \mathrm{diag}(x_i - m_\beta)\, dW_i).
+  \label{eq:cbo}
+\end{equation}
+Carrillo, Hoffmann, Stuart, Vaes（2022）の CBS はこれをサンプラーに変えたもので，重み付き共分散
+$C_\beta = \sum_i (x_i - m_\beta)(x_i - m_\beta)^\top e^{-\beta E(x_i)} / \sum_i e^{-\beta E(x_i)}$ を使い
+\begin{equation}
+  dx_i = -(x_i - m_\beta)\, dt + \sqrt{2 \lambda^{-1} C_\beta}\; dW_i,
+  \qquad \lambda = (1+\beta)^{-1} \text{（サンプリング）},\ \lambda = 1 \text{（最適化）}
+  \label{eq:cbs}
+\end{equation}
+とする．平均場極限は非線形 Fokker--Planck 方程式を持ち，ガウス目標分布に対しては定常状態が目標の平均・共分散に一致し，
+収束率が目標によらない（affine 不変）．導関数は不要で，$E$ の前向き評価だけで動く．
+PSO から CBO への対応（Grassi \& Pareschi 2021）も平均場の枠で示されている．
+
+ULA との違い: (i) 勾配不要なので $3(C_f + C_u)$ が $(C_f + C_u)$ に落ち，同じ FLOPs で約 3 倍のステップを回せる．
+(ii) 雑音の大きさが群の広がり $C_\beta$ で決まるので，群が縮むと雑音も縮む（最適化側）か，
+目標の共分散に落ち着く（サンプリング側）．
+(iii) 単峰のガウス近似が前提にあり，多峰の $\ptil$ では 1 つの合意点 $m_\beta$ に引き寄せられて峰を 1 つ失う．
+
+\section{種分割（niching）}
+
+複数の峰を同時に保つための PSO の拡張で，粒子を距離で種（species）に分け，種ごとに群最良 $g_s$ を持つ．
+Li（2004）の species-based PSO では，適合度順に粒子を並べ，半径 $r_s$ 以内に既存の種の代表がなければ新しい種の代表とする:
+\begin{align}
+  \text{species}(x_i) &= \arg\min_{s} \big\{ \nrm{x_i - g_s} : \nrm{x_i - g_s} \le r_s \big\}, \\
+  v_i &\leftarrow w v_i + c_1 r_1 \odot (p_i - x_i) + c_2 r_2 \odot (g_{\text{species}(x_i)} - x_i).
+\end{align}
+代表どうしが $r_s$ 以内に近づけば種を併合する．クラスタリング（階層的クラスタリング，k-means）で種を切る変種も多い．
+鏡像課題の 4 峰は「4 つの種が別々の谷に居続け，標識を読んだ時点で 3 つが消える」問題であり，
+種分割はこの構造を規則として直接書ける．ただし種の数と半径は $\ptil$ の谷の構造を知らずに決める必要があり，
+谷が 1 つしかない（エネルギーが多峰を学んでいない）場合には何も生まない．
+
+\section{比較}
+
+\begin{center}
+\footnotesize
+\begin{tabular}{p{28mm}p{21mm}p{23mm}p{21mm}p{21mm}p{22mm}}
+\toprule
+ & ULA（現行） & SVGD & PSO & CBS & niching PSO \\
+\midrule
+必要な情報 & スコア $s$ & スコア $s$ & $\log\ptil$ の値 & $\log\ptil$ の値 & $\log\ptil$ の値 \\
+乱数 & あり（保存） & なし & あり（$r_1, r_2$） & あり & あり \\
+粒子間相互作用 & なし & 核の引力・反発 & 群最良への引力 & 合意点への引力 & 種内の引力 \\
+固定点・定常分布 & $\ptil$（近似） & $\ptil$ の近似（分散過小） & $\arg\max \log\ptil$ & ガウス近似 & 各種の極大 \\
+多峰 $\ptil$ の扱い & 初期値次第 & 初期値次第，谷間移動なし & 1 峰に収束 & 1 峰に収束 & 種の数まで保持 \\
+縮退の防ぎ方 & 雑音 & 反発項 & なし & なし & 種分割 \\
+PPO 再生との相性 & ノイズ保存が必要 & 決定論的で容易 & 乱数保存が必要 & 乱数保存が必要 & 乱数保存＋種の履歴 \\
+1 ステップの費用 & $3(C_f + C_u)$ & $3(C_f+C_u) + K^2$ 核 & $C_f + C_u$ & $C_f + C_u$ & $C_f + C_u$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+いずれの mover でも，エネルギー $\ptil$ 自体の学習信号（PPO の勾配と，次観測・報酬予測の補助損失）は変わらない．
+mover が変えるのは「同じ $\ptil$ から粒子集合をどう作るか」であり，
+$\ptil$ が谷を 1 つしか持たなければ，どの mover も多峰の belief を作れない．
+
+\section{本プロジェクトへの組み込み案}
+
+\paragraph{実装} \texttt{EnergyBelief} に \texttt{particle\_mover = ula | svgd | cbs | pso} を加える（既定 \texttt{ula} で既存結果と bit 一致）．
+SVGD は式~\eqref{eq:svgd} をスコア計算の直後に挟むだけで，外生ノイズの配管を使わない．
+CBS は式~\eqref{eq:cbs} の離散化
+$x_i \leftarrow m_\beta + e^{-\Delta t}(x_i - m_\beta) + \sqrt{(1 - e^{-2\Delta t}) \lambda^{-1} C_\beta}\; \xi_i$
+を使い，$\xi_i$ は ULA のノイズと同じ経路で保存する．スコアの自動微分が消えるので，
+同じ FLOPs 予算（core4 の k16f: 1.1 MFLOP/step）で $L$ を約 3 倍にできる．
+
+\paragraph{実験} まず Mountain Hike と LD2D で，k16f の予算を固定して mover だけを \texttt{ula / svgd / cbs} に替えた 3 条件
+$\times$ 5 seed を比較する．測るのは return に加えて，粒子間距離と H$_0$ クラスタ数（縮退・多様性），
+粒子からの位置復号 $R^2$（belief の情報量），箱外滞在率（罠耐性）．
+多峰性は改訂版の鏡像課題で，\texttt{svgd} と種分割つき \texttt{pso} を比較し，
+エネルギー地形の谷の数と標識前後の鏡像ビット復号で判定する．
+勾配不要 mover では自動微分が消える分だけ壁時間が短くなるはずなので，$L = 12$ を保ったまま学習時間が半減するかも同時に見る．
+
+\paragraph{期待と限界} SVGD は縮退と再生の配管を同時に改善する最も安全な一手である．
+CBS は費用面で有利だが単峰近似を内包する．種分割は多峰性に対する唯一の構造的解だが，
+エネルギーが多峰を学ぶ圧力（報酬予測の補助損失，$K = 16$ 以上）がなければ機能しない．
+
+\section*{参考文献}
+\begin{itemize}
+  \item Kennedy, J., Eberhart, R. (1995). Particle swarm optimization. \emph{ICNN}.
+  \item Clerc, M., Kennedy, J. (2002). The particle swarm: explosion, stability, and convergence in a multidimensional complex space. \emph{IEEE TEC}.
+  \item Li, X. (2004). Adaptively choosing neighbourhood bests using species in a particle swarm optimizer for multimodal function optimization. \emph{GECCO}.
+  \item Liu, Q., Wang, D. (2016). Stein variational gradient descent. \emph{NeurIPS}.
+  \item Fan, J., Taghvaei, A., Chen, Y. (2021). Stein particle filtering. arXiv:2106.10568.
+  \item Maken, F. A., Ramos, F., Ott, L. (2022). Stein particle filter for nonlinear, non-Gaussian state estimation. arXiv:2202.04213.
+  \item Pinnau, R., Totzeck, C., Tse, O., Martin, S. (2017). A consensus-based model for global optimization and its mean-field limit. \emph{M3AS}.
+  \item Carrillo, J. A., Choi, Y.-P., Totzeck, C., Tse, O. (2018). An analytical framework for consensus-based global optimization method. \emph{M3AS}.
+  \item Carrillo, J. A., Hoffmann, F., Stuart, A. M., Vaes, U. (2022). Consensus-based sampling. \emph{Studies in Applied Mathematics}.
+  \item Grassi, S., Pareschi, L. (2021). From particle swarm optimization to consensus based optimization: stochastic modeling and mean-field limit. \emph{M3AS}.
+  \item Li, T., Sun, S., Sattar, T. P., Corchado, J. M. (2014). Fight sample degeneracy and impoverishment in particle filters: a review of intelligent approaches. \emph{Expert Systems with Applications}.
+\end{itemize}
+
+\end{document}
