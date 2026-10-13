@@ -235,6 +235,33 @@ $J(x) = \log p(o_t \mid x)$（または 1 段事後）とし，式~\eqref{eq:pso
 重みと移動を併用する点で，本プロジェクトの「重みを持たず移動だけで belief を表す」設計とは異なるが，
 「観測で粒子の位置を動かす」という思想は同じ側にある．
 
+{\color{blue}
+\paragraph{PSO-PF の 1 時刻の更新式（2026-10-14 追記）}
+時刻 $t$ で，重み付き粒子 $\{(x_{t-1}^i, w_{t-1}^i)\}$ から次の順に進む．
+\begin{enumerate}
+  \item 予測（prediction）: 遷移モデルから $\hat x_t^i \sim p(x_t \mid x_{t-1}^i, a_{t-1})$ を引く．
+  \item 群の移動（swarm move）: 目的関数を観測尤度 $J(x) = \log p(o_t \mid x)$（または 1 段事後 $\log p(o_t \mid x) + \log \tfrac1K \sum_j p(x \mid x_{t-1}^j, a_{t-1})$）とし，
+        $x_i \leftarrow \hat x_t^i$，$v_i \leftarrow 0$，$p_i \leftarrow x_i$，$g \leftarrow \arg\max_i J(x_i)$ で初期化して $M$ 反復
+        \begin{align}
+          v_i &\leftarrow w\, v_i + c_1 r_1 \odot (p_i - x_i) + c_2 r_2 \odot (g - x_i), \\
+          x_i &\leftarrow x_i + v_i, \qquad p_i \leftarrow \arg\max\{J(p_i), J(x_i)\}, \qquad g \leftarrow \arg\max_i J(p_i)
+        \end{align}
+        を回し，$x_t^i \leftarrow x_i$ とする．反復は固定回数か，$J(g)$ がしきい値を超えた時点で止める．
+        変種では尤度の低い粒子だけを動かし，高尤度の粒子はその場に置く．
+  \item 重み付け（weighting）: 本来の重点サンプリング（importance sampling）では，粒子を動かしたぶんの提案密度 $q$ で補正して
+        \begin{equation}
+          \tilde w_t^i = w_{t-1}^i \, p(o_t \mid x_t^i)\, \frac{p(x_t^i \mid x_{t-1}^i, a_{t-1})}{q(x_t^i)}
+        \end{equation}
+        とすべきだが，PSO の写像は $q$ を陽に持たないため，多くの PSO-PF は補正を省いて
+        $\tilde w_t^i = p(o_t \mid x_t^i)$（移動後の粒子を新しい事前分布とみなす）とする．これは偏り（bias）のある発見的手法（heuristic）で，
+        理論保証のある粒子フィルタではなく「観測で粒子を良い領域へ寄せたうえで重み付けする」近似である．
+  \item 正規化とリサンプリング（resampling）: $w_t^i = \tilde w_t^i / \sum_j \tilde w_t^j$，有効標本数（effective sample size）
+        $1 / \sum_i (w_t^i)^2$ が小さければ再標本化して $w_t^i = 1/K$．
+  \item 推定（estimate）: $\hat x_t = \sum_i w_t^i x_t^i$．
+\end{enumerate}
+本プロジェクトの ULA との対応で言えば，手順 2 の群の移動がスコアによる Langevin 移動に当たり，手順 3--4 の重みとリサンプリングが本プロジェクトには存在しない．
+}
+
 \section{合意形成ダイナミクス（Consensus-Based Optimization，CBO / Consensus-Based Sampling，CBS）}
 
 Pinnau ら（2017），Carrillo ら（2018）の CBO は PSO の確率微分方程式版で，
