@@ -32,7 +32,7 @@ from .buffer import generalised_advantage_estimate
 from .config import ExperimentConfig
 from .envs import make_env
 from .networks import NetworkKinds, use_network_kinds
-from .ppo import PPOMetrics, diffusion_advantage_weights
+from .ppo import PPOMetrics, clip_gradients_or_skip, diffusion_advantage_weights
 from .train import (
     EPISODE_FIELDS,
     EVALUATION_FIELDS,
@@ -435,7 +435,9 @@ def _optimise_minibatch(
     returns: torch.Tensor,
     entropy_values: torch.Tensor,
     ppo_config: dict[str, Any],
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | None:
+    """One PPO minibatch step; ``None`` when a non-finite gradient made it skip the step."""
+
     policy_loss, approximate_kl, clip_fraction = _clipped_policy_loss(
         new_log_prob,
         old_log_prob,
@@ -452,11 +454,15 @@ def _optimise_minibatch(
     )
     optimizer.zero_grad(set_to_none=True)
     total_loss.backward()
-    gradient_norm = torch.nn.utils.clip_grad_norm_(
-        model.parameters(),
-        float(ppo_config["max_grad_norm"]),
-        error_if_nonfinite=True,
+    gradient_norm, finite = clip_gradients_or_skip(
+        model.parameters(), float(ppo_config["max_grad_norm"])
     )
+    if not finite:
+        LOGGER.warning(
+            "non-finite gradient norm (%s); skipping the optimizer step for this minibatch",
+            float(gradient_norm),
+        )
+        return None
     optimizer.step()
     return policy_loss, value_loss, entropy, approximate_kl, clip_fraction, gradient_norm
 
@@ -514,6 +520,8 @@ def _update_feedforward(
                 entropy_values=evaluation.entropy,
                 ppo_config=ppo_config,
             )
+            if values is None:
+                continue
             _accumulate_metrics(
                 totals,
                 policy_loss=values[0],
@@ -739,16 +747,17 @@ def _update_recurrent(
                 entropy_values=evaluation.entropy,
                 ppo_config=ppo_config,
             )
-            _accumulate_metrics(
-                totals,
-                policy_loss=values[0],
-                value_loss=values[1],
-                entropy=values[2],
-                approximate_kl=values[3],
-                clip_fraction=values[4],
-                gradient_norm=values[5],
-            )
-            batches += 1
+            if values is not None:
+                _accumulate_metrics(
+                    totals,
+                    policy_loss=values[0],
+                    value_loss=values[1],
+                    entropy=values[2],
+                    approximate_kl=values[3],
+                    clip_fraction=values[4],
+                    gradient_norm=values[5],
+                )
+                batches += 1
             processed_transitions += transitions
         if processed_transitions != rollout.size:
             raise RuntimeError(

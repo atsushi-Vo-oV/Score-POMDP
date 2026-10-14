@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 import torch
@@ -12,6 +14,29 @@ from .belief import EnergyBelief, PotentialBranch
 from .buffer import RolloutBatch
 from .policies import ScoreBeliefActorCritic
 from .value_transform import ValueTransform
+
+LOGGER = logging.getLogger("sb_pomdp")
+
+
+def clip_gradients_or_skip(
+    parameters: Iterable[torch.nn.Parameter], max_norm: float
+) -> tuple[torch.Tensor, bool]:
+    """Clip the gradients in place and say whether an optimizer step may follow.
+
+    Returns ``(total_norm, finite)``.  When the total norm is NaN or infinite the
+    gradients are cleared (set to ``None``) and ``finite`` is ``False`` so the caller
+    skips the step instead of writing non-finite values into the parameters.
+    Previously ``clip_grad_norm_(error_if_nonfinite=True)`` raised and killed the
+    whole run on the first such minibatch.
+    """
+
+    params = [parameter for parameter in parameters if parameter.grad is not None]
+    total_norm = torch.nn.utils.clip_grad_norm_(params, max_norm, error_if_nonfinite=False)
+    if not bool(torch.isfinite(total_norm)):
+        for parameter in params:
+            parameter.grad = None
+        return total_norm, False
+    return total_norm, True
 
 
 @dataclass(slots=True)
@@ -624,6 +649,7 @@ def update_ppo(
         "transition_energy_gradient_norm": 0.0,
     }
     batches = 0
+    skipped_minibatches = 0
 
     for _ in range(int(ppo_config["epochs"])):
         permutation = torch.randperm(
@@ -752,11 +778,18 @@ def update_ppo(
                     reference=model,
                 ),
             }
-            gradient_norm = torch.nn.utils.clip_grad_norm_(
-                model.parameters(),
-                float(ppo_config["max_grad_norm"]),
-                error_if_nonfinite=True,
+            gradient_norm, finite = clip_gradients_or_skip(
+                model.parameters(), float(ppo_config["max_grad_norm"])
             )
+            if not finite:
+                skipped_minibatches += 1
+                LOGGER.warning(
+                    "non-finite gradient norm (%s); skipping the optimizer step for this "
+                    "minibatch (%d skipped in this update)",
+                    float(gradient_norm),
+                    skipped_minibatches,
+                )
+                continue
             optimizer.step()
 
             for name, value in minibatch_metrics.items():
