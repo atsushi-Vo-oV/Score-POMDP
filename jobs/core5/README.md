@@ -60,5 +60,5 @@ Heaven-Hell の遷移・観測・報酬は gym-pomdps の .pomdp ファイルと
 `core4_ld2d_pf_s13.sh` は core4 の Light-Dark 2D DPFRL seed 13 の再実行(旧ツリーで update 3 に非有限勾配ノルムで停止; この木は該当 minibatch をスキップする)。
 
 ```bash
-pjsub jobs/core5/debug_core5.sh   # 合格後にゲートが投入(gate_core5.sh <JID> <scope>...; scope = all | nopendbal | info | ld2dpf | <task>)
+pjsub jobs/core5/debug_core5.sh   # 合格後にゲートが投入(gate_core5.sh <JID> <scope>...; scope = all | nopendbal | info | infobase | ld2dpf | <task>)
 ```
