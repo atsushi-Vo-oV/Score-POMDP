@@ -6,8 +6,8 @@
 #PJM -S
 
 # core5 / mirror-world Hike (ridge 1, corners, w=2) / score transformer k16f, alpha 0.2 fixed / seed 12, 200 updates.
-# Identical to the core4 transformer (K=16, L=12, energy [8], d_model 32, ff 64, tau 1, v2 belief)
-# except for the ULA step size.  Measured core4 speed ~34 min/update -> ~113 h in total.
+# Same as the core4 transformer (K=16, L=12, energy [8], d_model 32, ff 64, tau 1, v2 belief)
+# except for the ULA step size.  Estimated ~34 min/update -> ~113 h in total.
 # Segmented: resubmit this same file to resume from latest.pt.
 set -euo pipefail
 export SB_POMDP_CONFIG="config/core5_mirror_a02.json"

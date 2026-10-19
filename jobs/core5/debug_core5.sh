@@ -1,12 +1,13 @@
 #!/bin/bash
 #PJM -L rscgrp=b-batch-mig
 #PJM -L gpu=1
-#PJM -L elapse=04:00:00
+#PJM -L elapse=05:00:00
 #PJM -j
 #PJM -S
 
 # DEBUG gate for core5: one update (4 envs, 1 epoch) of both new transformer arms (alpha 0.2,
-# learned alpha) on all six tasks, plus the DPFRL rerun config of core4 Light-Dark 2D.
+# learned alpha) on every task, all four core methods on the new tasks (Car-Flag, Heaven-Hell 3/4),
+# and the DPFRL rerun config of core4 Light-Dark 2D.
 # Submit from the repository root: pjsub jobs/core5/debug_core5.sh
 
 set -euo pipefail
@@ -36,5 +37,23 @@ run_arm config/core5_mirror2_a02.json score_transformer mountain_hike mirror2-a0
 run_arm config/core5_mirror2_alearn.json score_transformer mountain_hike mirror2-alearn
 run_arm config/core5_tps_a02.json score_transformer mountain_hike tps-a02
 run_arm config/core5_tps_alearn.json score_transformer mountain_hike tps-alearn
+run_arm config/core5_carflag.json score_transformer car_flag carflag
+run_arm config/core5_carflag.json gru car_flag carflag
+run_arm config/core5_carflag.json rnn car_flag carflag
+run_arm config/core5_carflag.json particle_filter car_flag carflag
+run_arm config/core5_carflag_a02.json score_transformer car_flag carflag-a02
+run_arm config/core5_carflag_alearn.json score_transformer car_flag carflag-alearn
+run_arm config/core5_heavenhell3.json score_transformer heaven_hell heavenhell3
+run_arm config/core5_heavenhell3.json gru heaven_hell heavenhell3
+run_arm config/core5_heavenhell3.json rnn heaven_hell heavenhell3
+run_arm config/core5_heavenhell3.json particle_filter heaven_hell heavenhell3
+run_arm config/core5_heavenhell3_a02.json score_transformer heaven_hell heavenhell3-a02
+run_arm config/core5_heavenhell3_alearn.json score_transformer heaven_hell heavenhell3-alearn
+run_arm config/core5_heavenhell4.json score_transformer heaven_hell heavenhell4
+run_arm config/core5_heavenhell4.json gru heaven_hell heavenhell4
+run_arm config/core5_heavenhell4.json rnn heaven_hell heavenhell4
+run_arm config/core5_heavenhell4.json particle_filter heaven_hell heavenhell4
+run_arm config/core5_heavenhell4_a02.json score_transformer heaven_hell heavenhell4-a02
+run_arm config/core5_heavenhell4_alearn.json score_transformer heaven_hell heavenhell4-alearn
 run_arm config/core4_ld2d.json particle_filter light_dark ld2d-pf
 echo "core5 debug completed all arms."

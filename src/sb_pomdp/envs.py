@@ -1284,6 +1284,290 @@ _LIGHT_DARK_KEYS = {
 }
 
 
+class CarFlagEnv(_BaseMaskedEnv):
+    """Car-Flag (Nguyen et al., CoRL 2022; Baisero & Amato, AAMAS 2022).
+
+    A car on a line accelerates with a continuous force in [-1, 1].  The green
+    flag sits at +1 or -1 with equal probability and the red flag at the other
+    end; reaching either ends the episode.  The side of the green flag is the
+    only hidden variable: the observation reveals it (+1 right, -1 left) only
+    while the car is within ``priest_range`` of the blue flag at
+    ``priest_position``, and reports 0 elsewhere.  Constants follow the public
+    implementation (hai-h-nguyen/pomdp-domains, ``pdomains/car_flag.py``); its
+    asymmetric reward is replaced by the paper definition: ``-step_cost`` per
+    step, ``+flag_reward`` at the green flag and ``-flag_reward`` at the red one.
+
+    State ``(position, velocity, side)``; observation ``(position,
+    velocity / max_speed, signal)`` plus optional Gaussian noise.
+    """
+
+    state_dim = 3
+    observation_dim = 3
+    oracle_dim = 3
+
+    def __init__(
+        self,
+        *,
+        horizon: int = 160,
+        observation_noise_std: float = 0.0,
+        seed: int | None = None,
+        max_speed: float = 0.07,
+        power: float = 0.0015,
+        position_limit: float = 1.1,
+        flag_position: float = 1.0,
+        priest_position: float = 0.5,
+        priest_range: float = 0.2,
+        start_range: float = 0.2,
+        step_cost: float = 0.01,
+        flag_reward: float = 1.0,
+    ) -> None:
+        super().__init__(
+            horizon=horizon,
+            observation_noise_std=observation_noise_std,
+            seed=seed,
+        )
+        values = (
+            max_speed,
+            power,
+            position_limit,
+            flag_position,
+            priest_position,
+            priest_range,
+            start_range,
+            step_cost,
+            flag_reward,
+        )
+        if not all(np.isfinite(value) for value in values):
+            raise ValueError("Car-Flag parameters must be finite")
+        if max_speed <= 0 or power <= 0 or priest_range <= 0 or flag_reward <= 0:
+            raise ValueError("max_speed, power, priest_range and flag_reward must be positive")
+        if not 0 < flag_position <= position_limit:
+            raise ValueError("flag_position must lie in (0, position_limit]")
+        if not abs(priest_position) + priest_range < flag_position:
+            raise ValueError("the information region must lie strictly between the flags")
+        if not 0 <= start_range < flag_position or step_cost < 0:
+            raise ValueError("start_range must lie in [0, flag_position) and step_cost must be >= 0")
+        self.max_speed = float(max_speed)
+        self.power = float(power)
+        self.position_limit = float(position_limit)
+        self.flag_position = float(flag_position)
+        self.priest_position = float(priest_position)
+        self.priest_range = float(priest_range)
+        self.start_range = float(start_range)
+        self.step_cost = float(step_cost)
+        self.flag_reward = float(flag_reward)
+        self.action_spec = ActionSpec.continuous(-1.0, 1.0)
+
+    def _signal(self) -> float:
+        assert self._state is not None
+        position, _, side = self._state
+        if abs(position - self.priest_position) <= self.priest_range:
+            return float(side)
+        return 0.0
+
+    def _observation(self) -> np.ndarray:
+        assert self._state is not None
+        position, velocity, _ = self._state
+        values = np.array([position, velocity / self.max_speed, self._signal()], dtype=np.float64)
+        return self._add_observation_noise(values)
+
+    def oracle_features(self) -> np.ndarray:
+        """Return position, normalized velocity and the hidden green-flag side."""
+
+        if self._state is None:
+            raise RuntimeError("The environment has not been reset")
+        position, velocity, side = self._state
+        return np.asarray([position, velocity / self.max_speed, side], dtype=np.float32)
+
+    def reset(self, seed: int | None = None) -> tuple[np.ndarray, dict[str, Any]]:
+        self._start_reset(seed)
+        side = 1.0 if self._rng.random() < 0.5 else -1.0
+        position = self._rng.uniform(-self.start_range, self.start_range)
+        self._state = np.array([position, 0.0, side], dtype=np.float64)
+        return self._observation(), self._info()
+
+    def step(self, action: Any) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+        self._before_step()
+        selected = self.action_spec.validate(action)
+        assert isinstance(selected, np.ndarray) and self._state is not None
+        position, velocity, side = self._state
+        velocity = float(np.clip(velocity + float(selected[0]) * self.power, -self.max_speed, self.max_speed))
+        position = float(np.clip(position + velocity, -self.position_limit, self.position_limit))
+        if abs(position) >= self.position_limit and position * velocity > 0.0:
+            velocity = 0.0
+        self._state = np.array([position, velocity, side], dtype=np.float64)
+
+        reward = -self.step_cost
+        terminated = abs(position) >= self.flag_position
+        if terminated:
+            reached_green = (position > 0.0) == (side > 0.0)
+            reward += self.flag_reward if reached_green else -self.flag_reward
+        terminated, truncated = self._finish_step(bool(terminated))
+        return self._observation(), float(reward), terminated, truncated, self._info()
+
+
+class HeavenHellEnv(_BaseMaskedEnv):
+    """Heaven-Hell (Geffner & Bonet 1998; Thrun 2000) in the corridor layout of
+    gym-pomdps ``heavenhell_<n>`` (Baisero & Amato, AAMAS 2022, use n = 3, 4).
+
+    Cells (``n = corridor_length``)::
+
+        left end 2n ... n+1   n   2n+1 ... 3n right end
+                              :
+                              0  (start)
+                            3n+1  3n+2 ... 4n+1 (priest)
+
+    Heaven is the left or the right end with equal probability and hell the
+    other.  Actions N, S, E, W move along the corridors (moves into a wall do
+    nothing).  Entering an end gives +1 (heaven) or -1 (hell) and terminates.
+    The observation is the gym-pomdps symbol, one-hot encoded: the cell index
+    for every cell except the priest, where it is the heaven side (``left`` /
+    ``right``) instead, so the side is revealed only there (4n+3 symbols: 15
+    for n = 3, 19 for n = 4, as in the paper).  gym-pomdps pays the reward for
+    the action taken *in* the end cell; here it is paid on entering it, which
+    shifts the return by one discount step and nothing else.
+
+    State ``(x, y, side)`` in cell coordinates (fork at (0, n), priest at
+    (n, -1)); side = -1 for heaven on the left, +1 on the right.
+    """
+
+    state_dim = 3
+    oracle_dim = 3
+    _NORTH, _SOUTH, _EAST, _WEST = 0, 1, 2, 3
+
+    def __init__(
+        self,
+        *,
+        horizon: int = 100,
+        observation_noise_std: float = 0.0,
+        seed: int | None = None,
+        corridor_length: int = 3,
+    ) -> None:
+        super().__init__(
+            horizon=horizon,
+            observation_noise_std=observation_noise_std,
+            seed=seed,
+        )
+        if (
+            isinstance(corridor_length, bool)
+            or not isinstance(corridor_length, (int, np.integer))
+            or corridor_length < 1
+        ):
+            raise ValueError("corridor_length must be a positive integer")
+        n = int(corridor_length)
+        self.corridor_length = n
+        self.num_cells = 2 + 4 * n
+        self.priest_cell = 4 * n + 1
+        self.left_end = 2 * n
+        self.right_end = 3 * n
+        self.observation_dim = self.num_cells + 1  # (num_cells - 1) cell symbols + left + right
+        self.action_spec = ActionSpec.discrete(4)
+        self._coordinates = np.zeros((self.num_cells, 2), dtype=np.float64)
+        for cell in range(n + 1):
+            self._coordinates[cell] = (0.0, float(cell))
+        for offset in range(1, n + 1):
+            self._coordinates[n + offset] = (-float(offset), float(n))
+            self._coordinates[2 * n + offset] = (float(offset), float(n))
+        for offset in range(n + 1):
+            self._coordinates[3 * n + 1 + offset] = (float(offset), -1.0)
+        self._moves = self._transition_table()
+
+    def _transition_table(self) -> np.ndarray:
+        """``moves[cell, action]`` -> next cell, transcribed from the gym-pomdps generator."""
+
+        n = self.corridor_length
+        moves = np.tile(np.arange(self.num_cells)[:, None], (1, 4))
+        for cell in range(self.num_cells):
+            if 0 <= cell < n:
+                moves[cell, self._NORTH] = cell + 1
+            elif cell == 3 * n + 1:
+                moves[cell, self._NORTH] = 0
+            if 0 < cell <= n:
+                moves[cell, self._SOUTH] = cell - 1
+            elif cell == 0:
+                moves[cell, self._SOUTH] = 3 * n + 1
+            if n + 1 <= cell < 2 * n:
+                moves[cell, self._EAST] = cell - 1
+            if cell == n:
+                moves[cell, self._EAST] = 2 * n + 1
+            if 2 * n < cell < 3 * n or 3 * n < cell < self.num_cells - 1:
+                moves[cell, self._EAST] = cell + 1
+            if n <= cell < 2 * n:
+                moves[cell, self._WEST] = cell + 1
+            elif cell == 2 * n + 1:
+                moves[cell, self._WEST] = n
+            elif 2 * n < cell <= 3 * n or 3 * n + 1 < cell < self.num_cells:
+                moves[cell, self._WEST] = cell - 1
+        return moves
+
+    def _cell(self) -> int:
+        assert self._state is not None
+        x, y, _ = self._state
+        matches = np.flatnonzero(np.all(self._coordinates == (x, y), axis=1))
+        assert matches.size == 1
+        return int(matches[0])
+
+    def _symbol(self) -> int:
+        assert self._state is not None
+        cell = self._cell()
+        if cell == self.priest_cell:
+            return self.num_cells - 1 + (0 if self._state[2] < 0 else 1)
+        return cell
+
+    def _observation(self) -> np.ndarray:
+        one_hot = np.zeros(self.observation_dim, dtype=np.float64)
+        one_hot[self._symbol()] = 1.0
+        return self._add_observation_noise(one_hot)
+
+    def oracle_features(self) -> np.ndarray:
+        """Return the cell coordinates scaled by the corridor length and the heaven side."""
+
+        if self._state is None:
+            raise RuntimeError("The environment has not been reset")
+        x, y, side = self._state
+        n = float(self.corridor_length)
+        return np.asarray([x / n, y / n, side], dtype=np.float32)
+
+    def reset(self, seed: int | None = None) -> tuple[np.ndarray, dict[str, Any]]:
+        self._start_reset(seed)
+        side = -1.0 if self._rng.random() < 0.5 else 1.0
+        x, y = self._coordinates[0]
+        self._state = np.array([x, y, side], dtype=np.float64)
+        return self._observation(), self._info()
+
+    def step(self, action: Any) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+        self._before_step()
+        selected = self.action_spec.validate(action)
+        assert isinstance(selected, int) and self._state is not None
+        side = float(self._state[2])
+        cell = int(self._moves[self._cell(), selected])
+        x, y = self._coordinates[cell]
+        self._state = np.array([x, y, side], dtype=np.float64)
+        reward = 0.0
+        terminated = cell in (self.left_end, self.right_end)
+        if terminated:
+            heaven = self.left_end if side < 0 else self.right_end
+            reward = 1.0 if cell == heaven else -1.0
+        terminated, truncated = self._finish_step(bool(terminated))
+        return self._observation(), reward, terminated, truncated, self._info()
+
+
+_CAR_FLAG_KEYS = {
+    "horizon",
+    "observation_noise_std",
+    "max_speed",
+    "power",
+    "position_limit",
+    "flag_position",
+    "priest_position",
+    "priest_range",
+    "start_range",
+    "step_cost",
+    "flag_reward",
+}
+_HEAVEN_HELL_KEYS = {"horizon", "observation_noise_std", "corridor_length"}
+
+
 def _factory_kwargs(config: Mapping[str, Any] | None, allowed: set[str]) -> dict[str, Any]:
     if config is None:
         return {}
@@ -1327,8 +1611,14 @@ def make_env(
     if key in {"mountainhike", "mountainhikev0", "deathvalley", "deathvalleyv0"}:
         kwargs = _factory_kwargs(config, _MOUNTAIN_HIKE_KEYS)
         return MountainHikeEnv(seed=seed, **kwargs)
+    if key in {"carflag", "carflagv0"}:
+        kwargs = _factory_kwargs(config, _CAR_FLAG_KEYS)
+        return CarFlagEnv(seed=seed, **kwargs)
+    if key in {"heavenhell", "heavenhellv0"}:
+        kwargs = _factory_kwargs(config, _HEAVEN_HELL_KEYS)
+        return HeavenHellEnv(seed=seed, **kwargs)
 
     raise ValueError(
         f"Unknown environment {name!r}; expected masked_cartpole, masked_pendulum, "
-        "masked_mountain_car_continuous, light_dark, or mountain_hike"
+        "masked_mountain_car_continuous, light_dark, mountain_hike, car_flag, or heaven_hell"
     )

@@ -52,6 +52,24 @@ _PENDULUM_ALIASES = frozenset({"maskedpendulum", "pendulum", "pendulumv0", "pend
 # U(-speed, speed)); the legacy defaults (pi, 1) are the gym swing-up start.
 _PENDULUM_TASK_KEYS = _ENVIRONMENT_TASK_KEYS | frozenset({"initial_angle_range", "initial_speed_range"})
 _PENDULUM_TASK_DEFAULTS: dict[str, Any] = {"initial_angle_range": math.pi, "initial_speed_range": 1.0}
+# Information-gathering tasks from the asymmetric-RL literature (sb_pomdp.envs.CarFlagEnv /
+# HeavenHellEnv); the optional keys default to the published constants.
+_CAR_FLAG_ALIASES = frozenset({"carflag", "carflagv0"})
+_CAR_FLAG_TASK_DEFAULTS: dict[str, Any] = {
+    "max_speed": 0.07,
+    "power": 0.0015,
+    "position_limit": 1.1,
+    "flag_position": 1.0,
+    "priest_position": 0.5,
+    "priest_range": 0.2,
+    "start_range": 0.2,
+    "step_cost": 0.01,
+    "flag_reward": 1.0,
+}
+_CAR_FLAG_TASK_KEYS = _ENVIRONMENT_TASK_KEYS | frozenset(_CAR_FLAG_TASK_DEFAULTS)
+_HEAVEN_HELL_ALIASES = frozenset({"heavenhell", "heavenhellv0"})
+_HEAVEN_HELL_TASK_DEFAULTS: dict[str, Any] = {"corridor_length": 3}
+_HEAVEN_HELL_TASK_KEYS = _ENVIRONMENT_TASK_KEYS | frozenset(_HEAVEN_HELL_TASK_DEFAULTS)
 _MOUNTAIN_HIKE_TASK_KEYS = frozenset(
     {
         "horizon",
@@ -542,6 +560,8 @@ def _validate_environment(value: Any, requested_tasks: Sequence[str]) -> Mapping
         is_light_dark = normalized_name in _LIGHT_DARK_ALIASES
         is_mountain_hike = normalized_name in _MOUNTAIN_HIKE_ALIASES
         is_pendulum = normalized_name in _PENDULUM_ALIASES
+        is_car_flag = normalized_name in _CAR_FLAG_ALIASES
+        is_heaven_hell = normalized_name in _HEAVEN_HELL_ALIASES
         expected_keys = (
             _LIGHT_DARK_TASK_KEYS
             if is_light_dark
@@ -549,6 +569,10 @@ def _validate_environment(value: Any, requested_tasks: Sequence[str]) -> Mapping
             if is_mountain_hike
             else _PENDULUM_TASK_KEYS
             if is_pendulum
+            else _CAR_FLAG_TASK_KEYS
+            if is_car_flag
+            else _HEAVEN_HELL_TASK_KEYS
+            if is_heaven_hell
             else _ENVIRONMENT_TASK_KEYS
         )
         path = f"environment.tasks.{task_name}"
@@ -568,6 +592,12 @@ def _validate_environment(value: Any, requested_tasks: Sequence[str]) -> Mapping
             if angle > math.pi:
                 raise ConfigError(f"{path}.initial_angle_range cannot exceed pi")
             _number(task["initial_speed_range"], f"{path}.initial_speed_range", minimum=0.0)
+        if is_car_flag:
+            for key in sorted(_CAR_FLAG_TASK_DEFAULTS):
+                minimum = None if key == "priest_position" else 0.0
+                _number(task[key], f"{path}.{key}", minimum=minimum)
+        if is_heaven_hell:
+            _integer(task["corridor_length"], f"{path}.corridor_length")
 
     missing = [task for task in requested_tasks if task not in tasks]
     if missing:
@@ -917,6 +947,26 @@ def _fill_pendulum_task_defaults(config: dict[str, Any]) -> None:
             task.setdefault(key, deepcopy(default))
 
 
+def _fill_alias_task_defaults(
+    config: dict[str, Any], aliases: frozenset[str], defaults: Mapping[str, Any]
+) -> None:
+    """Insert *defaults* into every task block whose name is one of *aliases*, in place."""
+
+    environment = config.get("environment")
+    if not isinstance(environment, dict):
+        return
+    tasks = environment.get("tasks")
+    if not isinstance(tasks, dict):
+        return
+    for task_name, task in tasks.items():
+        if not isinstance(task_name, str) or not isinstance(task, dict):
+            continue
+        if _normalized_task_name(task_name) not in aliases:
+            continue
+        for key, default in defaults.items():
+            task.setdefault(key, deepcopy(default))
+
+
 def _fill_light_dark_task_defaults(config: dict[str, Any]) -> None:
     """Insert the Light-Dark post-campaign task keys in *config*, in place."""
 
@@ -962,6 +1012,8 @@ def normalize_legacy_resolved_config(config: Mapping[str, Any]) -> dict[str, Any
     _fill_light_dark_task_defaults(result)
     _fill_mountain_hike_task_defaults(result)
     _fill_pendulum_task_defaults(result)
+    _fill_alias_task_defaults(result, _CAR_FLAG_ALIASES, _CAR_FLAG_TASK_DEFAULTS)
+    _fill_alias_task_defaults(result, _HEAVEN_HELL_ALIASES, _HEAVEN_HELL_TASK_DEFAULTS)
     return result
 
 
