@@ -644,6 +644,40 @@ LANGEVIN_SCHEDULE_PARAMETERS = frozenset(
 )
 
 
+def langevin_schedule_summary(model: torch.nn.Module) -> dict[str, tuple[float, float, float]]:
+    """(mean, min, max) of each learned ULA schedule; empty when none is learned."""
+
+    belief = getattr(model, "belief", None)
+    summary: dict[str, tuple[float, float, float]] = {}
+    for name, accessor in (
+        ("step_size", "step_size_schedule"),
+        ("temperature", "temperature_schedule"),
+    ):
+        schedule_fn = getattr(belief, accessor, None)
+        schedule = schedule_fn() if callable(schedule_fn) else None
+        if schedule is None:
+            continue
+        values = schedule.detach().float()
+        summary[name] = (
+            float(values.mean()),
+            float(values.min()),
+            float(values.max()),
+        )
+    return summary
+
+
+def _log_langevin_schedules(model: torch.nn.Module, update: int) -> None:
+    for name, (mean, low, high) in langevin_schedule_summary(model).items():
+        LOGGER.info(
+            "langevin %s update=%d mean=%.4f min=%.4f max=%.4f",
+            name,
+            update,
+            mean,
+            low,
+            high,
+        )
+
+
 def langevin_schedule_parameter_names(model: torch.nn.Module) -> list[str]:
     """Names of the learned per-step ULA step-size / temperature schedules."""
 
@@ -2344,6 +2378,7 @@ def train_single(
                 "n/a" if not update_returns else f"{np.mean(update_returns):.3f}",
                 row["steps_per_second"],
             )
+            _log_langevin_schedules(model, update)
 
         should_evaluate = (
             update % int(experiment_config["eval_interval_updates"]) == 0
