@@ -640,7 +640,7 @@ def _environment_actions(action_spec: ActionSpec, action: torch.Tensor) -> np.nd
 
 
 LANGEVIN_SCHEDULE_PARAMETERS = frozenset(
-    {"langevin_log_step_size", "langevin_log_temperature"}
+    {"langevin_log_step_size", "langevin_log_temperature", "langevin_log_noise_scale"}
 )
 
 
@@ -652,6 +652,7 @@ def langevin_schedule_summary(model: torch.nn.Module) -> dict[str, tuple[float, 
     for name, accessor in (
         ("step_size", "step_size_schedule"),
         ("temperature", "temperature_schedule"),
+        ("noise_scale", "noise_scale_schedule"),
     ):
         schedule_fn = getattr(belief, accessor, None)
         schedule = schedule_fn() if callable(schedule_fn) else None
@@ -701,15 +702,21 @@ def build_optimizer(
     lets the schedule travel without touching the policy and energy rates.
     At the default multiplier 1.0 (and whenever no schedule is learned) the
     optimizer is the original single-group Adam, so checkpoints written by
-    earlier runs load unchanged.
+    earlier runs load unchanged.  ``ppo.weight_decay`` > 0 switches to AdamW
+    (decoupled decay) on the network weights; the log-space ULA schedules are
+    never decayed, since decaying them would pull the chain toward the
+    geometric centre of their bounds rather than toward zero.
     """
 
     learning_rate = float(ppo_config["learning_rate"])
     multiplier = float(ppo_config.get("langevin_schedule_lr_multiplier", 1.0))
     if not multiplier > 0.0:
         raise ValueError("langevin_schedule_lr_multiplier must be positive")
+    weight_decay = float(ppo_config.get("weight_decay", 0.0))
+    if weight_decay < 0.0:
+        raise ValueError("weight_decay must be non-negative")
     schedule_names = set(langevin_schedule_parameter_names(model))
-    if multiplier == 1.0 or not schedule_names:
+    if weight_decay == 0.0 and (multiplier == 1.0 or not schedule_names):
         return torch.optim.Adam(model.parameters(), lr=learning_rate, eps=1e-5)
     main_parameters = [
         parameter
@@ -721,14 +728,17 @@ def build_optimizer(
         for name, parameter in model.named_parameters()
         if name in schedule_names
     ]
-    return torch.optim.Adam(
-        [
-            {"params": main_parameters},
-            {"params": schedule_parameters, "lr": learning_rate * multiplier},
-        ],
-        lr=learning_rate,
-        eps=1e-5,
-    )
+    groups: list[dict[str, Any]] = [{"params": main_parameters, "weight_decay": weight_decay}]
+    if schedule_parameters:
+        groups.append(
+            {
+                "params": schedule_parameters,
+                "lr": learning_rate * multiplier,
+                "weight_decay": 0.0,
+            }
+        )
+    optimizer_class = torch.optim.AdamW if weight_decay > 0.0 else torch.optim.Adam
+    return optimizer_class(groups, lr=learning_rate, eps=1e-5)
 
 
 @torch.no_grad()

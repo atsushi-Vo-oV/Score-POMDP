@@ -405,7 +405,9 @@ class ScoreBeliefActorCritic(nn.Module):
         alpha_temperature = float(model_config.get("alpha_temperature", 1.0))
         temperature_learnable = bool(model_config.get("langevin_temperature_learnable", False))
         step_size_learnable = bool(model_config.get("langevin_step_size_learnable", False))
-        needs_schedule_length = temperature_learnable or step_size_learnable
+        noise_scale = model_config.get("langevin_noise_scale", None)
+        noise_scale_learnable = bool(model_config.get("langevin_noise_scale_learnable", False))
+        needs_schedule_length = temperature_learnable or step_size_learnable or noise_scale_learnable
         self.belief = EnergyBelief(
             observation_dim,
             state_dim,
@@ -426,6 +428,8 @@ class ScoreBeliefActorCritic(nn.Module):
             langevin_schedule_bound=str(
                 model_config.get("langevin_schedule_bound", "clamp")
             ),
+            langevin_noise_scale=None if noise_scale is None else float(noise_scale),
+            langevin_noise_scale_learnable=noise_scale_learnable,
             energy_network_kind=str(model_config.get("energy_network_kind", "mlp")),
             kan_grid_size=int(model_config.get("kan_grid_size", 8)),
             kan_spline_order=int(model_config.get("kan_spline_order", 3)),

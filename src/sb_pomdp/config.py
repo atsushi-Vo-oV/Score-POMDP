@@ -161,6 +161,8 @@ _MODEL_KEYS = frozenset(
         "langevin_warm_start",
         "langevin_step_size_learnable",
         "langevin_schedule_bound",
+        "langevin_noise_scale",
+        "langevin_noise_scale_learnable",
         "particle_clip",
         "score_clip",
         "energy_hidden",
@@ -226,6 +228,7 @@ _PPO_KEYS = frozenset(
         "bootstrap_on_truncation",
         "value_target_transform",
         "langevin_schedule_lr_multiplier",
+        "weight_decay",
         "algorithm",
         "p3o_eta",
         "p3o_resample_interval",
@@ -246,6 +249,8 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         "value_target_transform": "none",
         # The learned Langevin schedules shared the policy learning rate.
         "langevin_schedule_lr_multiplier": 1.0,
+        # Plain Adam: no decoupled weight decay.
+        "weight_decay": 0.0,
         # PPO was the only policy improver before the P3O-style tilted
         # weighted-maximum-likelihood trainer arrived.
         "algorithm": "ppo",
@@ -263,6 +268,9 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         "langevin_warm_start": False,
         "langevin_step_size_learnable": False,
         "langevin_schedule_bound": "clamp",
+        # The chain noise was sqrt(2 alpha tau) before the decoupled coefficient.
+        "langevin_noise_scale": None,
+        "langevin_noise_scale_learnable": False,
         "policy_head_kind": "mlp",
         "alpha_pieces": 16,
         "alpha_temperature": 1.0,
@@ -682,6 +690,19 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
     )
     if bound not in {"clamp", "sigmoid"}:
         raise ConfigError("model.langevin_schedule_bound must be clamp or sigmoid")
+    if section["langevin_noise_scale"] is not None:
+        _positive_number(section["langevin_noise_scale"], "model.langevin_noise_scale")
+    _boolean(section["langevin_noise_scale_learnable"], "model.langevin_noise_scale_learnable")
+    if section["langevin_noise_scale_learnable"]:
+        if section["langevin_noise_scale"] is None:
+            raise ConfigError(
+                "model.langevin_noise_scale_learnable requires model.langevin_noise_scale"
+            )
+        if section["langevin_temperature_learnable"]:
+            raise ConfigError(
+                "model.langevin_noise_scale_learnable and model.langevin_temperature_learnable "
+                "cannot be combined"
+            )
     for key in ("particle_clip", "score_clip"):
         _number(section[key], f"model.{key}", minimum=0.0)
     _positive_integer_list(section["energy_hidden"], "model.energy_hidden")
@@ -767,7 +788,8 @@ def _validate_ppo(value: Any) -> Mapping[str, Any]:
         section["langevin_schedule_lr_multiplier"],
         "ppo.langevin_schedule_lr_multiplier",
     )
-    algorithm = _nonempty_string(section["algorithm"], "ppo.algorithm")
+    _number(section["weight_decay"], "ppo.weight_decay", minimum=0.0)
+    algorithm =_nonempty_string(section["algorithm"], "ppo.algorithm")
     if algorithm not in {"ppo", "p3o_wml"}:
         raise ConfigError("ppo.algorithm must be ppo or p3o_wml")
     _positive_number(section["p3o_eta"], "ppo.p3o_eta")

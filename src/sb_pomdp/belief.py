@@ -74,6 +74,11 @@ _LOG_TEMPERATURE_MAX = math.log(4.0)
 # discretised chain away from a frozen or numerically unstable regime.
 _LOG_STEP_SIZE_MIN = math.log(1e-4)
 _LOG_STEP_SIZE_MAX = math.log(0.5)
+
+# Bounds for the learned per-step log-noise-scale schedule ``beta_l`` (the
+# coefficient of the Gaussian increment when it is decoupled from the drift).
+_LOG_NOISE_SCALE_MIN = math.log(1e-3)
+_LOG_NOISE_SCALE_MAX = math.log(2.0)
 _SCHEDULE_BOUNDS = ("clamp", "sigmoid")
 _LOGIT_EPS = 1e-6
 
@@ -125,7 +130,12 @@ class EnergyBelief(nn.Module):
     becomes a trained parameter.  ``langevin_step_size_learnable`` likewise
     turns the per-step drift schedule ``alpha_l`` into a trained parameter
     initialised at the configured step size, overriding the ``step_size``
-    argument of the update.  ``langevin_schedule_bound`` selects how the
+    argument of the update.  ``langevin_noise_scale`` decouples the Gaussian
+    increment from the drift: the chain becomes ``x + alpha_l * score +
+    beta_l * xi`` with ``beta_l`` the given constant (the coupled sampler has
+    ``beta = sqrt(2 alpha tau)``), and ``langevin_noise_scale_learnable``
+    makes the per-step ``log beta_l`` a trained parameter initialised there.
+    ``langevin_schedule_bound`` selects how the
     learned schedules are kept inside their ranges (``clamp`` = hard
     projection with a dead gradient outside, ``sigmoid`` = smooth bound with
     a live gradient everywhere).  ``langevin_warm_start`` initialises the chain
@@ -157,6 +167,8 @@ class EnergyBelief(nn.Module):
         langevin_step_size: float | None = None,
         langevin_steps: int | None = None,
         langevin_schedule_bound: str = "clamp",
+        langevin_noise_scale: float | None = None,
+        langevin_noise_scale_learnable: bool = False,
         energy_network_kind: str = "mlp",
         kan_grid_size: int = 8,
         kan_spline_order: int = 3,
@@ -222,6 +234,38 @@ class EnergyBelief(nn.Module):
             )
         else:
             self.langevin_log_step_size = None
+        if langevin_noise_scale is not None and not float(langevin_noise_scale) > 0.0:
+            raise ValueError("langevin_noise_scale must be positive")
+        self.langevin_noise_scale = (
+            None if langevin_noise_scale is None else float(langevin_noise_scale)
+        )
+        if langevin_noise_scale_learnable:
+            if self.langevin_noise_scale is None:
+                raise ValueError(
+                    "a learnable noise-scale schedule needs a positive langevin_noise_scale"
+                )
+            if langevin_temperature_learnable:
+                raise ValueError(
+                    "langevin_noise_scale_learnable and langevin_temperature_learnable "
+                    "both parameterise the chain noise; choose one"
+                )
+            if langevin_steps is None or int(langevin_steps) <= 0:
+                raise ValueError(
+                    "a learnable noise-scale schedule needs a positive langevin_steps"
+                )
+            self.langevin_log_noise_scale: nn.Parameter | None = nn.Parameter(
+                torch.full(
+                    (int(langevin_steps),),
+                    _unbound_log_schedule(
+                        math.log(self.langevin_noise_scale),
+                        _LOG_NOISE_SCALE_MIN,
+                        _LOG_NOISE_SCALE_MAX,
+                        self.langevin_schedule_bound,
+                    ),
+                )
+            )
+        else:
+            self.langevin_log_noise_scale = None
         self.kan_match_parameters = bool(kan_match_parameters)
         self.energy_hidden_dims: dict[str, list[int]] = {}
 
@@ -553,6 +597,18 @@ class EnergyBelief(nn.Module):
             self.langevin_schedule_bound,
         ).exp()
 
+    def noise_scale_schedule(self) -> torch.Tensor | None:
+        """Effective per-step ``beta_l`` (bounded, exponentiated) or ``None``."""
+
+        if self.langevin_log_noise_scale is None:
+            return None
+        return _bound_log_schedule(
+            self.langevin_log_noise_scale,
+            _LOG_NOISE_SCALE_MIN,
+            _LOG_NOISE_SCALE_MAX,
+            self.langevin_schedule_bound,
+        ).exp()
+
     def step_size_schedule(self) -> torch.Tensor | None:
         """Effective per-step ``alpha_l`` (bounded, exponentiated) or ``None``."""
 
@@ -683,6 +739,15 @@ class EnergyBelief(nn.Module):
                 )
             step_alphas = self.step_size_schedule()
 
+        if self.langevin_log_noise_scale is None:
+            step_betas = None
+        else:
+            if self.langevin_log_noise_scale.shape[0] != len(steps):
+                raise ValueError(
+                    "the learned noise-scale schedule length must equal the Langevin step count"
+                )
+            step_betas = self.noise_scale_schedule()
+
         with torch.set_grad_enabled(track_grad):
             for step_index, alpha in enumerate(steps):
                 score = self._score_at_for_branch(
@@ -696,7 +761,11 @@ class EnergyBelief(nn.Module):
                     detach_query=not track_grad,
                 )
                 alpha_value = alpha if step_alphas is None else step_alphas[step_index]
-                if step_alphas is None and step_temperatures is None:
+                if step_betas is not None:
+                    noise_scale = step_betas[step_index]
+                elif self.langevin_noise_scale is not None:
+                    noise_scale = self.langevin_noise_scale
+                elif step_alphas is None and step_temperatures is None:
                     noise_scale = math.sqrt(2.0 * alpha * self.langevin_temperature)
                 else:
                     temperature_value = (
