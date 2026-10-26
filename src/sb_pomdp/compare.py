@@ -38,6 +38,7 @@ from .train import (
     source_sha256,
     train_single,
 )
+from .prediction_schedule import PredictionSchedule
 from .train_baselines import train_baseline_single
 
 SCORE_METHODS = frozenset(
@@ -300,7 +301,13 @@ def _configured_updates(config: ExperimentConfig) -> int:
 
     ppo_config = config["ppo"]
     rollout_batch_size = int(ppo_config["num_envs"]) * int(ppo_config["rollout_steps"])
-    return math.ceil(int(ppo_config["total_steps"]) / rollout_batch_size)
+    # Interleaved prediction phases add updates on top of the PPO count (identical to the
+    # PPO count when they are off), exactly as both trainers derive their target.
+    return PredictionSchedule.from_config(
+        config["model"],
+        rollout_batch_size=rollout_batch_size,
+        ppo_updates=math.ceil(int(ppo_config["total_steps"]) / rollout_batch_size),
+    ).total_updates
 
 
 def _committed_checkpoint_update(checkpoint_path: Path) -> int | None:

@@ -73,3 +73,12 @@ def test_config_requires_interval_and_phase_length_together() -> None:
         validate_config(resolved)
     resolved["model"]["prediction_phase_updates"] = 5
     validate_config(resolved)
+
+
+def test_the_comparison_driver_counts_prediction_updates_toward_completion() -> None:
+    from sb_pomdp.compare import _configured_updates
+
+    plain = load_config("config/core4_tps.json")
+    assert _configured_updates(plain) == 100
+    scheduled = load_config("config/trysvgd_mirror2_tf-ula.json")
+    assert _configured_updates(scheduled) == 98 + 200 + 35  # a resumed shard is complete only at 333
