@@ -184,6 +184,8 @@ _MODEL_KEYS = frozenset(
         "langevin_schedule_bound",
         "langevin_noise_scale",
         "langevin_noise_scale_learnable",
+        "particle_sampler",
+        "smi_component_scale",
         "particle_clip",
         "score_clip",
         "energy_hidden",
@@ -292,6 +294,9 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         # The chain noise was sqrt(2 alpha tau) before the decoupled coefficient.
         "langevin_noise_scale": None,
         "langevin_noise_scale_learnable": False,
+        # SVGD / SMI transports arrived after core6; ULA is the original sampler.
+        "particle_sampler": "ula",
+        "smi_component_scale": 0.1,
         "policy_head_kind": "mlp",
         "alpha_pieces": 16,
         "alpha_temperature": 1.0,
@@ -731,6 +736,19 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
                 "model.langevin_noise_scale_learnable and model.langevin_temperature_learnable "
                 "cannot be combined"
             )
+    sampler = _nonempty_string(section["particle_sampler"], "model.particle_sampler")
+    if sampler not in {"ula", "svgd", "smi"}:
+        raise ConfigError("model.particle_sampler must be ula, svgd or smi")
+    _positive_number(section["smi_component_scale"], "model.smi_component_scale")
+    if sampler != "ula" and (
+        section["langevin_noise_scale"] is not None
+        or section["langevin_noise_scale_learnable"]
+        or section["langevin_temperature_learnable"]
+    ):
+        raise ConfigError(
+            "model.particle_sampler svgd / smi is a deterministic transport; "
+            "model.langevin_noise_scale and the learned noise or temperature schedules do not apply"
+        )
     for key in ("particle_clip", "score_clip"):
         _number(section[key], f"model.{key}", minimum=0.0)
     _positive_integer_list(section["energy_hidden"], "model.energy_hidden")

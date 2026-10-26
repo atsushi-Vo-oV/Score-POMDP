@@ -44,6 +44,8 @@ _LEGACY_MODEL_DEFAULTS: dict[str, object] = {
     "langevin_schedule_bound": "clamp",
     "langevin_noise_scale": None,
     "langevin_noise_scale_learnable": False,
+    "particle_sampler": "ula",
+    "smi_component_scale": 0.1,
     "policy_head_kind": "mlp",
     "alpha_pieces": 16,
     "alpha_temperature": 1.0,
