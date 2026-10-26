@@ -81,6 +81,9 @@ _LOG_NOISE_SCALE_MIN = math.log(1e-3)
 _LOG_NOISE_SCALE_MAX = math.log(2.0)
 _SCHEDULE_BOUNDS = ("clamp", "sigmoid")
 PARTICLE_SAMPLERS = ("ula", "svgd", "smi")
+# SMI component scales s_k are kept in [1e-3, 2] (same range as the ULA noise scale).
+_LOG_SMI_SCALE_MIN = math.log(1e-3)
+_LOG_SMI_SCALE_MAX = math.log(2.0)
 
 
 def _rbf_stein_direction(particles: torch.Tensor, drive: torch.Tensor) -> torch.Tensor:
@@ -109,24 +112,30 @@ def _rbf_stein_direction(particles: torch.Tensor, drive: torch.Tensor) -> torch.
 
 def _mixture_entropy_gradient(
     means: torch.Tensor,
-    samples: torch.Tensor,
-    component_scale: float,
+    log_scales: torch.Tensor,
+    noise: torch.Tensor,
     *,
     create_graph: bool,
-) -> torch.Tensor:
-    """``-grad_{theta_j} log q(z_j)`` for the equal-weight Gaussian mixture ``q = mean_l N(theta_l, s^2 I)``.
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """``-grad log q(z_j)`` w.r.t. ``(theta_j, log s_j)`` for ``q = mean_l N(theta_l, diag(s_l^2))``.
 
-    ``samples = means + s * eps`` are the reparameterised draws of each component, so the
-    gradient runs through both the sample and the mixture means (the SMI entropy term).
+    ``z_j = theta_j + s_j * eps_j`` are the reparameterised draws of each component, so the
+    gradient runs through the draw and through every mixture component (the SMI entropy term).
     """
 
     with torch.enable_grad():
         theta = means if means.requires_grad else means.detach().requires_grad_(True)
-        draws = theta + (samples - means).detach()
-        squared = (draws[:, :, None, :] - theta[:, None, :, :]).square().sum(dim=-1)
-        log_mixture = torch.logsumexp(-0.5 * squared / component_scale**2, dim=-1)
-        (gradient,) = torch.autograd.grad(log_mixture.sum(), theta, create_graph=create_graph)
-    return -gradient if create_graph else -gradient.detach()
+        log_s = log_scales if log_scales.requires_grad else log_scales.detach().requires_grad_(True)
+        draws = theta + log_s.exp() * noise.detach()
+        standardized = (draws[:, :, None, :] - theta[:, None, :, :]) / log_s.exp()[:, None, :, :]
+        component = -0.5 * standardized.square().sum(dim=-1) - log_s.sum(dim=-1)[:, None, :]
+        log_mixture = torch.logsumexp(component, dim=-1)
+        grad_theta, grad_log_s = torch.autograd.grad(
+            log_mixture.sum(), (theta, log_s), create_graph=create_graph
+        )
+    if not create_graph:
+        grad_theta, grad_log_s = grad_theta.detach(), grad_log_s.detach()
+    return -grad_theta, -grad_log_s
 _LOGIT_EPS = 1e-6
 
 
@@ -238,6 +247,9 @@ class EnergyBelief(nn.Module):
         if not float(smi_component_scale) > 0.0:
             raise ValueError("smi_component_scale must be positive")
         self.smi_component_scale = float(smi_component_scale)
+        # SMI particles are Gaussian components (theta_k, log s_k); the encoder reads the
+        # per-dimension log scale next to the score, so its per-particle feature is twice as wide.
+        self.score_feature_dim = (2 if self.particle_sampler == "smi" else 1) * state_dim
         if energy_network_kind not in NETWORK_KINDS:
             raise ValueError("energy_network_kind must be mlp or kan")
         self.energy_network_kind = str(energy_network_kind)
@@ -807,12 +819,18 @@ class EnergyBelief(nn.Module):
                 )
             step_betas = self.noise_scale_schedule()
 
+        log_scales = (
+            torch.full_like(particles, math.log(self.smi_component_scale))
+            if self.particle_sampler == "smi"
+            else None
+        )
         with torch.set_grad_enabled(track_grad):
             for step_index, alpha in enumerate(steps):
                 alpha_value = alpha if step_alphas is None else step_alphas[step_index]
                 if self.particle_sampler != "ula":
-                    particles = self._stein_step(
+                    particles, log_scales = self._stein_step(
                         particles,
+                        log_scales,
                         increments[:, step_index],
                         alpha_value,
                         observation,
@@ -866,6 +884,8 @@ class EnergyBelief(nn.Module):
                 create_graph=track_grad,
                 detach_query=not track_grad,
             )
+            if log_scales is not None:
+                scores = torch.cat((scores, log_scales), dim=-1)
         if track_grad:
             return particles, scores
         return particles.detach(), scores.detach()
@@ -873,6 +893,7 @@ class EnergyBelief(nn.Module):
     def _stein_step(
         self,
         particles: torch.Tensor,
+        log_scales: torch.Tensor | None,
         noise: torch.Tensor,
         alpha: float | torch.Tensor,
         observation: torch.Tensor,
@@ -882,44 +903,52 @@ class EnergyBelief(nn.Module):
         potential_branch: PotentialBranch,
         *,
         track_grad: bool,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """One SVGD or SMI transport step ``x <- x + alpha * phi(x)`` of the K particles.
 
         SVGD drives the kernelised update with the learned score at the particles and uses no
-        noise.  SMI treats each particle as the mean of ``N(theta_k, s^2 I)``: the drive is the
-        reparameterised mixture-ELBO gradient ``score(theta_k + s * eps_k) - grad log q(z_k)``
-        with ``eps`` the saved step noise, so replay stays exact.
+        noise.  SMI (Stein mixture inference) treats particle k as the Gaussian component
+        ``N(theta_k, diag(s_k^2))`` and transports ``(theta_k, log s_k)`` jointly: the drive is the
+        reparameterised gradient of the mixture ELBO ``E_{q_k}[log p(z) - log q(z)]`` with
+        ``z_k = theta_k + s_k * eps_k`` and ``eps`` the saved step noise, so replay stays exact,
+        and the kernel acts on the concatenated component parameters.
         """
 
+        def score(query: torch.Tensor) -> torch.Tensor:
+            return self._score_at_for_branch(
+                query,
+                observation,
+                previous_particles,
+                previous_action,
+                initial,
+                potential_branch,
+                create_graph=track_grad,
+                detach_query=not track_grad,
+            )
+
         if self.particle_sampler == "svgd":
-            drive = self._score_at_for_branch(
-                particles,
-                observation,
-                previous_particles,
-                previous_action,
-                initial,
-                potential_branch,
-                create_graph=track_grad,
-                detach_query=not track_grad,
-            )
+            updated = particles + alpha * _rbf_stein_direction(particles, score(particles))
+            new_log_scales = None
         else:
-            samples = particles + self.smi_component_scale * noise
-            drive = self._score_at_for_branch(
-                samples,
-                observation,
-                previous_particles,
-                previous_action,
-                initial,
-                potential_branch,
-                create_graph=track_grad,
-                detach_query=not track_grad,
-            ) + _mixture_entropy_gradient(
-                particles, samples, self.smi_component_scale, create_graph=track_grad
+            assert log_scales is not None
+            scale = log_scales.exp()
+            sample_score = score(particles + scale * noise)
+            entropy_theta, entropy_log_scale = _mixture_entropy_gradient(
+                particles, log_scales, noise, create_graph=track_grad
             )
-        updated = particles + alpha * _rbf_stein_direction(particles, drive)
+            drive = torch.cat(
+                (sample_score + entropy_theta, sample_score * noise * scale + entropy_log_scale), dim=-1
+            )
+            parameters = torch.cat((particles, log_scales), dim=-1)
+            moved = parameters + alpha * _rbf_stein_direction(parameters, drive)
+            updated, new_log_scales = moved.split(self.state_dim, dim=-1)
+            new_log_scales = new_log_scales.clamp(_LOG_SMI_SCALE_MIN, _LOG_SMI_SCALE_MAX)
         if self.particle_clip > 0:
             updated = updated.clamp(-self.particle_clip, self.particle_clip)
-        return updated if track_grad else updated.detach()
+        if not track_grad:
+            updated = updated.detach()
+            new_log_scales = None if new_log_scales is None else new_log_scales.detach()
+        return updated, new_log_scales
 
     def sample_particles(
         self,

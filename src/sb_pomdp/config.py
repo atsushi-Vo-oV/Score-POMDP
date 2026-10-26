@@ -749,6 +749,13 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
             "model.particle_sampler svgd / smi is a deterministic transport; "
             "model.langevin_noise_scale and the learned noise or temperature schedules do not apply"
         )
+    if sampler == "smi" and not (
+        section["alpha_use_scores"] if section["encoder_kind"] == "alpha_pool" else section["encoder_use_scores"]
+    ):
+        raise ConfigError(
+            "model.particle_sampler smi passes the component log scales with the scores; "
+            "the belief encoder must read scores"
+        )
     for key in ("particle_clip", "score_clip"):
         _number(section[key], f"model.{key}", minimum=0.0)
     _positive_integer_list(section["energy_hidden"], "model.energy_hidden")

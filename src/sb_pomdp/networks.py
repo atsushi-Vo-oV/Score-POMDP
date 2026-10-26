@@ -51,14 +51,18 @@ class BeliefSetEncoder(nn.Module):
         feedforward_dim: int,
         dropout: float,
         use_scores: bool = True,
+        score_dim: int | None = None,
     ) -> None:
         super().__init__()
         if d_model % num_heads:
             raise ValueError("d_model must be divisible by num_heads")
         self.state_dim = state_dim
         self.use_scores = bool(use_scores)
+        # Per-particle features read next to the position: the score (state_dim) or, for SMI,
+        # the score and the component log scale (2 * state_dim).
+        self.score_dim = state_dim if score_dim is None else int(score_dim)
         self.token_projection = nn.Sequential(
-            nn.Linear((2 if self.use_scores else 1) * state_dim, d_model),
+            nn.Linear(state_dim + (self.score_dim if self.use_scores else 0), d_model),
             nn.LayerNorm(d_model),
             nn.SiLU(),
         )
@@ -79,8 +83,8 @@ class BeliefSetEncoder(nn.Module):
         self.output_norm = nn.LayerNorm(d_model)
 
     def forward(self, particles: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:
-        if particles.shape != scores.shape:
-            raise ValueError("particles and scores must have identical shapes")
+        if scores.shape != (*particles.shape[:-1], self.score_dim):
+            raise ValueError("scores must have shape [batch, particles, score_dim]")
         if particles.ndim != 3 or particles.shape[-1] != self.state_dim:
             raise ValueError(
                 f"expected [batch, particles, {self.state_dim}], got {tuple(particles.shape)}"
@@ -108,6 +112,7 @@ class DeepSetsBeliefEncoder(nn.Module):
         feedforward_dim: int,
         dropout: float,
         use_scores: bool = True,
+        score_dim: int | None = None,
     ) -> None:
         super().__init__()
         if state_dim <= 0 or d_model <= 0 or feedforward_dim <= 0:
@@ -116,8 +121,11 @@ class DeepSetsBeliefEncoder(nn.Module):
             raise ValueError("dropout must be in [0, 1)")
         self.state_dim = state_dim
         self.use_scores = bool(use_scores)
+        # Per-particle features read next to the position: the score (state_dim) or, for SMI,
+        # the score and the component log scale (2 * state_dim).
+        self.score_dim = state_dim if score_dim is None else int(score_dim)
         self.element_encoder = nn.Sequential(
-            nn.Linear((2 if self.use_scores else 1) * state_dim, feedforward_dim),
+            nn.Linear(state_dim + (self.score_dim if self.use_scores else 0), feedforward_dim),
             nn.LayerNorm(feedforward_dim),
             nn.SiLU(),
             nn.Dropout(dropout),
@@ -134,8 +142,8 @@ class DeepSetsBeliefEncoder(nn.Module):
         )
 
     def forward(self, particles: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:
-        if particles.shape != scores.shape:
-            raise ValueError("particles and scores must have identical shapes")
+        if scores.shape != (*particles.shape[:-1], self.score_dim):
+            raise ValueError("scores must have shape [batch, particles, score_dim]")
         if particles.ndim != 3 or particles.shape[-1] != self.state_dim:
             raise ValueError(
                 f"expected [batch, particles, {self.state_dim}], got {tuple(particles.shape)}"
@@ -166,13 +174,17 @@ class AlphaPoolBeliefEncoder(nn.Module):
         feedforward_dim: int,
         *,
         use_scores: bool = False,
+        score_dim: int | None = None,
     ) -> None:
         super().__init__()
         if state_dim <= 0 or d_model <= 0 or feedforward_dim <= 0:
             raise ValueError("alpha-pool dimensions must be positive")
         self.state_dim = state_dim
         self.use_scores = bool(use_scores)
-        input_dim = (2 if self.use_scores else 1) * state_dim
+        # Per-particle features read next to the position: the score (state_dim) or, for SMI,
+        # the score and the component log scale (2 * state_dim).
+        self.score_dim = state_dim if score_dim is None else int(score_dim)
+        input_dim = state_dim + (self.score_dim if self.use_scores else 0)
         self.trunk = nn.Sequential(
             nn.Linear(input_dim, feedforward_dim),
             nn.LayerNorm(feedforward_dim),
@@ -182,8 +194,8 @@ class AlphaPoolBeliefEncoder(nn.Module):
         )
 
     def forward(self, particles: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:
-        if particles.shape != scores.shape:
-            raise ValueError("particles and scores must have identical shapes")
+        if scores.shape != (*particles.shape[:-1], self.score_dim):
+            raise ValueError("scores must have shape [batch, particles, score_dim]")
         if particles.ndim != 3 or particles.shape[-1] != self.state_dim:
             raise ValueError(
                 f"expected [batch, particles, {self.state_dim}], got {tuple(particles.shape)}"

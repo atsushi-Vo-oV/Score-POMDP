@@ -456,6 +456,7 @@ class ScoreBeliefActorCritic(nn.Module):
                     feedforward_dim=model_config["transformer_ff_dim"],
                     dropout=model_config["dropout"],
                     use_scores=encoder_use_scores,
+                    score_dim=self.belief.score_feature_dim,
                 )
             if self.encoder_kind == "alpha_pool":
                 return AlphaPoolBeliefEncoder(
@@ -463,6 +464,7 @@ class ScoreBeliefActorCritic(nn.Module):
                     d_model=model_config["d_model"],
                     feedforward_dim=model_config["transformer_ff_dim"],
                     use_scores=bool(model_config.get("alpha_use_scores", False)),
+                    score_dim=self.belief.score_feature_dim,
                 )
             return DeepSetsBeliefEncoder(
                 state_dim=state_dim,
@@ -470,6 +472,7 @@ class ScoreBeliefActorCritic(nn.Module):
                 feedforward_dim=model_config["transformer_ff_dim"],
                 dropout=model_config["dropout"],
                 use_scores=encoder_use_scores,
+                score_dim=self.belief.score_feature_dim,
             )
 
         self.encoder: nn.Module = build_encoder()
