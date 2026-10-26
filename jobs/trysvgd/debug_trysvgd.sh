@@ -5,7 +5,7 @@
 #PJM -j
 #PJM -S
 
-# DEBUG gate for try-svgd: one PPO update (4 envs, 1 epoch) preceded by one random-action prediction
+# DEBUG gate for try-svgd (mirror2 and tps; disk tag is tuned locally first): one PPO update (4 envs, 1 epoch) preceded by one random-action prediction
 # update and followed by one current-policy prediction update, for every task and model.
 # Submit from the repository root: pjsub jobs/trysvgd/debug_trysvgd.sh
 
@@ -36,10 +36,4 @@ run_arm config/trysvgd_tps_base.json particle_filter mountain_hike tps-pf
 run_arm config/trysvgd_tps_tf-ula.json score_transformer mountain_hike tps-ula
 run_arm config/trysvgd_tps_tf-svgd.json score_transformer mountain_hike tps-svgd
 run_arm config/trysvgd_tps_tf-smi.json score_transformer mountain_hike tps-smi
-run_arm config/trysvgd_tag_base.json gru disk_tag tag-gru
-run_arm config/trysvgd_tag_base.json rnn disk_tag tag-rnn
-run_arm config/trysvgd_tag_base.json particle_filter disk_tag tag-pf
-run_arm config/trysvgd_tag_tf-ula.json score_transformer disk_tag tag-ula
-run_arm config/trysvgd_tag_tf-svgd.json score_transformer disk_tag tag-svgd
-run_arm config/trysvgd_tag_tf-smi.json score_transformer disk_tag tag-smi
 echo "try-svgd debug completed all arms."

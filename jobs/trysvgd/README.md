@@ -35,6 +35,8 @@
 
 ## 投入
 
+DEBUG と gate は mirror2 と tps だけを対象にする(鬼ごっこは手元で学習できる設定を探してから)。
+
 ```
 cd ~/Belief-Score-Based-Model-trysvgd-20261026
 pjsub jobs/trysvgd/debug_trysvgd.sh
