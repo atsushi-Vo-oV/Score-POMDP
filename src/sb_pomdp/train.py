@@ -473,11 +473,22 @@ def model_for_environment(
     return model.to(device)
 
 
+def belief_latent_dim(environment: Any, model_config: Mapping[str, Any]) -> int:
+    """Dimension of the score-belief particles: ``model.belief_latent_dim`` or the simulator state size.
+
+    The particles are an unsupervised latent, so their size is a modelling choice; the legacy
+    default ties it to ``environment.state_dim``.
+    """
+
+    value = model_config.get("belief_latent_dim")
+    return int(environment.state_dim if value is None else value)
+
+
 def _construct_score_model(environment: Any, model_config: dict[str, Any]) -> ScoreBeliefActorCritic:
     spec = environment.action_spec
     model = ScoreBeliefActorCritic(
         observation_dim=environment.observation_dim,
-        state_dim=environment.state_dim,
+        state_dim=belief_latent_dim(environment, model_config),
         action_kind=spec.kind,
         action_feature_dim=spec.feature_dim,
         discrete_actions=spec.n,
@@ -905,7 +916,7 @@ def evaluate(
                 previous_particles=torch.zeros(
                     1,
                     int(model_config["num_particles"]),
-                    environment.state_dim,
+                    belief_latent_dim(environment, model_config),
                     dtype=torch.float32,
                     device=device,
                 ),
@@ -1259,7 +1270,7 @@ def _restore_trainer_state(
         batch_size=batch_size,
         observation_dim=first_environment.observation_dim,
         num_particles=num_particles,
-        state_dim=first_environment.state_dim,
+        state_dim=belief_latent_dim(first_environment, model_config),
         action_feature_dim=first_environment.action_spec.feature_dim,
         device=device,
     )
@@ -1273,7 +1284,7 @@ def _restore_trainer_state(
             history_index=index,
             observation_dim=first_environment.observation_dim,
             num_particles=num_particles,
-            state_dim=first_environment.state_dim,
+            state_dim=belief_latent_dim(first_environment, model_config),
             action_feature_dim=first_environment.action_spec.feature_dim,
             langevin_steps=langevin_steps,
             device=device,
@@ -1800,7 +1811,7 @@ def train_single(
         previous_particles=torch.zeros(
             batch.size,
             int(model_config["num_particles"]),
-            first_environment.state_dim,
+            belief_latent_dim(first_environment, model_config),
             dtype=torch.float32,
             device=device,
         ),

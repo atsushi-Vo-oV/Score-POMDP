@@ -46,6 +46,7 @@ _LEGACY_MODEL_DEFAULTS: dict[str, object] = {
     "langevin_noise_scale_learnable": False,
     "particle_sampler": "ula",
     "smi_component_scale": 0.1,
+    "belief_latent_dim": None,
     "policy_head_kind": "mlp",
     "alpha_pieces": 16,
     "alpha_temperature": 1.0,

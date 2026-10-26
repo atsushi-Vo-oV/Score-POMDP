@@ -114,3 +114,16 @@ def test_make_env_and_config_defaults() -> None:
     filled["num_ghosts"] = 1.5
     with pytest.raises(ConfigError):
         validate_config(resolved)
+
+
+def test_the_score_belief_latent_size_is_a_model_choice() -> None:
+    import torch
+
+    from sb_pomdp.train import belief_latent_dim, model_for_environment
+
+    env = make_env("disk_tag", {"horizon": 200, "observation_noise_std": 0.0}, seed=0)
+    resolved = load_config("config/core4_tps.json").to_dict()
+    assert belief_latent_dim(env, resolved["model"]) == env.state_dim == 25  # legacy: simulator state size
+    model_config = dict(resolved["model"], belief_latent_dim=6, langevin_warm_start=False)
+    model = model_for_environment(env, model_config, torch.device("cpu"))
+    assert model.belief.state_dim == 6 and model.encoder.state_dim == 6

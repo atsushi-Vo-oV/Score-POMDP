@@ -186,6 +186,7 @@ _MODEL_KEYS = frozenset(
         "langevin_noise_scale_learnable",
         "particle_sampler",
         "smi_component_scale",
+        "belief_latent_dim",
         "particle_clip",
         "score_clip",
         "energy_hidden",
@@ -297,6 +298,8 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         # SVGD / SMI transports arrived after core6; ULA is the original sampler.
         "particle_sampler": "ula",
         "smi_component_scale": 0.1,
+        # The particle latent size was the simulator state size before this key.
+        "belief_latent_dim": None,
         "policy_head_kind": "mlp",
         "alpha_pieces": 16,
         "alpha_temperature": 1.0,
@@ -740,6 +743,8 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
     if sampler not in {"ula", "svgd", "smi"}:
         raise ConfigError("model.particle_sampler must be ula, svgd or smi")
     _positive_number(section["smi_component_scale"], "model.smi_component_scale")
+    if section["belief_latent_dim"] is not None:
+        _integer(section["belief_latent_dim"], "model.belief_latent_dim")
     if sampler != "ula" and (
         section["langevin_noise_scale"] is not None
         or section["langevin_noise_scale_learnable"]
