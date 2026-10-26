@@ -187,6 +187,11 @@ _MODEL_KEYS = frozenset(
         "particle_sampler",
         "smi_component_scale",
         "belief_latent_dim",
+        "prediction_pretrain_steps",
+        "prediction_interval_updates",
+        "prediction_phase_updates",
+        "prediction_predictor_hidden",
+        "prediction_mixture_components",
         "particle_clip",
         "score_clip",
         "energy_hidden",
@@ -300,6 +305,12 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         "smi_component_scale": 0.1,
         # The particle latent size was the simulator state size before this key.
         "belief_latent_dim": None,
+        # Interleaved next-observation prediction phases (sb_pomdp.prediction_schedule); off by default.
+        "prediction_pretrain_steps": 0,
+        "prediction_interval_updates": 0,
+        "prediction_phase_updates": 0,
+        "prediction_predictor_hidden": [64],
+        "prediction_mixture_components": 4,
         "policy_head_kind": "mlp",
         "alpha_pieces": 16,
         "alpha_temperature": 1.0,
@@ -745,6 +756,15 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
     _positive_number(section["smi_component_scale"], "model.smi_component_scale")
     if section["belief_latent_dim"] is not None:
         _integer(section["belief_latent_dim"], "model.belief_latent_dim")
+    for key in ("prediction_pretrain_steps", "prediction_interval_updates", "prediction_phase_updates"):
+        _integer(section[key], f"model.{key}", minimum=0)
+    if (section["prediction_interval_updates"] > 0) != (section["prediction_phase_updates"] > 0):
+        raise ConfigError(
+            "model.prediction_interval_updates and model.prediction_phase_updates must both be "
+            "positive or both zero"
+        )
+    _positive_integer_list(section["prediction_predictor_hidden"], "model.prediction_predictor_hidden")
+    _integer(section["prediction_mixture_components"], "model.prediction_mixture_components")
     if sampler != "ula" and (
         section["langevin_noise_scale"] is not None
         or section["langevin_noise_scale_learnable"]

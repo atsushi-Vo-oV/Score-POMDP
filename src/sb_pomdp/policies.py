@@ -17,6 +17,7 @@ from .networks import (
     AlphaLSEHead,
     AlphaPoolBeliefEncoder,
     BeliefSetEncoder,
+    ConditionMixturePredictor,
     DeepSetsBeliefEncoder,
     ObservationPredictor,
     RewardPredictor,
@@ -482,6 +483,23 @@ class ScoreBeliefActorCritic(nn.Module):
             build_encoder() if self.value_encoder_mode == "separate" else None
         )
         condition_dim = model_config["d_model"]
+        prediction_enabled = int(model_config.get("prediction_pretrain_steps", 0)) > 0 or (
+            int(model_config.get("prediction_interval_updates", 0)) > 0
+            and int(model_config.get("prediction_phase_updates", 0)) > 0
+        )
+        # Head of the interleaved next-observation prediction phases (read from the policy
+        # condition, the same head every compared model gets); unused by the PPO loss.
+        self.prediction_predictor: nn.Module | None = (
+            ConditionMixturePredictor(
+                condition_dim,
+                action_feature_dim,
+                observation_dim,
+                list(model_config.get("prediction_predictor_hidden", [64])),
+                components=int(model_config.get("prediction_mixture_components", 4)),
+            )
+            if prediction_enabled
+            else None
+        )
         self.observation_prediction_coef = float(
             model_config.get("observation_prediction_coef", 0.0)
         )

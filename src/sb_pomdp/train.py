@@ -29,6 +29,7 @@ from .artifacts import RunArtifacts, SeedArtifacts
 from .buffer import BeliefReplayPrefix, RolloutBuilder
 from .config import ExperimentConfig, load_config, normalize_legacy_resolved_config
 from .envs import ActionSpec, make_env
+from .prediction_schedule import PredictionSchedule, random_actions
 from .networks import NetworkKinds, use_network_kinds
 from .policies import ScoreBeliefActorCritic
 from .ppo import encode_conditions, update_ppo, value_from_conditions
@@ -1746,7 +1747,12 @@ def train_single(
     configure_logging(artifacts.path / "run.log", verbose=verbose)
 
     rollout_batch_size = int(ppo_config["num_envs"]) * int(ppo_config["rollout_steps"])
-    configured_updates = math.ceil(int(ppo_config["total_steps"]) / rollout_batch_size)
+    prediction_schedule = PredictionSchedule.from_config(
+        model_config,
+        rollout_batch_size=rollout_batch_size,
+        ppo_updates=math.ceil(int(ppo_config["total_steps"]) / rollout_batch_size),
+    )
+    configured_updates = prediction_schedule.total_updates
     bootstrap_on_truncation = bool(ppo_config["bootstrap_on_truncation"])
     value_transform = ValueTransform.from_config(ppo_config)
     checkpoint: dict[str, Any] | None = None
@@ -1934,6 +1940,7 @@ def train_single(
 
     for update in range(start_update + 1, total_updates + 1):
         update_started = time.perf_counter()
+        phase = prediction_schedule.phase(update)
         if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(device)
         rollout_started = _start_timed_phase(
@@ -2002,6 +2009,10 @@ def train_single(
                 pre_tanh_action,
                 old_value,
             ) = _policy_from_particles(model, particles, scores, deterministic=False)
+            if phase == "pretrain":
+                # The pretraining block explores with uniformly random actions; the policy
+                # outputs above are discarded (the prediction objective does not read them).
+                action = random_actions(first_environment.action_spec, batch.size, device=device)
             if p3o_demo is not None:
                 demo_actions_np = p3o_demo.actions(
                     context.observation.detach().cpu().numpy(),
@@ -2145,20 +2156,22 @@ def train_single(
             for environment_index in np.flatnonzero(done):
                 episode_return = float(episode_returns[environment_index])
                 episode_length = int(episode_lengths[environment_index])
-                update_returns.append(episode_return)
-                update_lengths.append(episode_length)
-                completed_returns.append(episode_return)
-                completed_lengths.append(episode_length)
-                episode_rows.append(
-                    {
-                        "global_step": (
-                            (update - 1) * rollout_batch_size + (rollout_index + 1) * batch.size
-                        ),
-                        "environment": int(environment_index),
-                        "episode_return": episode_return,
-                        "episode_length": episode_length,
-                    }
-                )
+                if phase != "pretrain":  # random-action episodes stay out of the learning curve
+                    update_returns.append(episode_return)
+                    update_lengths.append(episode_length)
+                    completed_returns.append(episode_return)
+                    completed_lengths.append(episode_length)
+                    episode_rows.append(
+                        {
+                            "global_step": (
+                                (update - 1) * rollout_batch_size
+                                + (rollout_index + 1) * batch.size
+                            ),
+                            "environment": int(environment_index),
+                            "episode_return": episode_return,
+                            "episode_length": episode_length,
+                        }
+                    )
                 episode_returns[environment_index] = 0.0
                 episode_lengths[environment_index] = 0
             if p3o_mode:
@@ -2302,7 +2315,21 @@ def train_single(
             total_updates=total_updates,
             device=device,
         )
-        ppo_metrics = update_ppo(model, optimizer, rollout, model_config, ppo_config)
+        ppo_metrics = update_ppo(
+            model,
+            optimizer,
+            rollout,
+            model_config,
+            ppo_config,
+            objective="ppo" if phase == "ppo" else "prediction",
+        )
+        if phase != "ppo":
+            LOGGER.info(
+                "prediction phase=%s update=%d next_observation_nll=%.4f",
+                phase,
+                update,
+                ppo_metrics.policy_loss,
+            )
         _finish_timed_phase(
             "ppo_update",
             ppo_started,
@@ -2402,8 +2429,9 @@ def train_single(
             _log_langevin_schedules(model, update)
 
         should_evaluate = (
-            update % int(experiment_config["eval_interval_updates"]) == 0
-            or update == configured_updates
+            phase == "ppo" and update % int(experiment_config["eval_interval_updates"]) == 0
+        ) or (
+            update == configured_updates
             or (
                 evaluate_at_end
                 and segment_updates is None

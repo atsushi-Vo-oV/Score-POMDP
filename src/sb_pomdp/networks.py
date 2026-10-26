@@ -876,6 +876,65 @@ class SetMixturePredictor(nn.Module):
         return torch.logsumexp(log_weights + per_dim.sum(dim=-1), dim=1)
 
 
+class ConditionMixturePredictor(nn.Module):
+    """Mixture-density predictor of the next observation from a model's policy condition.
+
+    ``MLP(condition, action) -> M``-component diagonal-Gaussian mixture.  Every compared
+    model (score transformers, GRU, RNN, DPFRL) exposes a ``d_model`` condition vector, so the
+    same head reads all of them and the prediction phases train each belief through its own
+    representation.  Same ``log_likelihood`` interface as :class:`SetMixturePredictor`.
+    """
+
+    _LOG_STD_MIN = -4.0
+    _LOG_STD_MAX = 3.0
+
+    def __init__(
+        self,
+        condition_dim: int,
+        action_feature_dim: int,
+        target_dim: int,
+        hidden_dims: Sequence[int],
+        *,
+        components: int = 4,
+    ) -> None:
+        super().__init__()
+        if condition_dim <= 0 or action_feature_dim < 0 or target_dim <= 0 or components <= 0:
+            raise ValueError("condition mixture predictor dimensions must be positive")
+        self.condition_dim = condition_dim
+        self.action_feature_dim = action_feature_dim
+        self.target_dim = target_dim
+        self.components = int(components)
+        self.network = make_mlp(
+            condition_dim + action_feature_dim, list(hidden_dims), self.components * (1 + 2 * target_dim)
+        )
+        last = [m for m in self.network.modules() if isinstance(m, nn.Linear)][-1]
+        with torch.no_grad():  # spread the initial component means (a symmetric start is stationary)
+            offsets = torch.linspace(-1.0, 1.0, self.components) if self.components > 1 else torch.zeros(1)
+            mean_bias = last.bias[self.components : self.components + self.components * target_dim]
+            mean_bias.copy_(offsets[:, None].expand(self.components, target_dim).reshape(-1))
+
+    def log_likelihood(
+        self,
+        condition: torch.Tensor,
+        action_features: torch.Tensor,
+        target: torch.Tensor,
+    ) -> torch.Tensor:
+        """``log sum_m w_m N(target; mu_m, diag sigma_m^2)`` per batch row."""
+
+        batch = condition.shape[0]
+        if condition.shape != (batch, self.condition_dim):
+            raise ValueError(f"condition must have shape [batch, {self.condition_dim}]")
+        if action_features.shape != (batch, self.action_feature_dim) or target.shape != (batch, self.target_dim):
+            raise ValueError("action features and target must match the condition batch")
+        outputs = self.network(torch.cat((condition, action_features), dim=-1))
+        m, d = self.components, self.target_dim
+        log_weights = torch.log_softmax(outputs[:, :m], dim=-1)
+        means = outputs[:, m : m + m * d].reshape(batch, m, d)
+        log_std = outputs[:, m + m * d :].reshape(batch, m, d).clamp(self._LOG_STD_MIN, self._LOG_STD_MAX)
+        per_dim = -0.5 * ((target[:, None, :] - means) / log_std.exp()).square() - log_std - 0.5 * math.log(2.0 * math.pi)
+        return torch.logsumexp(log_weights + per_dim.sum(dim=-1), dim=1)
+
+
 class AlphaLSEHead(nn.Module):
     """Tempered log-sum-exp over linear pieces: a learned PWLC belief functional.
 

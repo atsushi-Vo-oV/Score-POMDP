@@ -485,6 +485,37 @@ def _policy_objective(
     return policy_loss, approximate_kl, clip_fraction, entropy
 
 
+def condition_prediction_loss(
+    predictor: torch.nn.Module,
+    condition: torch.Tensor,
+    *,
+    observations: torch.Tensor,
+    previous_actions: torch.Tensor,
+    dones: torch.Tensor,
+) -> torch.Tensor:
+    """``-log p(o_{t+1} | condition_t, a_t)`` over a ``[T, group]`` rollout slice.
+
+    ``condition`` is the time-major flattened ``[T * group, d]`` policy condition with its
+    belief graph attached.  The action taken at ``t`` is the previous action stored at
+    ``t + 1``; steps that end an episode have no successor inside it and are masked out.
+    Shared by the score and baseline trainers.
+    """
+
+    steps, group = observations.shape[0], observations.shape[1]
+    if steps < 2:
+        return condition.new_zeros(())
+    source = condition.reshape(steps, group, -1)[:-1]
+    targets = observations[1:]
+    actions = previous_actions[1:]
+    valid = (~dones[:-1]).reshape(-1).to(condition.dtype)
+    log_likelihood = predictor.log_likelihood(
+        source.reshape((steps - 1) * group, -1),
+        actions.reshape((steps - 1) * group, -1),
+        targets.reshape((steps - 1) * group, -1),
+    )
+    return -(log_likelihood * valid).sum() / valid.sum().clamp_min(1.0)
+
+
 def observation_prediction_loss(
     model: ScoreBeliefActorCritic,
     particles: torch.Tensor,
@@ -590,8 +621,14 @@ def update_ppo(
     ppo_config: dict,
     *,
     generator: torch.Generator | None = None,
+    objective: str = "ppo",
 ) -> PPOMetrics:
     """Update all model components through ULA and the recurrent belief.
+
+    ``objective="prediction"`` replays the same belief sequences but optimises only the
+    next-observation prediction loss of ``model.prediction_predictor`` (the interleaved
+    prediction phases of :mod:`sb_pomdp.prediction_schedule`); its negative log-likelihood is
+    reported as ``policy_loss`` and the PPO quantities are zero.
 
     Environment trajectories are the fixed on-policy samples required by PPO.
     Only the differentiable, model-free belief computation is reparameterized
@@ -599,6 +636,10 @@ def update_ppo(
     time steps would sever the recurrent gradient.
     """
 
+    if objective not in {"ppo", "prediction"}:
+        raise ValueError("objective must be ppo or prediction")
+    if objective == "prediction" and getattr(model, "prediction_predictor", None) is None:
+        raise ValueError("the prediction objective needs model.prediction_predictor")
     rollout_steps, num_environments = rollout.rollout_shape
     configured_minibatch_size = int(ppo_config["minibatch_size"])
     sequence_microbatch_size = int(
@@ -688,6 +729,20 @@ def update_ppo(
                     _time_environment_flatten(particles),
                     _time_environment_flatten(scores),
                 )
+                if objective == "prediction":
+                    prediction_loss = condition_prediction_loss(
+                        model.prediction_predictor,
+                        condition,
+                        observations=rollout.observations[:, environment_indices],
+                        previous_actions=rollout.previous_actions[:, environment_indices],
+                        dones=rollout.dones[:, environment_indices],
+                    )
+                    (prediction_loss * microbatch_weight).backward()
+                    minibatch_metrics["policy_loss"] += (
+                        float(prediction_loss.detach().cpu()) * microbatch_weight
+                    )
+                    del particles, scores, condition, value_condition, prediction_loss
+                    continue
                 if getattr(model, "action_value_head", None) is not None:
                     taken = _time_environment_flatten(rollout.actions[:, environment_indices])
                     new_values = model.action_value(value_condition, taken)

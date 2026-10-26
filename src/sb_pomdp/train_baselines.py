@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import Any, Literal
@@ -31,8 +31,14 @@ from .baselines import (
 from .buffer import generalised_advantage_estimate
 from .config import ExperimentConfig
 from .envs import make_env
-from .networks import NetworkKinds, use_network_kinds
-from .ppo import PPOMetrics, clip_gradients_or_skip, diffusion_advantage_weights
+from .networks import ConditionMixturePredictor, NetworkKinds, use_network_kinds
+from .ppo import (
+    PPOMetrics,
+    clip_gradients_or_skip,
+    condition_prediction_loss,
+    diffusion_advantage_weights,
+)
+from .prediction_schedule import PredictionSchedule, random_actions
 from .train import (
     EPISODE_FIELDS,
     EVALUATION_FIELDS,
@@ -227,6 +233,18 @@ def _make_model(
         action_high=None if spec.high is None else spec.high.tolist(),
         **recurrent_kwargs,
     )
+    probe = PredictionSchedule.from_config(model_config, rollout_batch_size=1, ppo_updates=1)
+    if probe.enabled:
+        if kind not in ("gru", "rnn", "particle_filter"):
+            raise ValueError("the prediction phases support the recurrent baselines only")
+        # Same next-observation head as the score models, read from the policy condition.
+        model.prediction_predictor = ConditionMixturePredictor(
+            int(model.policy_condition_dim),
+            spec.feature_dim,
+            environment.observation_dim,
+            list(model_config.get("prediction_predictor_hidden", [64])),
+            components=int(model_config.get("prediction_mixture_components", 4)),
+        )
     return model.to(device)
 
 
@@ -767,6 +785,65 @@ def _update_recurrent(
     return _finish_metrics(totals, batches)
 
 
+def _update_recurrent_prediction(
+    model: RecurrentBaseline,
+    optimizer: torch.optim.Optimizer,
+    rollout: BaselineRollout,
+    ppo_config: dict[str, Any],
+    *,
+    observation_dim: int,
+    action_feature_dim: int,
+    temporal_gradient_mode: TemporalGradientMode,
+) -> PPOMetrics:
+    """A prediction phase update: replay the recurrent features and fit ``o_{t+1}`` only.
+
+    The stored inputs are ``[o_t, a_{t-1}, (filter noise)]``, so the targets and the action
+    taken at ``t`` are read back from the rollout without extra buffers.  The negative
+    log-likelihood is reported as ``policy_loss``.
+    """
+
+    time_steps, num_envs = rollout.rollout_shape
+    environments_per_minibatch = min(int(ppo_config["minibatch_size"]) // time_steps, num_envs)
+    observations = rollout.inputs[..., :observation_dim]
+    previous_actions = rollout.inputs[..., observation_dim : observation_dim + action_feature_dim]
+    totals = _empty_metric_totals()
+    batches = 0
+    for _ in range(int(ppo_config["epochs"])):
+        permutation = torch.randperm(num_envs, device=rollout.inputs.device)
+        for start_index in range(0, num_envs, environments_per_minibatch):
+            selected = permutation[start_index : start_index + environments_per_minibatch]
+            features = replay_recurrent_sequence(
+                model, rollout, selected, temporal_gradient_mode=temporal_gradient_mode
+            )
+            loss = condition_prediction_loss(
+                model.prediction_predictor,
+                features.reshape(-1, features.shape[-1]),
+                observations=observations[:, selected],
+                previous_actions=previous_actions[:, selected],
+                dones=rollout.dones[:, selected],
+            )
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            gradient_norm, finite = clip_gradients_or_skip(
+                model.parameters(), float(ppo_config["max_grad_norm"])
+            )
+            if not finite:
+                continue
+            optimizer.step()
+            zero = loss.new_zeros(())
+            _accumulate_metrics(
+                totals,
+                policy_loss=loss,
+                value_loss=zero,
+                entropy=zero,
+                approximate_kl=zero,
+                clip_fraction=zero,
+                gradient_norm=gradient_norm,
+            )
+            batches += 1
+    return _finish_metrics(totals, batches)
+
+
 @torch.no_grad()
 def evaluate_baseline(
     model: FeedForwardBaselineActorCritic | RecurrentBaseline,
@@ -1264,7 +1341,12 @@ def train_baseline_single(
     configure_logging(artifacts.path / "run.log", verbose=verbose)
 
     rollout_batch_size = int(ppo_config["num_envs"]) * int(ppo_config["rollout_steps"])
-    configured_updates = math.ceil(int(ppo_config["total_steps"]) / rollout_batch_size)
+    prediction_schedule = PredictionSchedule.from_config(
+        model_config,
+        rollout_batch_size=rollout_batch_size,
+        ppo_updates=math.ceil(int(ppo_config["total_steps"]) / rollout_batch_size),
+    )
+    configured_updates = prediction_schedule.total_updates
     bootstrap_on_truncation = bool(ppo_config["bootstrap_on_truncation"])
     if str(ppo_config.get("algorithm", "ppo")) != "ppo":
         raise NotImplementedError(
@@ -1459,6 +1541,7 @@ def train_baseline_single(
 
     for update in range(start_update + 1, total_updates + 1):
         update_started = time.perf_counter()
+        phase = prediction_schedule.phase(update)
         if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(device)
         input_steps: list[torch.Tensor] = []
@@ -1510,6 +1593,13 @@ def train_baseline_single(
                     )
                 else:
                     sample, old_value = model.act(inputs, deterministic=False)
+            if phase == "pretrain":
+                # Uniformly random exploration; the stored policy outputs are not read by the
+                # prediction objective.
+                sample = replace(
+                    sample,
+                    action=random_actions(first_environment.action_spec, batch.size, device=device),
+                )
             if first_environment.action_spec.is_continuous:
                 if sample.diffusion_chain is not None:
                     diffusion_chain_steps.append(sample.diffusion_chain.detach())
@@ -1568,20 +1658,22 @@ def train_baseline_single(
             for environment_index in np.flatnonzero(done):
                 episode_return = float(episode_returns[environment_index])
                 episode_length = int(episode_lengths[environment_index])
-                update_returns.append(episode_return)
-                update_lengths.append(episode_length)
-                completed_returns.append(episode_return)
-                completed_lengths.append(episode_length)
-                episode_rows.append(
-                    {
-                        "global_step": (
-                            (update - 1) * rollout_batch_size + (rollout_index + 1) * batch.size
-                        ),
-                        "environment": int(environment_index),
-                        "episode_return": episode_return,
-                        "episode_length": episode_length,
-                    }
-                )
+                if phase != "pretrain":  # random-action episodes stay out of the learning curve
+                    update_returns.append(episode_return)
+                    update_lengths.append(episode_length)
+                    completed_returns.append(episode_return)
+                    completed_lengths.append(episode_length)
+                    episode_rows.append(
+                        {
+                            "global_step": (
+                                (update - 1) * rollout_batch_size
+                                + (rollout_index + 1) * batch.size
+                            ),
+                            "environment": int(environment_index),
+                            "episode_return": episode_return,
+                            "episode_length": episode_length,
+                        }
+                    )
                 episode_returns[environment_index] = 0.0
                 episode_lengths[environment_index] = 0
 
@@ -1645,14 +1737,31 @@ def train_baseline_single(
         model.train()
         if isinstance(model, RECURRENT_BASELINE_TYPES):
             temporal_gradient_mode: TemporalGradientMode = model_config["belief_gradient_mode"]
-            ppo_metrics = _update_recurrent(
-                model,
-                optimizer,
-                rollout,
-                model_config,
-                ppo_config,
-                temporal_gradient_mode=temporal_gradient_mode,
-            )
+            if phase == "ppo":
+                ppo_metrics = _update_recurrent(
+                    model,
+                    optimizer,
+                    rollout,
+                    model_config,
+                    ppo_config,
+                    temporal_gradient_mode=temporal_gradient_mode,
+                )
+            else:
+                ppo_metrics = _update_recurrent_prediction(
+                    model,
+                    optimizer,
+                    rollout,
+                    ppo_config,
+                    observation_dim=first_environment.observation_dim,
+                    action_feature_dim=first_environment.action_spec.feature_dim,
+                    temporal_gradient_mode=temporal_gradient_mode,
+                )
+                LOGGER.info(
+                    "prediction phase=%s update=%d next_observation_nll=%.4f",
+                    phase,
+                    update,
+                    ppo_metrics.policy_loss,
+                )
             recondition_inputs = _current_inputs(
                 method,
                 observation,
@@ -1730,8 +1839,9 @@ def train_baseline_single(
             )
 
         should_evaluate = (
-            update % int(experiment_config["eval_interval_updates"]) == 0
-            or update == configured_updates
+            phase == "ppo" and update % int(experiment_config["eval_interval_updates"]) == 0
+        ) or (
+            update == configured_updates
             or (
                 evaluate_at_end
                 and segment_updates is None
