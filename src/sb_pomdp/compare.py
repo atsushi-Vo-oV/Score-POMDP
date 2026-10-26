@@ -39,6 +39,7 @@ from .train import (
     train_single,
 )
 from .prediction_schedule import PredictionSchedule
+from .td3 import train_td3_single
 from .train_baselines import train_baseline_single
 
 SCORE_METHODS = frozenset(
@@ -974,7 +975,20 @@ def run_comparisons(
                     f"checkpoint: {resume_checkpoint}",
                     file=sys.stderr,
                 )
-            if method in SCORE_METHODS:
+            if str(method_config["ppo"]["algorithm"]) == "td3":
+                summary = train_td3_single(
+                    method_config,
+                    method=method,
+                    task=task,
+                    seed=seed,
+                    artifacts=artifacts,
+                    max_updates=max_updates,
+                    segment_updates=segment_updates,
+                    resume_checkpoint=resume_checkpoint,
+                    verbose=verbose,
+                    result_dir=relative_result,
+                )
+            elif method in SCORE_METHODS:
                 summary = train_single(
                     method_config,
                     task=task,

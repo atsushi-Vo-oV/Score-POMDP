@@ -35,6 +35,16 @@ _LEGACY_PPO_DEFAULTS: dict[str, object] = {
     "p3o_resample_interval": 5,
     "p3o_demo_slots": 0,
     "q_advantage_mix": 1.0,
+    "td3_gradient_steps": 16,
+    "td3_batch_sequences": 16,
+    "td3_sequence_length": 32,
+    "td3_tau": 0.005,
+    "td3_policy_delay": 2,
+    "td3_exploration_noise": 0.1,
+    "td3_target_noise": 0.2,
+    "td3_target_noise_clip": 0.5,
+    "td3_actor_learning_rate": 0.0003,
+    "td3_critic_learning_rate": 0.0003,
 }
 _LEGACY_MODEL_DEFAULTS: dict[str, object] = {
     "langevin_temperature": 1.0,

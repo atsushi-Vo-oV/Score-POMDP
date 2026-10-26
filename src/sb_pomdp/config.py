@@ -264,6 +264,16 @@ _PPO_KEYS = frozenset(
         "p3o_resample_interval",
         "p3o_demo_slots",
         "q_advantage_mix",
+        "td3_gradient_steps",
+        "td3_batch_sequences",
+        "td3_sequence_length",
+        "td3_tau",
+        "td3_policy_delay",
+        "td3_exploration_noise",
+        "td3_target_noise",
+        "td3_target_noise_clip",
+        "td3_actor_learning_rate",
+        "td3_critic_learning_rate",
     }
 )
 
@@ -289,6 +299,17 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         "p3o_demo_slots": 0,
         # Action-value critic advantages are mixed with GAE by this weight.
         "q_advantage_mix": 1.0,
+        # TD3 (ppo.algorithm=td3, sb_pomdp.td3) arrived with try-svgd-td3; unused by PPO.
+        "td3_gradient_steps": 16,
+        "td3_batch_sequences": 16,
+        "td3_sequence_length": 32,
+        "td3_tau": 0.005,
+        "td3_policy_delay": 2,
+        "td3_exploration_noise": 0.1,
+        "td3_target_noise": 0.2,
+        "td3_target_noise_clip": 0.5,
+        "td3_actor_learning_rate": 0.0003,
+        "td3_critic_learning_rate": 0.0003,
     },
     # Langevin tempering and warm starts arrived after the first campaigns; at
     # these defaults the belief update is bit-identical to the original ULA.
@@ -870,8 +891,14 @@ def _validate_ppo(value: Any) -> Mapping[str, Any]:
     )
     _number(section["weight_decay"], "ppo.weight_decay", minimum=0.0)
     algorithm =_nonempty_string(section["algorithm"], "ppo.algorithm")
-    if algorithm not in {"ppo", "p3o_wml"}:
-        raise ConfigError("ppo.algorithm must be ppo or p3o_wml")
+    if algorithm not in {"ppo", "p3o_wml", "td3"}:
+        raise ConfigError("ppo.algorithm must be ppo, p3o_wml or td3")
+    for key in ("td3_gradient_steps", "td3_batch_sequences", "td3_sequence_length", "td3_policy_delay"):
+        _integer(section[key], f"ppo.{key}")
+    for key in ("td3_tau", "td3_actor_learning_rate", "td3_critic_learning_rate"):
+        _positive_number(section[key], f"ppo.{key}")
+    for key in ("td3_exploration_noise", "td3_target_noise", "td3_target_noise_clip"):
+        _number(section[key], f"ppo.{key}", minimum=0.0)
     _positive_number(section["p3o_eta"], "ppo.p3o_eta")
     if _integer(section["p3o_resample_interval"], "ppo.p3o_resample_interval") <= 0:
         raise ConfigError("ppo.p3o_resample_interval must be positive")
