@@ -81,8 +81,13 @@ def test_capture_ends_the_episode_and_survival_pays_per_step() -> None:
     _, reward, terminated, _, _ = env.step(np.zeros(2, dtype=np.float32))
     assert reward == env.step_reward and not terminated
     _place(env, [0.0, 0.0], 0.0, [[env.capture_radius + 0.01, 0.0]], [math.pi])  # facing the player
-    _, _, terminated, _, _ = env.step(np.zeros(2, dtype=np.float32))
-    assert terminated
+    _, reward, terminated, _, _ = env.step(np.zeros(2, dtype=np.float32))
+    assert terminated and reward == env.step_reward
+    penalised = DiskTagEnv(seed=0, num_ghosts=1, capture_reward=-1.0)
+    penalised.reset(seed=0)
+    _place(penalised, [0.0, 0.0], 0.0, [[penalised.capture_radius + 0.01, 0.0]], [math.pi])
+    _, reward, terminated, _, _ = penalised.step(np.zeros(2, dtype=np.float32))
+    assert terminated and reward == pytest.approx(penalised.step_reward - 1.0)
 
 
 def test_the_player_stays_in_the_disk_and_round_trips_its_state() -> None:

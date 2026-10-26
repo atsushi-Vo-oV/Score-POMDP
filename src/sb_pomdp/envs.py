@@ -1619,7 +1619,9 @@ class DiskTagEnv(_BaseMaskedEnv):
     their own wide view cone (``ghost_view_angle_deg`` around their heading, range
     ``ghost_view_range``); see :func:`disk_tag_ghost_step` for wander / pursue / search.  The
     player starts uniform in the disk at least ``start_distance`` from every ghost.  A ghost within
-    ``capture_radius`` ends the episode; every step survived pays ``step_reward``.
+    ``capture_radius`` ends the episode and adds ``capture_reward`` (a penalty when negative);
+    every step survived pays ``step_reward``.  The default 0.1 per step is learnable by PPO;
+    0.01 left even the oracle-state policy at its initial return after 800k steps.
 
     The observation is the player's own state ``(x, y, cos phi, sin phi, v / max_speed)`` and the
     fraction of ghosts inside the player's view cone (``view_angle_deg`` around ``phi``, range
@@ -1650,14 +1652,15 @@ class DiskTagEnv(_BaseMaskedEnv):
         view_angle_deg: float = 60.0,
         view_range: float = 0.6,
         start_distance: float = 0.6,
-        step_reward: float = 0.01,
+        step_reward: float = 0.1,
+        capture_reward: float = 0.0,
     ) -> None:
         super().__init__(horizon=horizon, observation_noise_std=observation_noise_std, seed=seed)
         if isinstance(num_ghosts, bool) or not isinstance(num_ghosts, (int, np.integer)) or num_ghosts < 1:
             raise ValueError("num_ghosts must be a positive integer")
         values = (arena_radius, max_speed, acceleration, turn_rate, ghost_speed_min, ghost_speed_max,
                   ghost_view_angle_deg, ghost_view_range, ghost_wander_ratio, ghost_wander_turn_std,
-                  capture_radius, view_angle_deg, view_range, start_distance, step_reward)
+                  capture_radius, view_angle_deg, view_range, start_distance, step_reward, capture_reward)
         if not all(np.isfinite(value) for value in values):
             raise ValueError("Disk tag parameters must be finite")
         if min(arena_radius, max_speed, acceleration, turn_rate, capture_radius, view_range, ghost_view_range) <= 0:
@@ -1686,6 +1689,7 @@ class DiskTagEnv(_BaseMaskedEnv):
         self.view_range = float(view_range)
         self.start_distance = float(start_distance)
         self.step_reward = float(step_reward)
+        self.capture_reward = float(capture_reward)
         self.state_dim = 4 + 7 * self.num_ghosts
         self.observation_dim = 6
         self.oracle_dim = 5 + 4 * self.num_ghosts
@@ -1778,8 +1782,9 @@ class DiskTagEnv(_BaseMaskedEnv):
                                     **self.ghost_params())
         self._state = np.concatenate([player, [phi, speed], block.ravel(), speeds]).astype(np.float64)
         terminated = bool(np.any(np.linalg.norm(block[:, 0:2] - player, axis=1) <= self.capture_radius))
+        reward = self.step_reward + (self.capture_reward if terminated else 0.0)
         terminated, truncated = self._finish_step(terminated)
-        return self._observation(), self.step_reward, terminated, truncated, self._info()
+        return self._observation(), reward, terminated, truncated, self._info()
 
 
 _DISK_TAG_KEYS = {
@@ -1801,6 +1806,7 @@ _DISK_TAG_KEYS = {
     "view_range",
     "start_distance",
     "step_reward",
+    "capture_reward",
 }
 
 _CAR_FLAG_KEYS = {
