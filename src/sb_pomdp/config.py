@@ -70,6 +70,27 @@ _CAR_FLAG_TASK_KEYS = _ENVIRONMENT_TASK_KEYS | frozenset(_CAR_FLAG_TASK_DEFAULTS
 _HEAVEN_HELL_ALIASES = frozenset({"heavenhell", "heavenhellv0"})
 _HEAVEN_HELL_TASK_DEFAULTS: dict[str, Any] = {"corridor_length": 3}
 _HEAVEN_HELL_TASK_KEYS = _ENVIRONMENT_TASK_KEYS | frozenset(_HEAVEN_HELL_TASK_DEFAULTS)
+# Tag in a disk (sb_pomdp.envs.DiskTagEnv): evade pursuers seen only as a count in a view cone.
+_DISK_TAG_ALIASES = frozenset({"disktag", "tag"})
+_DISK_TAG_TASK_DEFAULTS: dict[str, Any] = {
+    "num_ghosts": 3,
+    "arena_radius": 1.0,
+    "max_speed": 0.05,
+    "acceleration": 0.01,
+    "turn_rate": 0.35,
+    "ghost_speed_min": 0.8,
+    "ghost_speed_max": 1.0,
+    "ghost_view_angle_deg": 180.0,
+    "ghost_view_range": 1.0,
+    "ghost_wander_ratio": 0.5,
+    "ghost_wander_turn_std": 0.3,
+    "capture_radius": 0.08,
+    "view_angle_deg": 60.0,
+    "view_range": 0.6,
+    "start_distance": 0.6,
+    "step_reward": 0.01,
+}
+_DISK_TAG_TASK_KEYS = _ENVIRONMENT_TASK_KEYS | frozenset(_DISK_TAG_TASK_DEFAULTS)
 _MOUNTAIN_HIKE_TASK_KEYS = frozenset(
     {
         "horizon",
@@ -570,6 +591,7 @@ def _validate_environment(value: Any, requested_tasks: Sequence[str]) -> Mapping
         is_pendulum = normalized_name in _PENDULUM_ALIASES
         is_car_flag = normalized_name in _CAR_FLAG_ALIASES
         is_heaven_hell = normalized_name in _HEAVEN_HELL_ALIASES
+        is_disk_tag = normalized_name in _DISK_TAG_ALIASES
         expected_keys = (
             _LIGHT_DARK_TASK_KEYS
             if is_light_dark
@@ -581,6 +603,8 @@ def _validate_environment(value: Any, requested_tasks: Sequence[str]) -> Mapping
             if is_car_flag
             else _HEAVEN_HELL_TASK_KEYS
             if is_heaven_hell
+            else _DISK_TAG_TASK_KEYS
+            if is_disk_tag
             else _ENVIRONMENT_TASK_KEYS
         )
         path = f"environment.tasks.{task_name}"
@@ -606,6 +630,10 @@ def _validate_environment(value: Any, requested_tasks: Sequence[str]) -> Mapping
                 _number(task[key], f"{path}.{key}", minimum=minimum)
         if is_heaven_hell:
             _integer(task["corridor_length"], f"{path}.corridor_length")
+        if is_disk_tag:
+            _integer(task["num_ghosts"], f"{path}.num_ghosts")
+            for key in sorted(set(_DISK_TAG_TASK_DEFAULTS) - {"num_ghosts"}):
+                _number(task[key], f"{path}.{key}", minimum=0.0)
 
     missing = [task for task in requested_tasks if task not in tasks]
     if missing:
@@ -1036,6 +1064,7 @@ def normalize_legacy_resolved_config(config: Mapping[str, Any]) -> dict[str, Any
     _fill_pendulum_task_defaults(result)
     _fill_alias_task_defaults(result, _CAR_FLAG_ALIASES, _CAR_FLAG_TASK_DEFAULTS)
     _fill_alias_task_defaults(result, _HEAVEN_HELL_ALIASES, _HEAVEN_HELL_TASK_DEFAULTS)
+    _fill_alias_task_defaults(result, _DISK_TAG_ALIASES, _DISK_TAG_TASK_DEFAULTS)
     return result
 
 

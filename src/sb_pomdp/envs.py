@@ -8,6 +8,7 @@ requiring Gymnasium as a dependency.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
@@ -1552,6 +1553,256 @@ class HeavenHellEnv(_BaseMaskedEnv):
         return self._observation(), reward, terminated, truncated, self._info()
 
 
+def disk_tag_ghost_step(
+    ghosts: np.ndarray,
+    speeds: np.ndarray,
+    player: np.ndarray,
+    turn_noise: np.ndarray,
+    *,
+    arena_radius: float,
+    view_half_angle: float,
+    view_range: float,
+    wander_ratio: float,
+    wander_turn_std: float,
+) -> np.ndarray:
+    """One step of the disk-tag ghosts, batched over any leading dimensions.
+
+    ``ghosts[..., i, :] = (x, y, heading, mode, target_x, target_y)`` with mode 0 = wander and
+    1 = pursue; ``speeds[..., i]`` is the pursuit speed, ``player[..., :]`` the player position
+    after its move and ``turn_noise[..., i]`` standard normal draws.  A ghost that sees the player
+    (within ``view_range`` and ``view_half_angle`` of its heading) runs at it and remembers the
+    spot; one that has lost sight runs to the remembered spot and wanders again once there.  A
+    wandering ghost moves at ``wander_ratio * speed`` with a heading random walk and turns back to
+    the centre when it would leave the disk.  The DiskTagEnv simulator and filters share this.
+    """
+
+    position = ghosts[..., 0:2]
+    heading = ghosts[..., 2]
+    mode = ghosts[..., 3]
+    target = ghosts[..., 4:6]
+    offset = player[..., None, :] - position
+    distance = np.linalg.norm(offset, axis=-1)
+    bearing = (np.arctan2(offset[..., 1], offset[..., 0]) - heading + math.pi) % (2.0 * math.pi) - math.pi
+    sees = (distance <= view_range) & (np.abs(bearing) <= view_half_angle)
+    target = np.where(sees[..., None], player[..., None, :], target)
+    mode = np.where(sees, 1.0, mode)
+
+    to_target = target - position
+    target_distance = np.linalg.norm(to_target, axis=-1)
+    pursuing = mode > 0.5
+    arrived = pursuing & ~sees & (target_distance <= speeds)
+    pursue_heading = np.where(target_distance > 1e-12, np.arctan2(to_target[..., 1], to_target[..., 0]), heading)
+    new_heading = np.where(pursuing, pursue_heading, heading + wander_turn_std * turn_noise)
+    step = np.where(pursuing, np.minimum(speeds, target_distance), wander_ratio * speeds)
+    new_position = position + step[..., None] * np.stack([np.cos(new_heading), np.sin(new_heading)], axis=-1)
+    radius = np.linalg.norm(new_position, axis=-1)
+    outside = radius > arena_radius
+    scale = np.where(outside, arena_radius / np.maximum(radius, 1e-12), 1.0)
+    new_position = new_position * scale[..., None]
+    inward = np.arctan2(-new_position[..., 1], -new_position[..., 0])
+    new_heading = np.where(outside & ~pursuing, inward, new_heading)
+    new_heading = (new_heading + math.pi) % (2.0 * math.pi) - math.pi
+    mode = np.where(arrived, 0.0, mode)
+    return np.concatenate([new_position, new_heading[..., None], mode[..., None], target], axis=-1)
+
+
+class DiskTagEnv(_BaseMaskedEnv):
+    """Tag in a disk: evade ``num_ghosts`` ghosts that the player sees only as a count in a view cone.
+
+    The player moves inside a disk of radius ``arena_radius`` with heading ``phi`` and speed
+    ``v`` in ``[0, max_speed]``; the continuous action ``(accel, turn)`` in ``[-1, 1]^2``
+    changes them by ``accel * acceleration`` and ``turn * turn_rate`` per step.  A player that
+    would leave the disk is projected back onto its rim.
+
+    Every ghost starts uniform in the disk with a uniform heading, wandering, and draws its own
+    pursuit speed ``U(ghost_speed_min, ghost_speed_max) * max_speed`` once per episode.  Ghosts have
+    their own wide view cone (``ghost_view_angle_deg`` around their heading, range
+    ``ghost_view_range``); see :func:`disk_tag_ghost_step` for wander / pursue / search.  The
+    player starts uniform in the disk at least ``start_distance`` from every ghost.  A ghost within
+    ``capture_radius`` ends the episode; every step survived pays ``step_reward``.
+
+    The observation is the player's own state ``(x, y, cos phi, sin phi, v / max_speed)`` and the
+    fraction of ghosts inside the player's view cone (``view_angle_deg`` around ``phi``, range
+    ``view_range``).  Everything about the ghosts is hidden; they are exchangeable, so the belief
+    over them is a permutation-symmetric, multimodal distribution.
+
+    State ``(x, y, phi, v, [g_x, g_y, g_heading, g_mode, g_target_x, g_target_y] * N, s_1..s_N)``.
+    """
+
+    def __init__(
+        self,
+        *,
+        horizon: int = 200,
+        observation_noise_std: float = 0.0,
+        seed: int | None = None,
+        num_ghosts: int = 3,
+        arena_radius: float = 1.0,
+        max_speed: float = 0.05,
+        acceleration: float = 0.01,
+        turn_rate: float = 0.35,
+        ghost_speed_min: float = 0.8,
+        ghost_speed_max: float = 1.0,
+        ghost_view_angle_deg: float = 180.0,
+        ghost_view_range: float = 1.0,
+        ghost_wander_ratio: float = 0.5,
+        ghost_wander_turn_std: float = 0.3,
+        capture_radius: float = 0.08,
+        view_angle_deg: float = 60.0,
+        view_range: float = 0.6,
+        start_distance: float = 0.6,
+        step_reward: float = 0.01,
+    ) -> None:
+        super().__init__(horizon=horizon, observation_noise_std=observation_noise_std, seed=seed)
+        if isinstance(num_ghosts, bool) or not isinstance(num_ghosts, (int, np.integer)) or num_ghosts < 1:
+            raise ValueError("num_ghosts must be a positive integer")
+        values = (arena_radius, max_speed, acceleration, turn_rate, ghost_speed_min, ghost_speed_max,
+                  ghost_view_angle_deg, ghost_view_range, ghost_wander_ratio, ghost_wander_turn_std,
+                  capture_radius, view_angle_deg, view_range, start_distance, step_reward)
+        if not all(np.isfinite(value) for value in values):
+            raise ValueError("Disk tag parameters must be finite")
+        if min(arena_radius, max_speed, acceleration, turn_rate, capture_radius, view_range, ghost_view_range) <= 0:
+            raise ValueError("radii, speeds, acceleration, turn rate and view ranges must be positive")
+        if not 0 < ghost_speed_min <= ghost_speed_max:
+            raise ValueError("ghost speeds must satisfy 0 < ghost_speed_min <= ghost_speed_max")
+        if not 0 < view_angle_deg <= 360 or not 0 < ghost_view_angle_deg <= 360:
+            raise ValueError("view angles must lie in (0, 360]")
+        if not 0 <= ghost_wander_ratio <= 1 or ghost_wander_turn_std < 0:
+            raise ValueError("ghost_wander_ratio must lie in [0, 1] and ghost_wander_turn_std must be >= 0")
+        if not capture_radius < start_distance < arena_radius:
+            raise ValueError("start_distance must lie between capture_radius and arena_radius")
+        self.num_ghosts = int(num_ghosts)
+        self.arena_radius = float(arena_radius)
+        self.max_speed = float(max_speed)
+        self.acceleration = float(acceleration)
+        self.turn_rate = float(turn_rate)
+        self.ghost_speed_min = float(ghost_speed_min)
+        self.ghost_speed_max = float(ghost_speed_max)
+        self.ghost_view_half_angle = math.radians(float(ghost_view_angle_deg)) / 2.0
+        self.ghost_view_range = float(ghost_view_range)
+        self.ghost_wander_ratio = float(ghost_wander_ratio)
+        self.ghost_wander_turn_std = float(ghost_wander_turn_std)
+        self.capture_radius = float(capture_radius)
+        self.view_half_angle = math.radians(float(view_angle_deg)) / 2.0
+        self.view_range = float(view_range)
+        self.start_distance = float(start_distance)
+        self.step_reward = float(step_reward)
+        self.state_dim = 4 + 7 * self.num_ghosts
+        self.observation_dim = 6
+        self.oracle_dim = 5 + 4 * self.num_ghosts
+        self.action_spec = ActionSpec.continuous(-1.0, 1.0, shape=(2,))
+
+    def ghost_params(self) -> dict[str, float]:
+        """Keyword arguments of :func:`disk_tag_ghost_step` for this environment."""
+
+        return {
+            "arena_radius": self.arena_radius,
+            "view_half_angle": self.ghost_view_half_angle,
+            "view_range": self.ghost_view_range,
+            "wander_ratio": self.ghost_wander_ratio,
+            "wander_turn_std": self.ghost_wander_turn_std,
+        }
+
+    def _ghost_block(self) -> np.ndarray:
+        assert self._state is not None
+        return self._state[4 : 4 + 6 * self.num_ghosts].reshape(self.num_ghosts, 6)
+
+    def _ghosts(self) -> np.ndarray:
+        return self._ghost_block()[:, 0:2]
+
+    def _speeds(self) -> np.ndarray:
+        assert self._state is not None
+        return self._state[4 + 6 * self.num_ghosts :]
+
+    def visible_count(self) -> int:
+        """Number of ghosts inside the player's view cone."""
+
+        assert self._state is not None
+        x, y, phi = self._state[:3]
+        offsets = self._ghosts() - np.array([x, y])
+        distances = np.linalg.norm(offsets, axis=1)
+        bearing = np.arctan2(offsets[:, 1], offsets[:, 0]) - phi
+        bearing = (bearing + math.pi) % (2.0 * math.pi) - math.pi
+        return int(np.sum((distances <= self.view_range) & (np.abs(bearing) <= self.view_half_angle)))
+
+    def _observation(self) -> np.ndarray:
+        assert self._state is not None
+        x, y, phi, speed = self._state[:4]
+        values = np.array([x, y, math.cos(phi), math.sin(phi), speed / self.max_speed,
+                           self.visible_count() / self.num_ghosts], dtype=np.float64)
+        return self._add_observation_noise(values)
+
+    def oracle_features(self) -> np.ndarray:
+        """Return the player state, ghost positions, pursuit flags and speeds (relative to max_speed)."""
+
+        if self._state is None:
+            raise RuntimeError("The environment has not been reset")
+        x, y, phi, speed = self._state[:4]
+        block = self._ghost_block()
+        return np.concatenate([[x, y, math.cos(phi), math.sin(phi), speed / self.max_speed],
+                               block[:, 0:2].ravel(), block[:, 3], self._speeds() / self.max_speed]).astype(np.float32)
+
+    def _uniform_disk(self, count: int) -> np.ndarray:
+        radius = self.arena_radius * np.sqrt(self._rng.random(count))
+        angle = self._rng.uniform(-math.pi, math.pi, count)
+        return np.stack([radius * np.cos(angle), radius * np.sin(angle)], axis=1)
+
+    def reset(self, seed: int | None = None) -> tuple[np.ndarray, dict[str, Any]]:
+        self._start_reset(seed)
+        while True:
+            ghosts = self._uniform_disk(self.num_ghosts)
+            players = self._uniform_disk(64)
+            far = np.all(np.linalg.norm(players[:, None, :] - ghosts[None], axis=2) >= self.start_distance, axis=1)
+            if far.any():
+                player = players[int(np.argmax(far))]
+                break
+        phi = self._rng.uniform(-math.pi, math.pi)
+        headings = self._rng.uniform(-math.pi, math.pi, self.num_ghosts)
+        speeds = self._rng.uniform(self.ghost_speed_min, self.ghost_speed_max, self.num_ghosts) * self.max_speed
+        block = np.concatenate([ghosts, headings[:, None], np.zeros((self.num_ghosts, 1)), ghosts], axis=1)
+        self._state = np.concatenate([player, [phi, 0.0], block.ravel(), speeds]).astype(np.float64)
+        return self._observation(), self._info()
+
+    def step(self, action: Any) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+        self._before_step()
+        selected = self.action_spec.validate(action)
+        assert isinstance(selected, np.ndarray) and self._state is not None
+        x, y, phi, speed = self._state[:4]
+        speed = float(np.clip(speed + float(selected[0]) * self.acceleration, 0.0, self.max_speed))
+        phi = float((phi + float(selected[1]) * self.turn_rate + math.pi) % (2.0 * math.pi) - math.pi)
+        player = np.array([x + speed * math.cos(phi), y + speed * math.sin(phi)])
+        norm = float(np.linalg.norm(player))
+        if norm > self.arena_radius:
+            player *= self.arena_radius / norm
+        speeds = self._speeds().copy()
+        block = disk_tag_ghost_step(self._ghost_block(), speeds, player, self._rng.standard_normal(self.num_ghosts),
+                                    **self.ghost_params())
+        self._state = np.concatenate([player, [phi, speed], block.ravel(), speeds]).astype(np.float64)
+        terminated = bool(np.any(np.linalg.norm(block[:, 0:2] - player, axis=1) <= self.capture_radius))
+        terminated, truncated = self._finish_step(terminated)
+        return self._observation(), self.step_reward, terminated, truncated, self._info()
+
+
+_DISK_TAG_KEYS = {
+    "horizon",
+    "observation_noise_std",
+    "num_ghosts",
+    "arena_radius",
+    "max_speed",
+    "acceleration",
+    "turn_rate",
+    "ghost_speed_min",
+    "ghost_speed_max",
+    "ghost_view_angle_deg",
+    "ghost_view_range",
+    "ghost_wander_ratio",
+    "ghost_wander_turn_std",
+    "capture_radius",
+    "view_angle_deg",
+    "view_range",
+    "start_distance",
+    "step_reward",
+}
+
 _CAR_FLAG_KEYS = {
     "horizon",
     "observation_noise_std",
@@ -1617,8 +1868,11 @@ def make_env(
     if key in {"heavenhell", "heavenhellv0"}:
         kwargs = _factory_kwargs(config, _HEAVEN_HELL_KEYS)
         return HeavenHellEnv(seed=seed, **kwargs)
+    if key in {"disktag", "tag"}:
+        kwargs = _factory_kwargs(config, _DISK_TAG_KEYS)
+        return DiskTagEnv(seed=seed, **kwargs)
 
     raise ValueError(
         f"Unknown environment {name!r}; expected masked_cartpole, masked_pendulum, "
-        "masked_mountain_car_continuous, light_dark, mountain_hike, car_flag, or heaven_hell"
+        "masked_mountain_car_continuous, light_dark, mountain_hike, car_flag, heaven_hell, or disk_tag"
     )
