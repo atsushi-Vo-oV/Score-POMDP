@@ -441,6 +441,8 @@ class ScoreBeliefActorCritic(nn.Module):
             proposal_hidden=list(model_config.get("proposal_hidden", [64])),
             particle_sampler=str(model_config.get("particle_sampler", "ula")),
             smi_component_scale=float(model_config.get("smi_component_scale", 0.1)),
+            score_parameterization=str(model_config.get("score_parameterization", "energy")),
+            direct_score_bound=float(model_config.get("direct_score_bound", 10.0)),
         )
         encoder_use_scores = bool(model_config.get("encoder_use_scores", True))
         self.value_encoder_mode = str(model_config.get("value_encoder", "shared"))

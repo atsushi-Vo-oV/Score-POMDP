@@ -81,6 +81,7 @@ _LOG_NOISE_SCALE_MIN = math.log(1e-3)
 _LOG_NOISE_SCALE_MAX = math.log(2.0)
 _SCHEDULE_BOUNDS = ("clamp", "sigmoid")
 PARTICLE_SAMPLERS = ("ula", "svgd", "smi")
+SCORE_PARAMETERIZATIONS = ("energy", "direct")
 # SMI component scales s_k are kept in [1e-3, 2] (same range as the ULA noise scale).
 _LOG_SMI_SCALE_MIN = math.log(1e-3)
 _LOG_SMI_SCALE_MAX = math.log(2.0)
@@ -235,8 +236,23 @@ class EnergyBelief(nn.Module):
         proposal_hidden: Sequence[int] = (64,),
         particle_sampler: str = "ula",
         smi_component_scale: float = 0.1,
+        score_parameterization: str = "energy",
+        direct_score_bound: float = 10.0,
     ) -> None:
         super().__init__()
+        if score_parameterization not in SCORE_PARAMETERIZATIONS:
+            raise ValueError("score_parameterization must be energy or direct")
+        # ``direct``: the three networks output the score itself (no autograd through a scalar
+        # potential): g(o, x) - x at t = 0, and f(o, x, a) + sum_j softmax_j(k_j) v_j at t >= 1 with
+        # (k_j, v_j) = transition(x, x_{t-1,j}, a), the attention analogue of the gradient of the
+        # log-mean-exp transition energy.  The field is not constrained to be conservative.
+        self.score_parameterization = str(score_parameterization)
+        # A SiLU energy network has a bounded gradient; a network that outputs the score grows
+        # linearly in |x| and makes the transport expand without limit, so its outputs are bounded
+        # smoothly by B * tanh(raw / B) (the -x restoring term of the t = 0 base stays unbounded).
+        if not float(direct_score_bound) > 0.0:
+            raise ValueError("direct_score_bound must be positive")
+        self.direct_score_bound = float(direct_score_bound)
         if particle_sampler not in PARTICLE_SAMPLERS:
             raise ValueError("particle_sampler must be ula, svgd or smi")
         self.particle_sampler = str(particle_sampler)
@@ -340,7 +356,7 @@ class EnergyBelief(nn.Module):
         self.kan_match_parameters = bool(kan_match_parameters)
         self.energy_hidden_dims: dict[str, list[int]] = {}
 
-        def energy_network(name: str, input_dim: int) -> nn.Module:
+        def energy_network(name: str, input_dim: int, output_dim: int = 1) -> nn.Module:
             widths = list(hidden_dims)
             if self.energy_network_kind == "kan" and self.kan_match_parameters:
                 # Same depth and (near-)same parameter budget as the MLP the
@@ -348,7 +364,7 @@ class EnergyBelief(nn.Module):
                 widths = matched_kan_hidden_dims(
                     input_dim,
                     hidden_dims,
-                    1,
+                    output_dim,
                     int(kan_grid_size) + int(kan_spline_order),
                 )
             self.energy_hidden_dims[name] = widths
@@ -356,7 +372,7 @@ class EnergyBelief(nn.Module):
                 self.energy_network_kind,
                 input_dim,
                 widths,
-                1,
+                output_dim,
                 kan_grid_size=int(kan_grid_size),
                 kan_spline_order=int(kan_spline_order),
                 kan_grid_range=float(kan_grid_range),
@@ -374,12 +390,17 @@ class EnergyBelief(nn.Module):
             if observation_anchor
             else None
         )
-        self.initial_energy = energy_network("initial", observation_dim + state_dim)
+        direct = self.score_parameterization == "direct"
+        self.initial_energy = energy_network(
+            "initial", observation_dim + state_dim, state_dim if direct else 1
+        )
         self.observation_energy = energy_network(
-            "observation", observation_dim + state_dim + action_feature_dim
+            "observation",
+            observation_dim + state_dim + action_feature_dim,
+            state_dim if direct else 1,
         )
         self.transition_energy = energy_network(
-            "transition", 2 * state_dim + action_feature_dim
+            "transition", 2 * state_dim + action_feature_dim, 1 + state_dim if direct else 1
         )
 
     def _validate_context(
@@ -520,6 +541,50 @@ class EnergyBelief(nn.Module):
         )
         return torch.where(initial[:, None].bool(), initial_potential, recursive_potential)
 
+    def _direct_score_for_branch(
+        self,
+        query: torch.Tensor,
+        observation: torch.Tensor,
+        previous_particles: torch.Tensor,
+        previous_action: torch.Tensor,
+        initial: torch.Tensor,
+        potential_branch: PotentialBranch,
+    ) -> torch.Tensor:
+        """The directly parameterised score field (``score_parameterization="direct"``)."""
+
+        num_query = query.shape[1]
+        bound = self.direct_score_bound
+
+        def bounded(raw: torch.Tensor) -> torch.Tensor:
+            return bound * torch.tanh(raw / bound)
+
+        def initial_score() -> torch.Tensor:
+            obs = observation[:, None, :].expand(-1, num_query, -1)
+            return bounded(self.initial_energy(torch.cat((obs, query), dim=-1))) - query
+
+        def recursive_score() -> torch.Tensor:
+            num_previous = previous_particles.shape[1]
+            obs = observation[:, None, :].expand(-1, num_query, -1)
+            action = previous_action[:, None, :].expand(-1, num_query, -1)
+            field = bounded(self.observation_energy(torch.cat((obs, query, action), dim=-1)))
+            pairs = torch.cat(
+                (
+                    query[:, :, None, :].expand(-1, -1, num_previous, -1),
+                    previous_particles[:, None, :, :].expand(-1, num_query, -1, -1),
+                    previous_action[:, None, None, :].expand(-1, num_query, num_previous, -1),
+                ),
+                dim=-1,
+            )
+            transition = self.transition_energy(pairs)
+            weights = torch.softmax(transition[..., 0], dim=-1)
+            return field + (weights[..., None] * bounded(transition[..., 1:])).sum(dim=2)
+
+        if potential_branch == "initial":
+            return initial_score()
+        if potential_branch == "recursive":
+            return recursive_score()
+        return torch.where(initial[:, None, None].bool(), initial_score(), recursive_score())
+
     def log_potential(
         self,
         query: torch.Tensor,
@@ -529,6 +594,9 @@ class EnergyBelief(nn.Module):
         initial: torch.Tensor,
     ) -> torch.Tensor:
         """Evaluate the unnormalised scalar potential at all query particles."""
+
+        if self.score_parameterization == "direct":
+            raise ValueError("a directly parameterised score field has no scalar potential")
 
         self._validate_context(query, observation, previous_particles, previous_action, initial)
         potential_branch = self.classify_potential_branch(initial)
@@ -555,6 +623,15 @@ class EnergyBelief(nn.Module):
     ) -> torch.Tensor:
         """Score implementation for a prevalidated, preclassified context."""
 
+        if self.score_parameterization == "direct":
+            query = particles.detach() if detach_query else particles
+            with torch.set_grad_enabled(create_graph or torch.is_grad_enabled()):
+                score = self._direct_score_for_branch(
+                    query, observation, previous_particles, previous_action, initial, potential_branch
+                )
+                if self.score_clip > 0:
+                    score = score.clamp(-self.score_clip, self.score_clip)
+            return score if create_graph else score.detach()
         with torch.enable_grad():
             if detach_query:
                 query = particles.detach().requires_grad_(True)

@@ -188,6 +188,8 @@ _MODEL_KEYS = frozenset(
         "particle_sampler",
         "smi_component_scale",
         "belief_latent_dim",
+        "score_parameterization",
+        "direct_score_bound",
         "prediction_pretrain_steps",
         "prediction_interval_updates",
         "prediction_phase_updates",
@@ -327,6 +329,9 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         "smi_component_scale": 0.1,
         # The particle latent size was the simulator state size before this key.
         "belief_latent_dim": None,
+        # The score was always the autograd gradient of the learned scalar potential.
+        "score_parameterization": "energy",
+        "direct_score_bound": 10.0,
         # Interleaved next-observation prediction phases (sb_pomdp.prediction_schedule); off by default.
         "prediction_pretrain_steps": 0,
         "prediction_interval_updates": 0,
@@ -777,6 +782,9 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
     if sampler not in {"ula", "svgd", "smi"}:
         raise ConfigError("model.particle_sampler must be ula, svgd or smi")
     _positive_number(section["smi_component_scale"], "model.smi_component_scale")
+    if section["score_parameterization"] not in {"energy", "direct"}:
+        raise ConfigError("model.score_parameterization must be energy or direct")
+    _positive_number(section["direct_score_bound"], "model.direct_score_bound")
     if section["belief_latent_dim"] is not None:
         _integer(section["belief_latent_dim"], "model.belief_latent_dim")
     for key in ("prediction_pretrain_steps", "prediction_interval_updates", "prediction_phase_updates"):

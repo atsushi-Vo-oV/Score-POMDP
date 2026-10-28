@@ -57,6 +57,8 @@ _LEGACY_MODEL_DEFAULTS: dict[str, object] = {
     "particle_sampler": "ula",
     "smi_component_scale": 0.1,
     "belief_latent_dim": None,
+    "score_parameterization": "energy",
+    "direct_score_bound": 10.0,
     "prediction_pretrain_steps": 0,
     "prediction_interval_updates": 0,
     "prediction_phase_updates": 0,
