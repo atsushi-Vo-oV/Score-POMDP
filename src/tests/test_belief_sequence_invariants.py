@@ -361,3 +361,30 @@ def test_nonempty_prefix_replay_preserves_old_policy_log_probability(
         atol=1e-7,
         rtol=0.0,
     )
+
+
+@pytest.mark.parametrize("gradient_mode", ["full", "tbptt_1"])
+def test_replay_without_activation_checkpoint_gives_identical_values_and_gradients(gradient_mode: str) -> None:
+    """model.belief_activation_checkpoint=false is a pure speed/memory trade (exact same maths)."""
+
+    torch.manual_seed(733)
+    model_config = _model_config("gaussian", gradient_mode)
+    model = _actor_critic("gaussian", gradient_mode)
+    rollout = _rollout_with_nonempty_prefix(model, model_config)
+    model.train()
+    results = []
+    for checkpointed in (True, False):
+        model.zero_grad()
+        particles, scores = replay_belief_sequence(
+            model, rollout, torch.tensor([0]), dict(model_config, belief_activation_checkpoint=checkpointed)
+        )
+        condition = model.encode(particles.flatten(0, 1), scores.flatten(0, 1))
+        (condition.square().sum() + particles.square().sum()).backward()
+        grads = [p.grad.detach().clone() for p in model.belief.parameters() if p.grad is not None]
+        results.append((particles.detach(), scores.detach(), grads))
+    (p1, s1, g1), (p2, s2, g2) = results
+    torch.testing.assert_close(p1, p2, atol=1e-6, rtol=1e-6)
+    torch.testing.assert_close(s1, s2, atol=1e-6, rtol=1e-6)
+    assert len(g1) == len(g2) > 0
+    for a, b in zip(g1, g2, strict=True):
+        torch.testing.assert_close(a, b, atol=1e-6, rtol=1e-5)

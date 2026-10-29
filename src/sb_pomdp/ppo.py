@@ -237,8 +237,15 @@ def _replay_belief_step(
     gradient_mode: str,
     track_grad: bool,
     potential_branch: PotentialBranch | None = None,
+    activation_checkpoint: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Replay one time step, checkpointing the long full-BPTT graph."""
+    """Replay one time step, optionally checkpointing the long full-BPTT graph.
+
+    The checkpoint is exact but expensive here: every ``autograd.grad`` that builds a score
+    inside the step unpacks checkpointed activations and re-runs the step, so one replayed
+    step costs many forward passes (10-16x the uncheckpointed update in practice).
+    ``model.belief_activation_checkpoint=false`` trades that time for memory.
+    """
 
     # Classify before entering the checkpointed function.  Backward may replay
     # ``particle_update``, but it must neither synchronise the CUDA stream again
@@ -279,7 +286,7 @@ def _replay_belief_step(
             **common_arguments,
         )
 
-    if track_grad and gradient_mode == "full":
+    if track_grad and gradient_mode == "full" and activation_checkpoint:
         # Non-reentrant checkpointing supports the autograd.grad calls used to
         # construct energy scores and preserves the exact forward computation.
         return checkpoint(
@@ -334,6 +341,7 @@ def replay_belief_sequence(
     )
     if len(rollout.belief_prefixes) != rollout.rollout_shape[1]:
         raise ValueError("one belief replay prefix is required per rollout environment")
+    activation_checkpoint = bool(model_config.get("belief_activation_checkpoint", True))
     selected_environment_indices = environment_indices.detach().cpu().tolist()
     selected_prefixes = tuple(
         rollout.belief_prefixes[environment_index]
@@ -385,6 +393,7 @@ def replay_belief_sequence(
                 gradient_mode=gradient_mode,
                 track_grad=track_prefix_grad,
                 potential_branch=prefix_branches[prefix_index],
+                activation_checkpoint=activation_checkpoint,
             )
         prefix_particles.append(previous)
     previous_particles = torch.cat(prefix_particles, dim=0)
@@ -411,6 +420,7 @@ def replay_belief_sequence(
             gradient_mode=gradient_mode,
             track_grad=True,
             potential_branch=rollout_branches[time_index],
+            activation_checkpoint=activation_checkpoint,
         )
         replayed_particles.append(particles)
         replayed_scores.append(scores)
