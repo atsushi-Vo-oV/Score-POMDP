@@ -92,7 +92,7 @@
     "langevin_schedule_bound": "sigmoid",
     "particle_sampler": "svgd",
     "langevin_noise_scale": null,
-    "prediction_head": "belief_mixture"
+    "prediction_head": "condition"
   },
   "ppo": {
     "total_steps": 409600,

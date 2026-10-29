@@ -1137,6 +1137,22 @@ def _fill_light_dark_task_defaults(config: dict[str, Any]) -> None:
             task.setdefault(key, deepcopy(default))
 
 
+# Keys that change how a run is executed but not one number it computes: a resumed run may change
+# them (e.g. turn off the exact but slow belief-replay activation checkpoint mid-campaign).
+EXECUTION_ONLY_KEYS: dict[str, frozenset[str]] = {"model": frozenset({"belief_activation_checkpoint"})}
+
+
+def resume_comparable_config(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Legacy-normalised copy of *config* without the execution-only keys, for resume checks."""
+
+    result = normalize_legacy_resolved_config(config)
+    for section, keys in EXECUTION_ONLY_KEYS.items():
+        if isinstance(result.get(section), dict):
+            for key in keys:
+                result[section].pop(key, None)
+    return result
+
+
 def normalize_legacy_resolved_config(config: Mapping[str, Any]) -> dict[str, Any]:
     """Return a deep copy of *config* with post-campaign keys at their defaults.
 
@@ -1373,5 +1389,6 @@ __all__ = [
     "load_config",
     "normalize_legacy_resolved_config",
     "parse_cli_overrides",
+    "resume_comparable_config",
     "validate_config",
 ]

@@ -27,7 +27,7 @@ from torch.nn import functional
 
 from .artifacts import RunArtifacts, SeedArtifacts
 from .buffer import BeliefReplayPrefix, RolloutBuilder
-from .config import ExperimentConfig, load_config, normalize_legacy_resolved_config
+from .config import ExperimentConfig, load_config, normalize_legacy_resolved_config, resume_comparable_config
 from .envs import ActionSpec, make_env
 from .prediction_schedule import PredictionSchedule, random_actions
 from .networks import NetworkKinds, use_network_kinds
@@ -1519,8 +1519,8 @@ def _load_resume_checkpoint(
     if isinstance(checkpoint_config, Mapping):
         # A checkpoint written before a config key existed must stay resumable
         # at that key's legacy default.
-        checkpoint_config = normalize_legacy_resolved_config(checkpoint_config)
-    if checkpoint_config != config:
+        checkpoint_config = resume_comparable_config(checkpoint_config)
+    if checkpoint_config != resume_comparable_config(config):
         raise ValueError("resume checkpoint config does not exactly match the requested config")
     if checkpoint["task"] != task:
         raise ValueError(

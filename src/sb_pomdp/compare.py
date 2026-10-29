@@ -27,6 +27,7 @@ from .config import (
     ExperimentConfig,
     load_config,
     normalize_legacy_resolved_config,
+    resume_comparable_config,
 )
 from .envs import make_env
 from .run_experiments import validate_all_environments
@@ -722,10 +723,8 @@ def run_comparisons(
             run = RunArtifacts.open(explicit_root, experiment["label"])
             # A resolved config written before a schema key existed must resume
             # as an equal config when that key is left at its legacy default.
-            existing_config = normalize_legacy_resolved_config(
-                _read_json_object(run.resolved_config_path)
-            )
-            if existing_config != execution_config.to_dict():
+            existing_config = resume_comparable_config(_read_json_object(run.resolved_config_path))
+            if existing_config != resume_comparable_config(execution_config.to_dict()):
                 raise ConfigError("resumable run config differs from the original resolved config")
             resumed_run = True
         else:

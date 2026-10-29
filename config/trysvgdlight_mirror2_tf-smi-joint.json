@@ -93,7 +93,7 @@
     "particle_sampler": "smi",
     "langevin_noise_scale": null,
     "score_parameterization": "direct_joint",
-    "prediction_head": "belief_mixture"
+    "prediction_head": "condition"
   },
   "ppo": {
     "total_steps": 409600,

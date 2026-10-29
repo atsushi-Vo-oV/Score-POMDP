@@ -388,3 +388,15 @@ def test_replay_without_activation_checkpoint_gives_identical_values_and_gradien
     assert len(g1) == len(g2) > 0
     for a, b in zip(g1, g2, strict=True):
         torch.testing.assert_close(a, b, atol=1e-6, rtol=1e-5)
+
+
+def test_resume_comparison_ignores_only_the_execution_only_checkpoint_key() -> None:
+    from sb_pomdp.config import load_config, resume_comparable_config
+
+    original = load_config("config/core6_tps_b02.json").to_dict()
+    switched = {**original, "model": {**original["model"], "belief_activation_checkpoint": False}}
+    assert resume_comparable_config(original) == resume_comparable_config(switched)
+    changed = {**original, "model": {**original["model"], "langevin_step_size": 0.3}}
+    assert resume_comparable_config(original) != resume_comparable_config(changed)
+    legacy = {**original, "model": {k: v for k, v in original["model"].items() if k != "belief_activation_checkpoint"}}
+    assert resume_comparable_config(legacy) == resume_comparable_config(switched)
