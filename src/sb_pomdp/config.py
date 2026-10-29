@@ -90,6 +90,9 @@ _DISK_TAG_TASK_DEFAULTS: dict[str, Any] = {
     "start_distance": 0.6,
     "step_reward": 0.1,
     "capture_reward": 0.0,
+    "observation_mode": "count",
+    "range_noise_base": 0.05,
+    "range_noise_scale": 0.2,
 }
 _DISK_TAG_TASK_KEYS = _ENVIRONMENT_TASK_KEYS | frozenset(_DISK_TAG_TASK_DEFAULTS)
 _MOUNTAIN_HIKE_TASK_KEYS = frozenset(
@@ -685,7 +688,9 @@ def _validate_environment(value: Any, requested_tasks: Sequence[str]) -> Mapping
             _integer(task["corridor_length"], f"{path}.corridor_length")
         if is_disk_tag:
             _integer(task["num_ghosts"], f"{path}.num_ghosts")
-            for key in sorted(set(_DISK_TAG_TASK_DEFAULTS) - {"num_ghosts", "capture_reward"}):
+            if task["observation_mode"] not in {"count", "ranges"}:
+                raise ConfigError(f"{path}.observation_mode must be count or ranges")
+            for key in sorted(set(_DISK_TAG_TASK_DEFAULTS) - {"num_ghosts", "capture_reward", "observation_mode"}):
                 _number(task[key], f"{path}.{key}", minimum=0.0)
             _number(task["capture_reward"], f"{path}.capture_reward")
 

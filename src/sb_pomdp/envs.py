@@ -1628,6 +1628,12 @@ class DiskTagEnv(_BaseMaskedEnv):
     ``view_range``).  Everything about the ghosts is hidden; they are exchangeable, so the belief
     over them is a permutation-symmetric, multimodal distribution.
 
+    ``observation_mode="ranges"`` replaces the view-cone count by the noisy distance to every ghost
+    (fixed ghost order, all directions, no range limit): ``d_i + eps_i`` with
+    ``eps_i ~ N(0, (range_noise_base + range_noise_scale * d_i)^2)``.  A range carries no bearing,
+    so each ghost's belief is a ring (and a mirror pair about the player's path), resolved over
+    time by moving.
+
     State ``(x, y, phi, v, [g_x, g_y, g_heading, g_mode, g_target_x, g_target_y] * N, s_1..s_N)``.
     """
 
@@ -1654,8 +1660,18 @@ class DiskTagEnv(_BaseMaskedEnv):
         start_distance: float = 0.6,
         step_reward: float = 0.1,
         capture_reward: float = 0.0,
+        observation_mode: str = "count",
+        range_noise_base: float = 0.05,
+        range_noise_scale: float = 0.2,
     ) -> None:
         super().__init__(horizon=horizon, observation_noise_std=observation_noise_std, seed=seed)
+        if observation_mode not in ("count", "ranges"):
+            raise ValueError("observation_mode must be count or ranges")
+        if not (np.isfinite(range_noise_base) and np.isfinite(range_noise_scale)) or min(range_noise_base, range_noise_scale) < 0:
+            raise ValueError("range noise parameters must be finite and non-negative")
+        self.observation_mode = str(observation_mode)
+        self.range_noise_base = float(range_noise_base)
+        self.range_noise_scale = float(range_noise_scale)
         if isinstance(num_ghosts, bool) or not isinstance(num_ghosts, (int, np.integer)) or num_ghosts < 1:
             raise ValueError("num_ghosts must be a positive integer")
         values = (arena_radius, max_speed, acceleration, turn_rate, ghost_speed_min, ghost_speed_max,
@@ -1691,7 +1707,7 @@ class DiskTagEnv(_BaseMaskedEnv):
         self.step_reward = float(step_reward)
         self.capture_reward = float(capture_reward)
         self.state_dim = 4 + 7 * self.num_ghosts
-        self.observation_dim = 6
+        self.observation_dim = 5 + (self.num_ghosts if self.observation_mode == "ranges" else 1)
         self.oracle_dim = 5 + 4 * self.num_ghosts
         self.action_spec = ActionSpec.continuous(-1.0, 1.0, shape=(2,))
 
@@ -1731,8 +1747,13 @@ class DiskTagEnv(_BaseMaskedEnv):
     def _observation(self) -> np.ndarray:
         assert self._state is not None
         x, y, phi, speed = self._state[:4]
-        values = np.array([x, y, math.cos(phi), math.sin(phi), speed / self.max_speed,
-                           self.visible_count() / self.num_ghosts], dtype=np.float64)
+        own = [x, y, math.cos(phi), math.sin(phi), speed / self.max_speed]
+        if self.observation_mode == "ranges":
+            distances = np.linalg.norm(self._ghosts() - np.array([x, y]), axis=1)
+            noise = self._rng.normal(size=self.num_ghosts) * (self.range_noise_base + self.range_noise_scale * distances)
+            values = np.concatenate([own, distances + noise]).astype(np.float64)
+        else:
+            values = np.array(own + [self.visible_count() / self.num_ghosts], dtype=np.float64)
         return self._add_observation_noise(values)
 
     def oracle_features(self) -> np.ndarray:
@@ -1807,6 +1828,9 @@ _DISK_TAG_KEYS = {
     "start_distance",
     "step_reward",
     "capture_reward",
+    "observation_mode",
+    "range_noise_base",
+    "range_noise_scale",
 }
 
 _CAR_FLAG_KEYS = {

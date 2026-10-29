@@ -132,3 +132,21 @@ def test_the_score_belief_latent_size_is_a_model_choice() -> None:
     model_config = dict(resolved["model"], belief_latent_dim=6, langevin_warm_start=False)
     model = model_for_environment(env, model_config, torch.device("cpu"))
     assert model.belief.state_dim == 6 and model.encoder.state_dim == 6
+
+
+def test_range_observation_reports_every_ghost_distance_with_growing_noise() -> None:
+    env = DiskTagEnv(seed=0, observation_mode="ranges", range_noise_base=0.05, range_noise_scale=0.2)
+    assert env.observation_dim == 8
+    errors, distances = [], []
+    for seed in range(300):
+        observation, info = env.reset(seed=seed)
+        true = np.linalg.norm(env._ghosts() - info["state"][:2], axis=1)
+        errors.append(observation[5:] - true)
+        distances.append(true)
+    errors, distances = np.concatenate(errors), np.concatenate(distances)
+    assert abs(errors.mean()) < 0.03
+    near, far = distances < 0.8, distances > 1.2
+    assert errors[near].std() < errors[far].std()  # sigma = 0.05 + 0.2 d
+    assert errors.std() == pytest.approx(np.sqrt(np.mean((0.05 + 0.2 * distances) ** 2)), rel=0.15)
+    count_env = DiskTagEnv(seed=0)
+    assert count_env.observation_dim == 6 and count_env.observation_mode == "count"
