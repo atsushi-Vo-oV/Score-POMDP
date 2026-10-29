@@ -93,7 +93,8 @@
     "particle_sampler": "ula",
     "langevin_noise_scale": 0.2,
     "score_parameterization": "direct",
-    "prediction_head": "condition"
+    "prediction_head": "condition",
+    "belief_activation_checkpoint": false
   },
   "ppo": {
     "total_steps": 409600,

@@ -83,7 +83,8 @@
     ],
     "langevin_noise_scale": 0.2,
     "langevin_noise_scale_learnable": true,
-    "langevin_schedule_bound": "sigmoid"
+    "langevin_schedule_bound": "sigmoid",
+    "belief_activation_checkpoint": false
   },
   "ppo": {
     "total_steps": 409600,

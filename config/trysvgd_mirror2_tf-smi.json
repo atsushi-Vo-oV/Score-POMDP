@@ -92,7 +92,8 @@
     "langevin_schedule_bound": "sigmoid",
     "particle_sampler": "smi",
     "langevin_noise_scale": null,
-    "prediction_head": "condition"
+    "prediction_head": "condition",
+    "belief_activation_checkpoint": false
   },
   "ppo": {
     "total_steps": 409600,

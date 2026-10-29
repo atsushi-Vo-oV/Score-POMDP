@@ -29,7 +29,8 @@ def test_core61_arm_differs_from_core6_blearn_only_in_the_schedule_rate(task: st
     core6 = _flatten(load_config(f"config/core6_{task}_blearn.json").to_dict())
     core61 = _flatten(load_config(f"config/core61_{task}_blslow.json").to_dict())
     changed = {key for key in core6.keys() | core61.keys() if core6.get(key) != core61.get(key)}
-    assert changed == {"ppo.langevin_schedule_lr_multiplier", "experiment.label"}
+    assert changed == {"ppo.langevin_schedule_lr_multiplier", "experiment.label", "model.belief_activation_checkpoint"}
+    assert core61["model.belief_activation_checkpoint"] is False  # exact maths, 10-16x faster replay
     assert core61["experiment.label"] == f"core61-{task}-blslow"
     assert core61["ppo.learning_rate"] * core61["ppo.langevin_schedule_lr_multiplier"] == pytest.approx(0.0025)
 
