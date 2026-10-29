@@ -526,6 +526,36 @@ def condition_prediction_loss(
     return -(log_likelihood * valid).sum() / valid.sum().clamp_min(1.0)
 
 
+def belief_mixture_prediction_loss(
+    predictor: torch.nn.Module,
+    particles: torch.Tensor,
+    *,
+    observations: torch.Tensor,
+    previous_actions: torch.Tensor,
+    dones: torch.Tensor,
+    log_weights: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """``-log sum_k w_k p(o_{t+1} | x_{t,k}, a_t)`` over a ``[T, group]`` slice of particle beliefs.
+
+    ``particles [T, group, K, D]`` (and optional ``log_weights [T, group, K]``) carry their belief
+    graph; targets, the action at ``t`` (stored as the previous action at ``t + 1``) and the
+    episode-end mask follow :func:`condition_prediction_loss`.
+    """
+
+    steps, group = observations.shape[0], observations.shape[1]
+    if steps < 2:
+        return particles.new_zeros(())
+    count = (steps - 1) * group
+    log_likelihood = predictor.log_likelihood(
+        particles[:-1].reshape(count, *particles.shape[2:]),
+        previous_actions[1:].reshape(count, -1),
+        observations[1:].reshape(count, -1),
+        None if log_weights is None else log_weights[:-1].reshape(count, -1),
+    )
+    valid = (~dones[:-1]).reshape(-1).to(log_likelihood.dtype)
+    return -(log_likelihood * valid).sum() / valid.sum().clamp_min(1.0)
+
+
 def observation_prediction_loss(
     model: ScoreBeliefActorCritic,
     particles: torch.Tensor,
@@ -740,13 +770,19 @@ def update_ppo(
                     _time_environment_flatten(scores),
                 )
                 if objective == "prediction":
-                    prediction_loss = condition_prediction_loss(
-                        model.prediction_predictor,
-                        condition,
-                        observations=rollout.observations[:, environment_indices],
-                        previous_actions=rollout.previous_actions[:, environment_indices],
-                        dones=rollout.dones[:, environment_indices],
-                    )
+                    slice_kwargs = {
+                        "observations": rollout.observations[:, environment_indices],
+                        "previous_actions": rollout.previous_actions[:, environment_indices],
+                        "dones": rollout.dones[:, environment_indices],
+                    }
+                    if getattr(model, "prediction_head", "condition") == "belief_mixture":
+                        prediction_loss = belief_mixture_prediction_loss(
+                            model.prediction_predictor, particles, **slice_kwargs
+                        )
+                    else:
+                        prediction_loss = condition_prediction_loss(
+                            model.prediction_predictor, condition, **slice_kwargs
+                        )
                     (prediction_loss * microbatch_weight).backward()
                     minibatch_metrics["policy_loss"] += (
                         float(prediction_loss.detach().cpu()) * microbatch_weight

@@ -605,8 +605,14 @@ class ObservationPredictor(nn.Module):
         particles: torch.Tensor,
         action_features: torch.Tensor,
         next_observation: torch.Tensor,
+        log_weights: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Mixture log-likelihood ``log (1/K) sum_k p(o' | s_k, a)`` per batch row."""
+        """Mixture log-likelihood ``log sum_k w_k p(o' | s_k, a)`` per batch row.
+
+        Uniform weights ``1/K`` by default; ``log_weights [batch, K]`` (unnormalised) weight the
+        particles of a weighted filter (DPFRL).  The observation is conditionally independent of
+        the history given the state, so the predictive density is this belief mixture.
+        """
 
         if particles.ndim != 3 or particles.shape[-1] != self.state_dim:
             raise ValueError(
@@ -630,6 +636,8 @@ class ObservationPredictor(nn.Module):
             - 0.5 * math.log(2.0 * math.pi)
         )
         per_particle = per_dim.sum(dim=-1)
+        if log_weights is not None:
+            return torch.logsumexp(per_particle + torch.log_softmax(log_weights, dim=-1), dim=1)
         return torch.logsumexp(per_particle, dim=1) - math.log(num_particles)
 
 

@@ -86,7 +86,8 @@
     "langevin_schedule_bound": "sigmoid",
     "particle_sampler": "ula",
     "langevin_noise_scale": 0.2,
-    "score_parameterization": "direct"
+    "score_parameterization": "direct",
+    "prediction_head": "belief_mixture"
   },
   "ppo": {
     "total_steps": 204800,

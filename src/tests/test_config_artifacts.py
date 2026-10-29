@@ -65,6 +65,7 @@ _LEGACY_MODEL_DEFAULTS: dict[str, object] = {
     "prediction_phase_updates": 0,
     "prediction_predictor_hidden": [64],
     "prediction_mixture_components": 4,
+    "prediction_head": "condition",
     "policy_head_kind": "mlp",
     "alpha_pieces": 16,
     "alpha_temperature": 1.0,

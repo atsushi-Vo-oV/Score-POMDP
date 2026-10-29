@@ -1106,6 +1106,7 @@ class ParticleFilterActorCritic(nn.Module):
             raise ValueError("temporal_gradient_mode must be 'full' or 'tbptt_1'")
         hidden = initial_hidden
         outputs: list[torch.Tensor] = []
+        states: list[tuple[torch.Tensor, torch.Tensor]] = []
         for time_index in range(observations.shape[0]):
             if temporal_gradient_mode == "tbptt_1":
                 hidden = hidden.detach()
@@ -1118,6 +1119,13 @@ class ParticleFilterActorCritic(nn.Module):
             )
             hidden = self._pack(particles, log_weights)
             outputs.append(features)
+            states.append((particles, log_weights))
+        # Per-step weighted particle beliefs [T, B, K, D] / [T, B, K] of the last call, for the
+        # belief-mixture next-observation predictive of the prediction phases.
+        self.last_sequence_states = (
+            torch.stack([s[0] for s in states]),
+            torch.stack([s[1] for s in states]),
+        )
         return torch.stack(outputs, dim=0), hidden
 
     def step(

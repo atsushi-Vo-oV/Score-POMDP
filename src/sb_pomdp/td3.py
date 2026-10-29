@@ -372,6 +372,8 @@ def train_td3_single(
     first = environments[0]
     if not first.action_spec.is_continuous:
         raise ValueError("TD3 needs a continuous action space")
+    if model_config.get("prediction_head", "condition") != "condition":
+        raise ValueError("TD3 prediction phases support model.prediction_head=condition only")
     action_dim = first.action_spec.feature_dim
     latent_dim = None
     with use_network_kinds(NetworkKinds.from_config(model_config)):

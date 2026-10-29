@@ -31,9 +31,10 @@ from .baselines import (
 from .buffer import generalised_advantage_estimate
 from .config import ExperimentConfig
 from .envs import make_env
-from .networks import ConditionMixturePredictor, NetworkKinds, use_network_kinds
+from .networks import ConditionMixturePredictor, NetworkKinds, ObservationPredictor, use_network_kinds
 from .ppo import (
     PPOMetrics,
+    belief_mixture_prediction_loss,
     clip_gradients_or_skip,
     condition_prediction_loss,
     diffusion_advantage_weights,
@@ -237,14 +238,24 @@ def _make_model(
     if probe.enabled:
         if kind not in ("gru", "rnn", "particle_filter"):
             raise ValueError("the prediction phases support the recurrent baselines only")
-        # Same next-observation head as the score models, read from the policy condition.
-        model.prediction_predictor = ConditionMixturePredictor(
-            int(model.policy_condition_dim),
-            spec.feature_dim,
-            environment.observation_dim,
-            list(model_config.get("prediction_predictor_hidden", [64])),
-            components=int(model_config.get("prediction_mixture_components", 4)),
-        )
+        hidden = list(model_config.get("prediction_predictor_hidden", [64]))
+        if model_config.get("prediction_head", "condition") == "belief_mixture" and kind == "particle_filter":
+            # Weighted particle belief: sum_k w_k p(o' | x_k, a) (conditional independence).
+            model.prediction_predictor = ObservationPredictor(
+                int(comparison_config["pf_particle_dim"]), spec.feature_dim, environment.observation_dim, hidden
+            )
+            model.prediction_head = "belief_mixture"
+        else:
+            # GRU / RNN carry no particle set: predict the next-observation distribution from the
+            # recurrent information state (the approximate-information-state form).
+            model.prediction_predictor = ConditionMixturePredictor(
+                int(model.policy_condition_dim),
+                spec.feature_dim,
+                environment.observation_dim,
+                hidden,
+                components=int(model_config.get("prediction_mixture_components", 4)),
+            )
+            model.prediction_head = "condition"
     return model.to(device)
 
 
@@ -815,13 +826,20 @@ def _update_recurrent_prediction(
             features = replay_recurrent_sequence(
                 model, rollout, selected, temporal_gradient_mode=temporal_gradient_mode
             )
-            loss = condition_prediction_loss(
-                model.prediction_predictor,
-                features.reshape(-1, features.shape[-1]),
-                observations=observations[:, selected],
-                previous_actions=previous_actions[:, selected],
-                dones=rollout.dones[:, selected],
-            )
+            slice_kwargs = {
+                "observations": observations[:, selected],
+                "previous_actions": previous_actions[:, selected],
+                "dones": rollout.dones[:, selected],
+            }
+            if getattr(model, "prediction_head", "condition") == "belief_mixture":
+                particles, log_weights = model.last_sequence_states
+                loss = belief_mixture_prediction_loss(
+                    model.prediction_predictor, particles, log_weights=log_weights, **slice_kwargs
+                )
+            else:
+                loss = condition_prediction_loss(
+                    model.prediction_predictor, features.reshape(-1, features.shape[-1]), **slice_kwargs
+                )
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             gradient_norm, finite = clip_gradients_or_skip(

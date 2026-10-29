@@ -491,17 +491,24 @@ class ScoreBeliefActorCritic(nn.Module):
         )
         # Head of the interleaved next-observation prediction phases (read from the policy
         # condition, the same head every compared model gets); unused by the PPO loss.
-        self.prediction_predictor: nn.Module | None = (
-            ConditionMixturePredictor(
+        self.prediction_head = str(model_config.get("prediction_head", "condition"))
+        prediction_hidden = list(model_config.get("prediction_predictor_hidden", [64]))
+        if not prediction_enabled:
+            self.prediction_predictor: nn.Module | None = None
+        elif self.prediction_head == "belief_mixture":
+            # o_{t+1} is conditionally independent of the history given s_{t+1}: the belief
+            # predictive is the particle mixture (1/K) sum_k p(o_{t+1} | x_k, a_t).
+            self.prediction_predictor = ObservationPredictor(
+                state_dim, action_feature_dim, observation_dim, prediction_hidden
+            )
+        else:
+            self.prediction_predictor = ConditionMixturePredictor(
                 condition_dim,
                 action_feature_dim,
                 observation_dim,
-                list(model_config.get("prediction_predictor_hidden", [64])),
+                prediction_hidden,
                 components=int(model_config.get("prediction_mixture_components", 4)),
             )
-            if prediction_enabled
-            else None
-        )
         self.observation_prediction_coef = float(
             model_config.get("observation_prediction_coef", 0.0)
         )

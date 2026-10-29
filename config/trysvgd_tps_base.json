@@ -83,7 +83,8 @@
       64
     ],
     "prediction_mixture_components": 4,
-    "langevin_schedule_bound": "sigmoid"
+    "langevin_schedule_bound": "sigmoid",
+    "prediction_head": "belief_mixture"
   },
   "ppo": {
     "total_steps": 204800,

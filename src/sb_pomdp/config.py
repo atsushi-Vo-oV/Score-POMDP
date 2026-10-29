@@ -196,6 +196,7 @@ _MODEL_KEYS = frozenset(
         "prediction_phase_updates",
         "prediction_predictor_hidden",
         "prediction_mixture_components",
+        "prediction_head",
         "particle_clip",
         "score_clip",
         "energy_hidden",
@@ -341,6 +342,9 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         "prediction_phase_updates": 0,
         "prediction_predictor_hidden": [64],
         "prediction_mixture_components": 4,
+        # condition: mixture density on the policy condition; belief_mixture: the conditional-
+        # independence belief predictive  sum_k w_k p(o' | x_k, a)  for particle beliefs.
+        "prediction_head": "condition",
         "policy_head_kind": "mlp",
         "alpha_pieces": 16,
         "alpha_temperature": 1.0,
@@ -800,6 +804,8 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
         )
     _positive_integer_list(section["prediction_predictor_hidden"], "model.prediction_predictor_hidden")
     _integer(section["prediction_mixture_components"], "model.prediction_mixture_components")
+    if section["prediction_head"] not in {"condition", "belief_mixture"}:
+        raise ConfigError("model.prediction_head must be condition or belief_mixture")
     if sampler != "ula" and (
         section["langevin_noise_scale"] is not None
         or section["langevin_noise_scale_learnable"]
