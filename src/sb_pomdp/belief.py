@@ -81,7 +81,9 @@ _LOG_NOISE_SCALE_MIN = math.log(1e-3)
 _LOG_NOISE_SCALE_MAX = math.log(2.0)
 _SCHEDULE_BOUNDS = ("clamp", "sigmoid")
 PARTICLE_SAMPLERS = ("ula", "svgd", "smi")
-SCORE_PARAMETERIZATIONS = ("energy", "direct")
+SCORE_PARAMETERIZATIONS = ("energy", "direct", "direct_joint")
+# Width of the previous-belief summary c(x) that the joint direct score network reads.
+_JOINT_CONTEXT_DIM = 8
 # SMI component scales s_k are kept in [1e-3, 2] (same range as the ULA noise scale).
 _LOG_SMI_SCALE_MIN = math.log(1e-3)
 _LOG_SMI_SCALE_MAX = math.log(2.0)
@@ -241,11 +243,14 @@ class EnergyBelief(nn.Module):
     ) -> None:
         super().__init__()
         if score_parameterization not in SCORE_PARAMETERIZATIONS:
-            raise ValueError("score_parameterization must be energy or direct")
+            raise ValueError("score_parameterization must be energy, direct or direct_joint")
         # ``direct``: the three networks output the score itself (no autograd through a scalar
         # potential): g(o, x) - x at t = 0, and f(o, x, a) + sum_j softmax_j(k_j) v_j at t >= 1 with
         # (k_j, v_j) = transition(x, x_{t-1,j}, a), the attention analogue of the gradient of the
         # log-mean-exp transition energy.  The field is not constrained to be conservative.
+        # ``direct_joint`` does not add the two terms: the transition network returns attention
+        # logits and context features (k_j, h_j), c(x) = sum_j softmax_j(k_j) h_j summarises the
+        # previous belief around x, and one network maps (o, x, a, c(x)) to the score.
         self.score_parameterization = str(score_parameterization)
         # A SiLU energy network has a bounded gradient; a network that outputs the score grows
         # linearly in |x| and makes the transport expand without limit, so its outputs are bounded
@@ -390,17 +395,20 @@ class EnergyBelief(nn.Module):
             if observation_anchor
             else None
         )
-        direct = self.score_parameterization == "direct"
+        direct = self.score_parameterization != "energy"
+        joint = self.score_parameterization == "direct_joint"
         self.initial_energy = energy_network(
             "initial", observation_dim + state_dim, state_dim if direct else 1
         )
         self.observation_energy = energy_network(
             "observation",
-            observation_dim + state_dim + action_feature_dim,
+            observation_dim + state_dim + action_feature_dim + (_JOINT_CONTEXT_DIM if joint else 0),
             state_dim if direct else 1,
         )
         self.transition_energy = energy_network(
-            "transition", 2 * state_dim + action_feature_dim, 1 + state_dim if direct else 1
+            "transition",
+            2 * state_dim + action_feature_dim,
+            1 + (_JOINT_CONTEXT_DIM if joint else state_dim) if direct else 1,
         )
 
     def _validate_context(
@@ -566,7 +574,6 @@ class EnergyBelief(nn.Module):
             num_previous = previous_particles.shape[1]
             obs = observation[:, None, :].expand(-1, num_query, -1)
             action = previous_action[:, None, :].expand(-1, num_query, -1)
-            field = bounded(self.observation_energy(torch.cat((obs, query, action), dim=-1)))
             pairs = torch.cat(
                 (
                     query[:, :, None, :].expand(-1, -1, num_previous, -1),
@@ -577,6 +584,10 @@ class EnergyBelief(nn.Module):
             )
             transition = self.transition_energy(pairs)
             weights = torch.softmax(transition[..., 0], dim=-1)
+            if self.score_parameterization == "direct_joint":
+                context = (weights[..., None] * transition[..., 1:]).sum(dim=2)
+                return bounded(self.observation_energy(torch.cat((obs, query, action, context), dim=-1)))
+            field = bounded(self.observation_energy(torch.cat((obs, query, action), dim=-1)))
             return field + (weights[..., None] * bounded(transition[..., 1:])).sum(dim=2)
 
         if potential_branch == "initial":
@@ -595,7 +606,7 @@ class EnergyBelief(nn.Module):
     ) -> torch.Tensor:
         """Evaluate the unnormalised scalar potential at all query particles."""
 
-        if self.score_parameterization == "direct":
+        if self.score_parameterization != "energy":
             raise ValueError("a directly parameterised score field has no scalar potential")
 
         self._validate_context(query, observation, previous_particles, previous_action, initial)
@@ -623,7 +634,7 @@ class EnergyBelief(nn.Module):
     ) -> torch.Tensor:
         """Score implementation for a prevalidated, preclassified context."""
 
-        if self.score_parameterization == "direct":
+        if self.score_parameterization != "energy":
             query = particles.detach() if detach_query else particles
             with torch.set_grad_enabled(create_graph or torch.is_grad_enabled()):
                 score = self._direct_score_for_branch(

@@ -27,7 +27,13 @@ run_arm () {
 run_arm config/trysvgdlight_mirror2_tf-ula.json score_transformer mountain_hike mirror2-ula
 run_arm config/trysvgdlight_mirror2_tf-svgd.json score_transformer mountain_hike mirror2-svgd
 run_arm config/trysvgdlight_mirror2_tf-smi.json score_transformer mountain_hike mirror2-smi
+run_arm config/trysvgdlight_mirror2_tf-ula-joint.json score_transformer mountain_hike mirror2-ulajoint
+run_arm config/trysvgdlight_mirror2_tf-svgd-joint.json score_transformer mountain_hike mirror2-svgdjoint
+run_arm config/trysvgdlight_mirror2_tf-smi-joint.json score_transformer mountain_hike mirror2-smijoint
 run_arm config/trysvgdlight_tps_tf-ula.json score_transformer mountain_hike tps-ula
 run_arm config/trysvgdlight_tps_tf-svgd.json score_transformer mountain_hike tps-svgd
 run_arm config/trysvgdlight_tps_tf-smi.json score_transformer mountain_hike tps-smi
+run_arm config/trysvgdlight_tps_tf-ula-joint.json score_transformer mountain_hike tps-ulajoint
+run_arm config/trysvgdlight_tps_tf-svgd-joint.json score_transformer mountain_hike tps-svgdjoint
+run_arm config/trysvgdlight_tps_tf-smi-joint.json score_transformer mountain_hike tps-smijoint
 echo "try-svgd-light debug completed all arms."

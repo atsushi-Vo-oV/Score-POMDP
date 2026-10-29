@@ -82,3 +82,37 @@ def test_direct_score_stays_bounded_far_from_the_origin() -> None:
     far = 1e4 * query
     recursive = belief.score_at(far, observation, previous, action, torch.zeros(2, dtype=torch.bool), create_graph=False)
     assert recursive.abs().max() <= 2 * 10.0 + 1e-4  # field + attention average, each bounded by B
+
+
+def _joint(**kwargs) -> EnergyBelief:
+    torch.manual_seed(0)
+    return EnergyBelief(3, 2, 2, [8], score_parameterization="direct_joint", **kwargs)
+
+
+def test_joint_direct_score_reads_one_network_with_a_previous_belief_context() -> None:
+    from sb_pomdp.belief import _JOINT_CONTEXT_DIM
+
+    belief = _joint()
+    assert belief.transition_energy(torch.zeros(1, 6)).shape == (1, 1 + _JOINT_CONTEXT_DIM)
+    assert belief.observation_energy(torch.zeros(1, 7 + _JOINT_CONTEXT_DIM)).shape == (1, 2)
+    query, observation, previous, action = _context()
+    score = belief.score_at(query, observation, previous, action, torch.zeros(2, dtype=torch.bool), create_graph=False)
+    b, i, bound = 0, 2, belief.direct_score_bound
+    out = belief.transition_energy(torch.cat((query[b, i].expand(4, -1), previous[b], action[b].expand(4, -1)), -1))
+    context = (torch.softmax(out[:, 0], 0)[:, None] * out[:, 1:]).sum(0)
+    raw = belief.observation_energy(torch.cat((observation[b], query[b, i], action[b], context)))
+    assert torch.allclose(score[b, i], bound * torch.tanh(raw / bound), atol=1e-6)
+    assert score.abs().max() <= bound + 1e-5
+
+
+@pytest.mark.parametrize("sampler", ["ula", "svgd", "smi"])
+def test_joint_direct_score_trains_every_network(sampler: str) -> None:
+    belief = _joint(particle_sampler=sampler, langevin_noise_scale=0.2 if sampler == "ula" else None)
+    _, observation, previous, action = _context(k=4)
+    initial_noise, step_noise = belief.draw_particle_noise(observation, num_particles=4, num_steps=3)
+    particles, scores = belief.particles_from_noise(
+        observation, previous, action, torch.zeros(2, dtype=torch.bool), initial_noise=initial_noise,
+        langevin_noise=step_noise, step_size=0.2, track_grad=True)
+    (particles.square().sum() + scores.square().sum()).backward()
+    for network in (belief.observation_energy, belief.transition_energy):
+        assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in network.parameters())

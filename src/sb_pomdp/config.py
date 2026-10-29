@@ -785,8 +785,8 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
     if sampler not in {"ula", "svgd", "smi"}:
         raise ConfigError("model.particle_sampler must be ula, svgd or smi")
     _positive_number(section["smi_component_scale"], "model.smi_component_scale")
-    if section["score_parameterization"] not in {"energy", "direct"}:
-        raise ConfigError("model.score_parameterization must be energy or direct")
+    if section["score_parameterization"] not in {"energy", "direct", "direct_joint"}:
+        raise ConfigError("model.score_parameterization must be energy, direct or direct_joint")
     _positive_number(section["direct_score_bound"], "model.direct_score_bound")
     _boolean(section["belief_activation_checkpoint"], "model.belief_activation_checkpoint")
     if section["belief_latent_dim"] is not None:
