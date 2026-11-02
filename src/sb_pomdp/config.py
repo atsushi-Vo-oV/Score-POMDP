@@ -1169,6 +1169,11 @@ EXECUTION_ONLY_KEYS: dict[str, frozenset[str]] = {
     "model": frozenset({
         "belief_activation_checkpoint", "score_implementation", "belief_compile", "belief_cuda_graphs",
     }),
+    # The effective minibatch is fixed by ppo.minibatch_size; the sequence microbatch only
+    # splits its belief replay into gradient-accumulation pieces whose weighted losses
+    # reproduce the whole-minibatch objective (see ppo._sequence_mean and
+    # tests/test_speedup_exactness.py::test_update_ppo_is_invariant_to_sequence_microbatch).
+    "ppo": frozenset({"sequence_microbatch_size"}),
 }
 
 

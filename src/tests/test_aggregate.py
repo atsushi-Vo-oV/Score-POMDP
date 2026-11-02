@@ -449,6 +449,7 @@ def test_aggregate_accepts_execution_only_config_differences(tmp_path: Path) -> 
         "model.belief_activation_checkpoint": False,
         "model.score_implementation": "analytic",
         "model.belief_cuda_graphs": True,
+        "ppo.sequence_microbatch_size": master.to_dict()["ppo"]["minibatch_size"],
     })
     summary = _summary("score_transformer", "masked_pendulum", 0)
     source = _write_source_root(tmp_path / "execution-source", executed, [summary])

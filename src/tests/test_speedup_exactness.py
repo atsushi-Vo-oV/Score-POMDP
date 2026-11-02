@@ -440,3 +440,58 @@ def test_prefix_only_replays_active_rows_on_their_saved_branch(mixed):
         assert torch.all(initial if branch == "initial" else ~initial)
     for left, right in zip(actual, expected, strict=True):
         torch.testing.assert_close(left, right, atol=1e-6, rtol=1e-6)
+
+
+@pytest.mark.parametrize("sampler", ["ula", "smi"])
+@pytest.mark.parametrize("encoder", ["transformer", "alpha_pool"])
+def test_update_ppo_is_invariant_to_sequence_microbatch(sampler, encoder):
+    """``ppo.sequence_microbatch_size`` is execution-only: replaying one environment per
+    microbatch and the whole minibatch at once give the same metrics, gradients and optimizer
+    steps (episodes end at different times so the per-sequence mean matters)."""
+
+    model, config, rollout = _fixture("energy", sampler, encoder, continuous=True)
+    dones = torch.zeros_like(rollout.dones)
+    dones[1, 0] = True
+    dones[2, 2] = True
+    rollout = replace(rollout, dones=dones)
+    other = copy.deepcopy(model)
+    opt1 = torch.optim.Adam(model.parameters(), lr=0.001)
+    opt2 = torch.optim.Adam(other.parameters(), lr=0.001)
+    base = {
+        "minibatch_size": 9,
+        "normalize_advantage": True,
+        "epochs": 2,
+        "clip_coef": 0.2,
+        "value_coef": 0.5,
+        "entropy_coef": 0.01,
+        "max_grad_norm": 100.0,
+    }
+    rng = torch.random.get_rng_state().clone()
+    gen1 = torch.Generator().manual_seed(31)
+    metrics1 = ppo.update_ppo(
+        model, opt1, rollout, config, {**base, "sequence_microbatch_size": 9}, generator=gen1
+    )
+    rng1 = torch.random.get_rng_state().clone()
+    torch.random.set_rng_state(rng)
+    gen2 = torch.Generator().manual_seed(31)
+    metrics2 = ppo.update_ppo(
+        other, opt2, rollout, config, {**base, "sequence_microbatch_size": 3}, generator=gen2
+    )
+    for field in fields(metrics1):
+        torch.testing.assert_close(
+            torch.tensor(getattr(metrics1, field.name)),
+            torch.tensor(getattr(metrics2, field.name)),
+            atol=1e-6,
+            rtol=1e-5,
+            msg=lambda m, name=field.name: f"{name}: {m}",
+        )
+    _compare_grads(_grads(model), _grads(other))
+    assert torch.equal(rng1, torch.random.get_rng_state())
+    assert torch.equal(gen1.get_state(), gen2.get_state())
+    # Gradients agree to 1e-5 above.  Adam divides every element by its running magnitude, so an
+    # element whose gradient is itself ~1e-7 (a transformer bias here) can move by up to the
+    # learning rate when the summation order flips its sign; observed 2.0e-4 on Windows MKL.
+    for (name, p1), (_, p2) in zip(model.named_parameters(), other.named_parameters(), strict=True):
+        torch.testing.assert_close(
+            p1, p2, atol=1e-3, rtol=1e-5, msg=lambda m, name=name: f"{name}: {m}"
+        )

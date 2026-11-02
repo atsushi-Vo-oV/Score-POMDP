@@ -152,7 +152,9 @@ minibatch・sequence microbatch の不整合などは学習前に失敗します
 `ppo.minibatch_size` は1回の optimizer stepに対応する有効PPO minibatch、
 `ppo.sequence_microbatch_size` はその内部で一度にbelief sequenceを再生してbackwardする大きさです。
 各microbatchの勾配を蓄積してから1回だけgradient clippingとoptimizer stepを行うため、有効minibatchは
-変わりません。どちらも `ppo.rollout_steps` の倍数とし、有効minibatchはsequence microbatchで
+変わりません（損失は系列ごとの平均の平均なので分割に依存せず、`sequence_microbatch_size` は
+実行方法だけを決める execution-only キーとして resume・aggregate の設定比較から除かれます。
+GPU では大きいほど速く、CUDA Graphs では 1 回の再生で処理する環境数になります）。どちらも `ppo.rollout_steps` の倍数とし、有効minibatchはsequence microbatchで
 割り切れる必要があります。`sb-pomdp-run` は提案法だけを実行する低水準入口として残していますが、
 比較結果を作るときは `sb-pomdp-compare` を使います。
 
