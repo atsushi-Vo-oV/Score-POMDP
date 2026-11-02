@@ -793,7 +793,8 @@ class EnergyBelief(nn.Module):
         track_grad: bool,
         temporal_gradient_mode: TemporalGradientMode = "full",
         potential_branch: PotentialBranch | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        need_scores: bool = True,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Replay one reparameterized ULA belief update from explicit noise.
 
         ``temporal_gradient_mode="full"`` retains the graph carried by the
@@ -802,6 +803,9 @@ class EnergyBelief(nn.Module):
         remain differentiable.  Environment observations and realised actions
         are treated as replay inputs by the caller rather than differentiated
         through an environment model.
+
+        ``need_scores=False`` skips only the final readout and returns ``None``
+        for scores. All transport scores (including SMI scale updates) remain.
         """
 
         if temporal_gradient_mode not in {"full", "tbptt_1"}:
@@ -962,21 +966,23 @@ class EnergyBelief(nn.Module):
                 if not track_grad:
                     particles = particles.detach()
 
-            scores = self._score_at_for_branch(
-                particles,
-                observation,
-                incoming_particles,
-                previous_action,
-                initial,
-                potential_branch,
-                create_graph=track_grad,
-                detach_query=not track_grad,
-            )
-            if log_scales is not None:
-                scores = torch.cat((scores, log_scales), dim=-1)
+            scores = None
+            if need_scores:
+                scores = self._score_at_for_branch(
+                    particles,
+                    observation,
+                    incoming_particles,
+                    previous_action,
+                    initial,
+                    potential_branch,
+                    create_graph=track_grad,
+                    detach_query=not track_grad,
+                )
+                if log_scales is not None:
+                    scores = torch.cat((scores, log_scales), dim=-1)
         if track_grad:
             return particles, scores
-        return particles.detach(), scores.detach()
+        return particles.detach(), None if scores is None else scores.detach()
 
     def _stein_step(
         self,

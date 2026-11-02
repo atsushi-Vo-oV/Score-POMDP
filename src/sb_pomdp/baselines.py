@@ -315,7 +315,7 @@ class _PolicyValueHeads(nn.Module):
                     deterministic=deterministic,
                     generator=generator,
                 )
-                _, step_entropy = self.diffusion_policy.log_prob_chain(flat_features, chain)
+                step_entropy = self.diffusion_policy.chain_entropy(flat_features)
                 return PolicySample(
                     action=action.reshape(*leading_shape, action.shape[-1]),
                     log_prob=step_log_prob.reshape(*leading_shape, step_log_prob.shape[-1]),

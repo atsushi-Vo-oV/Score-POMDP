@@ -26,13 +26,19 @@ import torch
 from torch.nn import functional
 
 from .artifacts import RunArtifacts, SeedArtifacts
+from .belief import EnergyBelief
 from .buffer import BeliefReplayPrefix, RolloutBuilder
-from .config import ExperimentConfig, load_config, normalize_legacy_resolved_config, resume_comparable_config
+from .config import (
+    ExperimentConfig,
+    load_config,
+    normalize_legacy_resolved_config,
+    resume_comparable_config,
+)
 from .envs import ActionSpec, make_env
-from .prediction_schedule import PredictionSchedule, random_actions
-from .networks import NetworkKinds, use_network_kinds
+from .networks import AlphaPoolBeliefEncoder, NetworkKinds, use_network_kinds
 from .policies import ScoreBeliefActorCritic
 from .ppo import encode_conditions, update_ppo, value_from_conditions
+from .prediction_schedule import PredictionSchedule, random_actions
 from .value_transform import ValueTransform
 
 LOGGER = logging.getLogger("sb_pomdp")
@@ -430,20 +436,52 @@ def _recondition_belief_context(
             if not bool(context.initial[environment_index]):
                 raise RuntimeError("a non-initial belief context is missing its episode history")
             rebuilt[environment_index].zero_()
-            continue
-        previous_particles = torch.zeros_like(rebuilt[environment_index : environment_index + 1])
-        for time_index in range(len(history.observations)):
-            previous_particles, _ = model.belief.particles_from_noise(
-                history.observations[time_index][None],
-                previous_particles,
-                history.previous_actions[time_index][None],
-                history.initial[time_index][None],
-                initial_noise=history.ula_initial_noise[time_index][None],
-                langevin_noise=history.ula_step_noises[time_index][None],
-                step_size=float(model_config["langevin_step_size"]),
-                track_grad=False,
-            )
-        rebuilt[environment_index] = previous_particles[0]
+    lengths = [len(history.observations) for history in histories]
+    nonempty = [index for index, length in enumerate(lengths) if length]
+    if nonempty:
+        rebuilt[nonempty] = 0
+        # Classify all saved rows in one transfer, then group initial and
+        # recursive environments so each keeps its original potential branch.
+        initial_values = (
+            torch.stack([value for history in histories for value in history.initial])
+            .detach().cpu().tolist()
+        )
+        branches = []
+        offset = 0
+        for length in lengths:
+            branches.append(initial_values[offset : offset + length])
+            offset += length
+        for time_index in range(max(lengths)):
+            for is_initial in (True, False):
+                active = [
+                    index for index in nonempty
+                    if lengths[index] > time_index
+                    and bool(branches[index][time_index]) == is_initial
+                ]
+                if not active:
+                    continue
+                kwargs: dict[str, Any] = {}
+                if isinstance(model.belief, EnergyBelief):
+                    kwargs.update(
+                        potential_branch="initial" if is_initial else "recursive",
+                        need_scores=False,
+                    )
+                particles, _ = model.belief.particles_from_noise(
+                    torch.stack([histories[index].observations[time_index] for index in active]),
+                    rebuilt[active],
+                    torch.stack([histories[index].previous_actions[time_index] for index in active]),
+                    torch.stack([histories[index].initial[time_index] for index in active]),
+                    initial_noise=torch.stack([
+                        histories[index].ula_initial_noise[time_index] for index in active
+                    ]),
+                    langevin_noise=torch.stack([
+                        histories[index].ula_step_noises[time_index] for index in active
+                    ]),
+                    step_size=float(model_config["langevin_step_size"]),
+                    track_grad=False,
+                    **kwargs,
+                )
+                rebuilt[active] = particles
     return BeliefContext(
         observation=context.observation,
         previous_particles=rebuilt,
@@ -597,13 +635,23 @@ def _sample_belief(
     model_config: dict[str, Any],
     *,
     generator: torch.Generator | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor | None]:
     initial_noise, ula_step_noises = model.belief.draw_particle_noise(
         context.observation,
         num_particles=int(model_config["num_particles"]),
         num_steps=int(model_config["langevin_steps"]),
         generator=generator,
     )
+    # Evaluation/bootstrap only read the encoders. Rollout keeps its scores
+    # because the diagnostics also consume them, even for alpha_pool.
+    score_arguments = {}
+    if isinstance(model.belief, EnergyBelief):
+        encoders = (model.encoder, model.value_encoder)
+        score_arguments["need_scores"] = not all(
+            encoder is None
+            or (isinstance(encoder, AlphaPoolBeliefEncoder) and not encoder.use_scores)
+            for encoder in encoders
+        )
     return model.belief.particles_from_noise(
         context.observation,
         context.previous_particles,
@@ -613,6 +661,7 @@ def _sample_belief(
         langevin_noise=ula_step_noises,
         step_size=float(model_config["langevin_step_size"]),
         track_grad=False,
+        **score_arguments,
     )
 
 

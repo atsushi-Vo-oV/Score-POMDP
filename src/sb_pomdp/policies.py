@@ -233,6 +233,17 @@ class DiffusionPolicy(nn.Module):
             entropies.append(distribution.entropy())
         return torch.stack(log_probabilities, dim=1), torch.stack(entropies, dim=1)
 
+    def chain_entropy(self, condition: torch.Tensor) -> torch.Tensor:
+        """Entropy of the unsquashed Gaussian transitions, with the same std clamp."""
+        entropies = []
+        for step_index in reversed(range(self.num_steps)):
+            variance = self.posterior_variance[step_index].to(condition.dtype)
+            std = torch.sqrt(variance.clamp_min(self.min_std**2))
+            mean = condition.new_zeros((condition.shape[0], self.action_dim))
+            distribution = Independent(Normal(mean, torch.ones_like(mean) * std), 1)
+            entropies.append(distribution.entropy())
+        return torch.stack(entropies, dim=1)
+
 
 class TanhGaussianPolicy(nn.Module):
     """Condition-dependent diagonal Gaussian followed by an affine tanh map.
@@ -627,10 +638,10 @@ class ScoreBeliefActorCritic(nn.Module):
         else:
             self.action_value_head = None
 
-    def encode(self, particles: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:
+    def encode(self, particles: torch.Tensor, scores: torch.Tensor | None) -> torch.Tensor:
         return self.encoder(particles, scores)
 
-    def encode_value(self, particles: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:
+    def encode_value(self, particles: torch.Tensor, scores: torch.Tensor | None) -> torch.Tensor:
         """Condition vector for the critic (own encoder, detached shared, or shared)."""
 
         if self.value_encoder is not None:
@@ -639,7 +650,7 @@ class ScoreBeliefActorCritic(nn.Module):
         return condition.detach() if self.value_encoder_mode == "detached" else condition
 
     def encode_both(
-        self, particles: torch.Tensor, scores: torch.Tensor
+        self, particles: torch.Tensor, scores: torch.Tensor | None
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Policy and critic conditions, sharing one encoder pass when possible."""
 
@@ -726,7 +737,7 @@ class ScoreBeliefActorCritic(nn.Module):
                 deterministic=deterministic,
                 generator=generator,
             )
-            _, step_entropy = self.diffusion_policy.log_prob_chain(condition, chain)
+            step_entropy = self.diffusion_policy.chain_entropy(condition)
             return PolicySample(
                 action=action,
                 log_prob=step_log_prob,

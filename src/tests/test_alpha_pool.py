@@ -52,6 +52,47 @@ def test_alpha_pool_encoder_is_permutation_invariant_and_ignores_scores() -> Non
     assert not torch.allclose(a, b)
 
 
+@pytest.mark.parametrize("sampler", ["ula", "svgd", "smi"])
+@pytest.mark.parametrize("use_scores", [False, True])
+@pytest.mark.parametrize("value_encoder", ["shared", "separate"])
+def test_alpha_evaluation_omits_only_unused_scores(sampler, use_scores, value_encoder) -> None:
+    from unittest.mock import patch
+
+    from sb_pomdp.train import BeliefContext, _sample_belief, _sample_belief_for_rollout
+
+    torch.manual_seed(41)
+    config = _model_config(
+        particle_sampler=sampler, alpha_use_scores=use_scores, value_encoder=value_encoder,
+    )
+    model = ScoreBeliefActorCritic(
+        observation_dim=3, state_dim=2, action_kind="discrete", action_feature_dim=2,
+        discrete_actions=2, action_low=None, action_high=None, model_config=config,
+    )
+    context = BeliefContext(
+        observation=torch.randn(2, 3), previous_particles=torch.randn(2, 4, 2),
+        previous_action=torch.zeros(2, 2), initial=torch.tensor([True, False]),
+    )
+    reference_rng = torch.Generator().manual_seed(81)
+    actual_rng = torch.Generator().manual_seed(81)
+    reference_particles, reference_scores, _, _ = _sample_belief_for_rollout(
+        model, context, config, generator=reference_rng,
+    )
+    with patch.object(model.belief, "_score_at_for_branch", wraps=model.belief._score_at_for_branch) as score:
+        particles, scores = _sample_belief(model, context, config, generator=actual_rng)
+    assert score.call_count == config["langevin_steps"] + int(use_scores)
+    assert (scores is None) == (not use_scores)
+    torch.testing.assert_close(particles, reference_particles, atol=0, rtol=0)
+    assert torch.equal(actual_rng.get_state(), reference_rng.get_state())
+    with torch.no_grad():
+        expected = model.encode_both(reference_particles, reference_scores)
+        actual = model.encode_both(particles, scores)
+    for left, right in zip(actual, expected, strict=True):
+        torch.testing.assert_close(left, right, atol=0, rtol=0)
+    if use_scores:
+        with pytest.raises(ValueError, match="scores are required"):
+            model.encode(particles, None)
+
+
 def test_alpha_pool_encoder_is_linear_in_the_belief() -> None:
     # Mean pooling with no post-pooling network: the encoding of a union of two
     # equally sized clouds is the average of their encodings.

@@ -183,7 +183,7 @@ def _clipped_policy_loss(
 
 
 def encode_conditions(
-    model: ScoreBeliefActorCritic, particles: torch.Tensor, scores: torch.Tensor
+    model: ScoreBeliefActorCritic, particles: torch.Tensor, scores: torch.Tensor | None
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Policy and critic conditions; models without a critic encoder share one."""
 
@@ -198,7 +198,7 @@ def encode_conditions(
 
 
 def encode_value_condition(
-    model: ScoreBeliefActorCritic, particles: torch.Tensor, scores: torch.Tensor
+    model: ScoreBeliefActorCritic, particles: torch.Tensor, scores: torch.Tensor | None
 ) -> torch.Tensor:
     encode_value = getattr(model, "encode_value", None)
     if encode_value is None:
@@ -238,7 +238,8 @@ def _replay_belief_step(
     track_grad: bool,
     potential_branch: PotentialBranch | None = None,
     activation_checkpoint: bool = True,
-) -> tuple[torch.Tensor, torch.Tensor]:
+    need_scores: bool = True,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
     """Replay one time step, optionally checkpointing the long full-BPTT graph.
 
     The checkpoint is exact but expensive here: every ``autograd.grad`` that builds a score
@@ -261,7 +262,7 @@ def _replay_belief_step(
         step_initial: torch.Tensor,
         step_initial_noise: torch.Tensor,
         step_noises_value: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         common_arguments = {
             "initial_noise": step_initial_noise,
             "langevin_noise": step_noises_value,
@@ -276,6 +277,7 @@ def _replay_belief_step(
                 step_previous_action,
                 step_initial,
                 potential_branch=potential_branch,
+                need_scores=need_scores,
                 **common_arguments,
             )
         return model.belief.particles_from_noise(
@@ -356,47 +358,56 @@ def replay_belief_sequence(
         else []
     )
     prefix_initial_offset = 0
-    prefix_particles: list[torch.Tensor] = []
-    for environment_index, prefix in zip(
-        selected_environment_indices,
-        selected_prefixes,
-        strict=True,
-    ):
-        if not prefix.length:
-            prefix_particles.append(
-                rollout.previous_particles[0, environment_index : environment_index + 1].detach()
-            )
-            continue
-        prefix_branches: tuple[PotentialBranch | None, ...]
-        if energy_belief:
-            prefix_branches = tuple(
-                "initial" if bool(value) else "recursive"
-                for value in prefix_initial_values[
-                    prefix_initial_offset : prefix_initial_offset + prefix.length
-                ]
-            )
-            prefix_initial_offset += prefix.length
-        else:
-            prefix_branches = (None,) * prefix.length
-        previous = torch.zeros_like(prefix.ula_initial_noise[:1])
-        track_prefix_grad = gradient_mode == "full"
-        for prefix_index in range(prefix.length):
-            previous, _ = _replay_belief_step(
+    prefix_initial_rows = []
+    for prefix in selected_prefixes:
+        prefix_initial_rows.append(
+            prefix_initial_values[prefix_initial_offset : prefix_initial_offset + prefix.length]
+        )
+        prefix_initial_offset += prefix.length
+    previous_particles = torch.cat(
+        [
+            torch.zeros_like(prefix.ula_initial_noise[:1])
+            if prefix.length
+            else rollout.previous_particles[0, index : index + 1].detach()
+            for index, prefix in zip(selected_environment_indices, selected_prefixes, strict=True)
+        ],
+        dim=0,
+    )
+    # Compact the active rows of the padded time grid. Inactive environments
+    # neither enter the sampler nor require any padding noise or gradient graph.
+    for prefix_index in range(max(prefix.length for prefix in selected_prefixes)):
+        active_rows = [
+            i for i, prefix in enumerate(selected_prefixes) if prefix_index < prefix.length
+        ]
+        # Keep each row on its original potential branch, without evaluating
+        # an unused branch when prefixes contain different initial flags.
+        branches = ("initial", "recursive") if energy_belief else (None,)
+        for branch in branches:
+            active = [
+                i for i in active_rows
+                if branch is None
+                or bool(prefix_initial_rows[i][prefix_index]) == (branch == "initial")
+            ]
+            if not active:
+                continue
+            active_indices = environment_indices.new_tensor(active)
+            active_prefixes = [selected_prefixes[i] for i in active]
+            updated, _ = _replay_belief_step(
                 model,
-                prefix.observations[prefix_index : prefix_index + 1],
-                previous,
-                prefix.previous_actions[prefix_index : prefix_index + 1],
-                prefix.initial[prefix_index : prefix_index + 1],
-                prefix.ula_initial_noise[prefix_index : prefix_index + 1],
-                prefix.ula_step_noises[prefix_index : prefix_index + 1],
+                torch.stack([prefix.observations[prefix_index] for prefix in active_prefixes]),
+                previous_particles.index_select(0, active_indices),
+                torch.stack([prefix.previous_actions[prefix_index] for prefix in active_prefixes]),
+                torch.stack([prefix.initial[prefix_index] for prefix in active_prefixes]),
+                torch.stack([prefix.ula_initial_noise[prefix_index] for prefix in active_prefixes]),
+                torch.stack([prefix.ula_step_noises[prefix_index] for prefix in active_prefixes]),
                 step_size=float(model_config["langevin_step_size"]),
                 gradient_mode=gradient_mode,
-                track_grad=track_prefix_grad,
-                potential_branch=prefix_branches[prefix_index],
+                track_grad=gradient_mode == "full",
+                potential_branch=branch,
                 activation_checkpoint=activation_checkpoint,
+                need_scores=False,
             )
-        prefix_particles.append(previous)
-    previous_particles = torch.cat(prefix_particles, dim=0)
+            previous_particles = previous_particles.index_copy(0, active_indices, updated)
     replayed_particles: list[torch.Tensor] = []
     replayed_scores: list[torch.Tensor] = []
 

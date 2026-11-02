@@ -24,6 +24,7 @@ from .artifacts import SeedArtifacts
 from .baselines import (
     RECURRENT_BASELINE_TYPES,
     FeedForwardBaselineActorCritic,
+    GRUActorCritic,
     RecurrentBaseline,
     TemporalGradientMode,
     make_baseline_actor_critic,
@@ -31,7 +32,12 @@ from .baselines import (
 from .buffer import generalised_advantage_estimate
 from .config import ExperimentConfig
 from .envs import make_env
-from .networks import ConditionMixturePredictor, NetworkKinds, ObservationPredictor, use_network_kinds
+from .networks import (
+    ConditionMixturePredictor,
+    NetworkKinds,
+    ObservationPredictor,
+    use_network_kinds,
+)
 from .ppo import (
     PPOMetrics,
     belief_mixture_prediction_loss,
@@ -658,18 +664,49 @@ def _recondition_recurrent_hidden(
 ) -> torch.Tensor:
     """Rebuild online hidden states after PPO changes the GRU parameters."""
 
-    hidden_states = [
-        _replay_recurrent_prefix(
-            model,
-            history.snapshot(
-                input_template=input_template,
-                start_template=start_template,
-            ),
-            temporal_gradient_mode="tbptt_1",
-        )
+    prefixes = [
+        history.snapshot(input_template=input_template, start_template=start_template)
         for history in histories
     ]
-    return torch.cat(hidden_states, dim=1)
+    # Particle filters may sample during replay. A stochastic recurrent model
+    # must also retain the original environment-major RNG order.
+    stochastic = any(
+        module.training and (
+            isinstance(module, torch.nn.modules.dropout._DropoutNd) and module.p > 0
+            or isinstance(module, torch.nn.RNNBase) and module.dropout > 0 and module.num_layers > 1
+        )
+        for module in model.modules()
+    )
+    if not isinstance(model, GRUActorCritic) or stochastic or not prefixes:
+        return torch.cat(
+            [
+                _replay_recurrent_prefix(model, prefix, temporal_gradient_mode="tbptt_1")
+                for prefix in prefixes
+            ], dim=1,
+        )
+
+    for prefix in prefixes:
+        if not prefix.length:
+            continue
+        if prefix.inputs.ndim != 2 or prefix.inputs.shape[-1] != model.observation_dim:
+            raise ValueError("a recurrent prefix has an invalid input shape")
+        if tuple(prefix.episode_starts.shape) != (prefix.length,):
+            raise ValueError("a recurrent prefix has an invalid episode-start shape")
+        if not bool(prefix.episode_starts[0]) or bool(prefix.episode_starts[1:].any()):
+            raise ValueError("a recurrent prefix must contain exactly one episode start at index zero")
+
+    hidden = model.initial_hidden(
+        len(prefixes), device=input_template.device, dtype=input_template.dtype,
+    )
+    for time_index in range(max(prefix.length for prefix in prefixes)):
+        active = [index for index, prefix in enumerate(prefixes) if prefix.length > time_index]
+        inputs = torch.stack([prefixes[index].inputs[time_index] for index in active])[None]
+        starts = torch.stack([prefixes[index].episode_starts[time_index] for index in active])[None]
+        _, updated = model.encode_sequence(
+            inputs, hidden[:, active], starts, temporal_gradient_mode="tbptt_1",
+        )
+        hidden[:, active] = updated
+    return hidden
 
 
 def _update_recurrent(

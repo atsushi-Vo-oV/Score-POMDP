@@ -193,8 +193,11 @@ class AlphaPoolBeliefEncoder(nn.Module):
             nn.SiLU(),
         )
 
-    def forward(self, particles: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:
-        if scores.shape != (*particles.shape[:-1], self.score_dim):
+    def forward(self, particles: torch.Tensor, scores: torch.Tensor | None) -> torch.Tensor:
+        if scores is None:
+            if self.use_scores:
+                raise ValueError("scores are required when use_scores is true")
+        elif scores.shape != (*particles.shape[:-1], self.score_dim):
             raise ValueError("scores must have shape [batch, particles, score_dim]")
         if particles.ndim != 3 or particles.shape[-1] != self.state_dim:
             raise ValueError(
