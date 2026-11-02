@@ -509,6 +509,9 @@ def condition_prediction_loss(
     belief graph attached.  The action taken at ``t`` is the previous action stored at
     ``t + 1``; steps that end an episode have no successor inside it and are masked out.
     Shared by the score and baseline trainers.
+
+    The loss is the mean over the group of each sequence's mean over its valid steps (see
+    :func:`_sequence_mean`), so splitting the group into microbatches never changes it.
     """
 
     steps, group = observations.shape[0], observations.shape[1]
@@ -517,13 +520,28 @@ def condition_prediction_loss(
     source = condition.reshape(steps, group, -1)[:-1]
     targets = observations[1:]
     actions = previous_actions[1:]
-    valid = (~dones[:-1]).reshape(-1).to(condition.dtype)
     log_likelihood = predictor.log_likelihood(
         source.reshape((steps - 1) * group, -1),
         actions.reshape((steps - 1) * group, -1),
         targets.reshape((steps - 1) * group, -1),
     )
-    return -(log_likelihood * valid).sum() / valid.sum().clamp_min(1.0)
+    return -_sequence_mean(log_likelihood.reshape(steps - 1, group), dones[:-1])
+
+
+def _sequence_mean(values: torch.Tensor, dones: torch.Tensor) -> torch.Tensor:
+    """Mean over sequences of the per-sequence mean of ``values [T, group]`` over non-done steps.
+
+    Normalising every sequence by its own valid count (a sequence without valid steps
+    contributes zero) makes the result independent of how the group is split into
+    sequence microbatches: the microbatch losses are weighted by their sequence counts in
+    :func:`update_ppo`, which then reproduces the whole-group mean exactly.  Pooling all
+    valid steps instead would weight sequences by their surviving length and therefore
+    change with the split whenever episodes end at different times.
+    """
+
+    valid = (~dones).to(values.dtype)
+    per_sequence = (values * valid).sum(dim=0) / valid.sum(dim=0).clamp_min(1.0)
+    return per_sequence.mean()
 
 
 def belief_mixture_prediction_loss(
@@ -552,8 +570,7 @@ def belief_mixture_prediction_loss(
         observations[1:].reshape(count, -1),
         None if log_weights is None else log_weights[:-1].reshape(count, -1),
     )
-    valid = (~dones[:-1]).reshape(-1).to(log_likelihood.dtype)
-    return -(log_likelihood * valid).sum() / valid.sum().clamp_min(1.0)
+    return -_sequence_mean(log_likelihood.reshape(steps - 1, group), dones[:-1])
 
 
 def observation_prediction_loss(

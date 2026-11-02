@@ -11,6 +11,6 @@
 set -euo pipefail
 export SB_POMDP_CONFIG="config/trysvgd_tagr_tf-ula.json"
 export SB_POMDP_SHARD_INDEX=5
-export SB_POMDP_CAMPAIGN_ID="trysvgd-tagr-tf-ula-v1"
+export SB_POMDP_CAMPAIGN_ID="trysvgd-tagr-tf-ula-v2"
 export SB_POMDP_SEGMENT_UPDATES=1293
 exec bash jobs/genkai_production.sh

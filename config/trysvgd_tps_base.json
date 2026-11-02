@@ -92,7 +92,7 @@
     "rollout_steps": 128,
     "epochs": 4,
     "minibatch_size": 512,
-    "sequence_microbatch_size": 128,
+    "sequence_microbatch_size": 512,
     "learning_rate": 0.00025,
     "gamma": 0.99,
     "gae_lambda": 0.95,
@@ -113,18 +113,18 @@
       "particle_filter"
     ],
     "gru_encoder_hidden": [
-      748,
-      288
+      864,
+      332
     ],
-    "gru_hidden_dim": 138,
+    "gru_hidden_dim": 159,
     "rnn_encoder_hidden": [
-      455,
-      541
+      526,
+      624
     ],
-    "rnn_hidden_dim": 196,
+    "rnn_hidden_dim": 226,
     "pf_hidden": [
-      171,
-      305
+      221,
+      394
     ],
     "pf_particle_dim": 16,
     "pf_soft_alpha": 0.9,

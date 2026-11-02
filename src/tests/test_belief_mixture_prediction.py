@@ -40,9 +40,13 @@ def test_loss_targets_the_next_observation_and_masks_episode_ends() -> None:
     dones[1, 0] = True
     loss = belief_mixture_prediction_loss(predictor, particles, observations=observations,
                                           previous_actions=actions, dones=dones)
-    rows = [(t, g) for t in range(steps - 1) for g in range(group) if (t, g) != (1, 0)]
-    expected = -torch.stack([predictor.log_likelihood(particles[t, g][None], actions[t + 1, g][None],
-                                                      observations[t + 1, g][None])[0] for t, g in rows]).mean()
+    # Each sequence is averaged over its own valid steps, then the sequences are averaged.
+    expected = torch.stack([
+        -torch.stack([predictor.log_likelihood(particles[t, g][None], actions[t + 1, g][None],
+                                               observations[t + 1, g][None])[0]
+                      for t in range(steps - 1) if (t, g) != (1, 0)]).mean()
+        for g in range(group)
+    ]).mean()
     assert torch.allclose(loss, expected, atol=1e-6)
     loss.backward()
     assert particles.grad is not None and particles.grad[1, 0].abs().sum() == 0  # masked step

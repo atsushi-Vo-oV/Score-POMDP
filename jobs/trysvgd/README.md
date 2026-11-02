@@ -4,9 +4,22 @@
   でうろつき、見つけたら追跡、見失ったら最後の地点を探索。プレイヤーは視野 60°・距離 0.6 の中の鬼の数だけを観測。
   1 step 生存ごとに +0.1)。
 - **モデル**: GRU、RNN、DPFRL(粒子フィルタ)、TF-ULA、TF-SVGD、TF-SMI。transformer は K=16、L=12、エネルギー MLP [8]、
-  d_model 32、ff 64、**warm start なし**、t=0 観測アンカーあり、α_l は 0.2 から sigmoid 境界で学習(スケジュール学習率 0.0025)。
+  d_model 32、ff 64、**warm start なし**、t=0 観測アンカーあり、α_l は 0.2 から sigmoid 境界で学習(スケジュール学習率は方策と同じ 0.00025。以前ここに 0.0025 と書いていたのは誤り: config に langevin_schedule_lr_multiplier はなく既定 1.0)。
   ULA は β=0.2 固定、SVGD / SMI は雑音なし。SMI は成分の log σ を encoder に渡す。tag の潜在次元は 6。
 - **FLOPs**: transformer に統一(推論 1 step、FlopCounterMode)。基準線は core4 の幅を一様に拡大。
+
+**2026-11-02 の数え直し**: FlopCounterMode は eval + no_grad の融合 transformer カーネル(fast path)を数えないため、以前の
+TF の値は transformer 本体(約 0.26 MFLOP)を欠いていた。fast path を切って数え直すと TF は mirror2 1.382 / tps 1.368 /
+tagr 2.297 MFLOP。v1 の基準線(下の旧表)は TF より 13〜24% 小さい予算に合わせていたことになる。基準線を合わせ直して
+mirror2 / tps は **trysvgd-{mirror2,tps}-base-v2**(jobs/trysvgd/*_v2_*.sh、math サーバー)として走り直す。
+
+| task | TF ULA / SVGD / SMI (MFLOP) | GRU (params) | RNN (params) | DPFRL (params) | TF params |
+|---|---|---|---|---|---|
+| mirror2 | 1.382 / 1.394 / 1.408 | 1.384 (571k) | 1.382 (569k) | 1.382 (163k) | 41k |
+| tps | 1.368 / 1.38 / 1.395 | 1.368 (562k) | 1.368 (561k) | 1.368 (159k) | 39k |
+| tagr | 2.297 / 2.333 / 2.376 | 2.297 (1030k) | 2.297 (1030k) | 2.297 (358k) | 44k |
+
+旧表(fast path を数えていない値。v1 の基準線はこれに合わせてあった):
 
 | task | TF ULA / SVGD / SMI (MFLOP) | GRU (params) | RNN (params) | DPFRL (params) | TF params |
 |---|---|---|---|---|---|
@@ -20,11 +33,11 @@
 
 | task | arm | config | campaign | shards | updates (pretrain + PPO + predict) |
 |---|---|---|---|---|---|
-| mirror2 | base | config/trysvgd_mirror2_base.json | trysvgd-mirror2-base-v1 | 15 | 333 (98 + 200 + 35) |
+| mirror2 | base | config/trysvgd_mirror2_base.json | trysvgd-mirror2-base-v1(旧幅)/ **-v2**(数え直した幅、sequence_microbatch_size 512) | 15 | 333 (98 + 200 + 35) |
 | mirror2 | tf-ula | config/trysvgd_mirror2_tf-ula.json | trysvgd-mirror2-tf-ula-v1 | 5 | 333 (98 + 200 + 35) |
 | mirror2 | tf-svgd | config/trysvgd_mirror2_tf-svgd.json | trysvgd-mirror2-tf-svgd-v1 | 5 | 333 (98 + 200 + 35) |
 | mirror2 | tf-smi | config/trysvgd_mirror2_tf-smi.json | trysvgd-mirror2-tf-smi-v1 | 5 | 333 (98 + 200 + 35) |
-| tps | base | config/trysvgd_tps_base.json | trysvgd-tps-base-v1 | 15 | 213 (98 + 100 + 15) |
+| tps | base | config/trysvgd_tps_base.json | trysvgd-tps-base-v1(旧幅)/ **-v2**(数え直した幅、sequence_microbatch_size 512) | 15 | 213 (98 + 100 + 15) |
 | tps | tf-ula | config/trysvgd_tps_tf-ula.json | trysvgd-tps-tf-ula-v1 | 5 | 213 (98 + 100 + 15) |
 | tps | tf-svgd | config/trysvgd_tps_tf-svgd.json | trysvgd-tps-tf-svgd-v1 | 5 | 213 (98 + 100 + 15) |
 | tps | tf-smi | config/trysvgd_tps_tf-smi.json | trysvgd-tps-tf-smi-v1 | 5 | 213 (98 + 100 + 15) |

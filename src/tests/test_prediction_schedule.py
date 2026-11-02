@@ -57,12 +57,16 @@ def test_condition_prediction_loss_targets_the_next_observation_and_masks_episod
     dones[2, 1] = True
     loss = condition_prediction_loss(predictor, condition, observations=observations,
                                      previous_actions=previous_actions, dones=dones)
-    rows = [(t, g) for t in range(steps - 1) for g in range(group) if (t, g) != (2, 1)]
-    expected = -torch.stack([
-        predictor.log_likelihood(condition.reshape(steps, group, 4)[t, g][None], previous_actions[t + 1, g][None],
-                                 observations[t + 1, g][None])[0]
-        for t, g in rows
-    ]).mean()
+    # Each sequence is averaged over its own valid steps, then the sequences are averaged.
+    per_sequence = []
+    for g in range(group):
+        rows = [t for t in range(steps - 1) if (t, g) != (2, 1)]
+        per_sequence.append(-torch.stack([
+            predictor.log_likelihood(condition.reshape(steps, group, 4)[t, g][None], previous_actions[t + 1, g][None],
+                                     observations[t + 1, g][None])[0]
+            for t in rows
+        ]).mean())
+    expected = torch.stack(per_sequence).mean()
     assert torch.allclose(loss, expected, atol=1e-6)
 
 

@@ -99,7 +99,7 @@
     "rollout_steps": 128,
     "epochs": 4,
     "minibatch_size": 512,
-    "sequence_microbatch_size": 128,
+    "sequence_microbatch_size": 512,
     "learning_rate": 0.00025,
     "gamma": 0.99,
     "gae_lambda": 0.95,
@@ -135,6 +135,6 @@
     "pf_soft_alpha": 0.9,
     "pf_variant": "dpfrl",
     "pf_mgf_features": 8,
-    "alpha_feedforward_dim": 30
+    "alpha_feedforward_dim": 245
   }
 }
