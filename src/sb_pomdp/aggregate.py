@@ -20,7 +20,7 @@ from .compare import (
     _eligible,
     _method_config,
 )
-from .config import ExperimentConfig, load_config
+from .config import ExperimentConfig, load_config, resume_comparable_config
 from .fetch_results import _verify_staged_result
 from .train import normalize_legacy_summary
 
@@ -48,9 +48,14 @@ def _expected_coverage(config: ExperimentConfig) -> set[CoverageKey]:
 
 
 def _nonselector_config(config: ExperimentConfig) -> dict[str, Any]:
-    """Return config data with only permitted per-shard selectors removed."""
+    """Return config data with only permitted per-shard selectors removed.
 
-    data = config.to_dict()
+    Execution-only keys (``config.EXECUTION_ONLY_KEYS``: the replay checkpoint, the analytic
+    score, compile, CUDA graphs) are dropped as well: shards of one campaign may have been run
+    with different execution settings and still compute the same experiment.
+    """
+
+    data = resume_comparable_config(config.to_dict())
     for section, keys in _IGNORED_CONFIG_SELECTORS.items():
         for key in keys:
             del data[section][key]
@@ -195,7 +200,9 @@ def _validate_run_config(
         seed,
         gradient_mode=gradient_mode,
     )
-    differences = _value_differences(expected.to_dict(), actual.to_dict())
+    differences = _value_differences(
+        resume_comparable_config(expected.to_dict()), resume_comparable_config(actual.to_dict())
+    )
     if differences:
         preview = "; ".join(differences[:5])
         suffix = "; ..." if len(differences) > 5 else ""

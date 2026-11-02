@@ -23,6 +23,16 @@ class ConfigError(ValueError):
     """Raised when a configuration cannot be parsed or fails validation."""
 
 
+def validate_belief_acceleration(belief_compile: str, belief_cuda_graphs: bool) -> None:
+    if belief_compile == "inductor" and belief_cuda_graphs:
+        raise ConfigError(
+            "model.belief_compile=inductor and model.belief_cuda_graphs=true are "
+            "alternatives, not supported together: compiled capture can lose parameter "
+            "gradients on PyTorch 2.3.1. Set belief_compile=off for CUDA Graphs, "
+            "or belief_cuda_graphs=false for Inductor."
+        )
+
+
 _TOP_LEVEL_KEYS = frozenset({"experiment", "environment", "model", "ppo", "comparison"})
 _SAFE_COMPONENT = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9_-])?$")
 _DEVICE = re.compile(r"^(?:auto|cpu|cuda(?::[0-9]+)?)$")
@@ -194,6 +204,9 @@ _MODEL_KEYS = frozenset(
         "score_parameterization",
         "direct_score_bound",
         "belief_activation_checkpoint",
+        "score_implementation",
+        "belief_compile",
+        "belief_cuda_graphs",
         "prediction_pretrain_steps",
         "prediction_interval_updates",
         "prediction_phase_updates",
@@ -339,6 +352,9 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         "direct_score_bound": 10.0,
         # Replay checkpointed every belief step (exact, but 10-16x slower; see ppo._replay_belief_step).
         "belief_activation_checkpoint": True,
+        "score_implementation": "autograd",
+        "belief_compile": "off",
+        "belief_cuda_graphs": False,
         # Interleaved next-observation prediction phases (sb_pomdp.prediction_schedule); off by default.
         "prediction_pretrain_steps": 0,
         "prediction_interval_updates": 0,
@@ -798,6 +814,16 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
         raise ConfigError("model.score_parameterization must be energy, direct or direct_joint")
     _positive_number(section["direct_score_bound"], "model.direct_score_bound")
     _boolean(section["belief_activation_checkpoint"], "model.belief_activation_checkpoint")
+    if section["score_implementation"] not in {"autograd", "analytic"}:
+        raise ConfigError("model.score_implementation must be autograd or analytic")
+    if section["score_implementation"] == "analytic" and section["energy_network_kind"] != "mlp":
+        raise ConfigError("model.score_implementation=analytic requires energy_network_kind=mlp")
+    if section["belief_compile"] not in {"off", "inductor"}:
+        raise ConfigError("model.belief_compile must be off or inductor")
+    if section["belief_compile"] == "inductor" and section["score_implementation"] != "analytic":
+        raise ConfigError("model.belief_compile=inductor requires score_implementation=analytic")
+    _boolean(section["belief_cuda_graphs"], "model.belief_cuda_graphs")
+    validate_belief_acceleration(section["belief_compile"], section["belief_cuda_graphs"])
     if section["belief_latent_dim"] is not None:
         _integer(section["belief_latent_dim"], "model.belief_latent_dim")
     for key in ("prediction_pretrain_steps", "prediction_interval_updates", "prediction_phase_updates"):
@@ -1137,9 +1163,13 @@ def _fill_light_dark_task_defaults(config: dict[str, Any]) -> None:
             task.setdefault(key, deepcopy(default))
 
 
-# Keys that change how a run is executed but not one number it computes: a resumed run may change
-# them (e.g. turn off the exact but slow belief-replay activation checkpoint mid-campaign).
-EXECUTION_ONLY_KEYS: dict[str, frozenset[str]] = {"model": frozenset({"belief_activation_checkpoint"})}
+# Execution choices preserve the mathematical objective (roundoff may differ).
+# A resumed run may switch these without changing its experimental identity.
+EXECUTION_ONLY_KEYS: dict[str, frozenset[str]] = {
+    "model": frozenset({
+        "belief_activation_checkpoint", "score_implementation", "belief_compile", "belief_cuda_graphs",
+    }),
+}
 
 
 def resume_comparable_config(config: Mapping[str, Any]) -> dict[str, Any]:

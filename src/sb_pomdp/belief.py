@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import math
+import warnings
 from collections.abc import Sequence
 from typing import Literal
 
 import torch
 from torch import nn
 
+from .config import validate_belief_acceleration
 from .networks import NETWORK_KINDS, make_mlp, make_network, matched_kan_hidden_dims
 
 TemporalGradientMode = Literal["full", "tbptt_1"]
@@ -65,6 +68,32 @@ def score_from_potential(
     return score
 
 
+def _mlp_value_and_input_gradient(
+    network: nn.Sequential, inputs: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Scalar Linear/SiLU MLP and its input gradient, using ordinary forward ops.
+
+    The reverse chain rule keeps the activations and weights in the outer graph;
+    no Jacobian is materialised and no inner autograd invocation is needed.
+    """
+
+    value = inputs
+    activations = []
+    for layer in network:
+        activations.append(value)
+        value = layer(value)
+    gradient = torch.ones_like(value)
+    for layer, activation in zip(reversed(network), reversed(activations)):
+        if isinstance(layer, nn.Linear):
+            gradient = gradient @ layer.weight
+        elif isinstance(layer, nn.SiLU):
+            sigmoid = activation.sigmoid()
+            gradient = gradient * (sigmoid * (1.0 + activation * (1.0 - sigmoid)))
+        else:
+            raise TypeError("analytic score requires a scalar Linear/SiLU MLP")
+    return value.squeeze(-1), gradient
+
+
 # Bounds for the learned per-step log-temperature schedule; they stop the PPO
 # gradient from freezing the chain entirely or re-inflating it without limit.
 _LOG_TEMPERATURE_MIN = math.log(1e-3)
@@ -102,8 +131,12 @@ def _rbf_stein_direction(particles: torch.Tensor, drive: torch.Tensor) -> torch.
     num_particles = particles.shape[1]
     with torch.no_grad():
         if num_particles > 1:
-            off_diagonal = ~torch.eye(num_particles, dtype=torch.bool, device=particles.device)
-            median = squared.detach()[:, off_diagonal].median(dim=-1).values
+            # Fixed-size gather, same row-major order as the original boolean
+            # mask. Device arange avoids a host-to-device copy during capture.
+            rows = torch.arange(num_particles, device=particles.device)[:, None]
+            columns = torch.arange(num_particles - 1, device=particles.device)[None, :]
+            indices = (rows * num_particles + columns + (columns >= rows)).flatten()
+            median = squared.detach().flatten(1).index_select(1, indices).median(dim=-1).values
         else:
             median = torch.ones(particles.shape[0], device=particles.device, dtype=particles.dtype)
         bandwidth = (median / math.log(num_particles + 1.0)).clamp_min(1e-6)
@@ -139,6 +172,33 @@ def _mixture_entropy_gradient(
     if not create_graph:
         grad_theta, grad_log_s = grad_theta.detach(), grad_log_s.detach()
     return -grad_theta, -grad_log_s
+
+
+def _analytic_mixture_entropy_gradient(
+    means: torch.Tensor,
+    log_scales: torch.Tensor,
+    noise: torch.Tensor,
+    *,
+    create_graph: bool,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Closed-form SMI entropy derivative through draws AND mixture components."""
+
+    with torch.set_grad_enabled(create_graph):
+        scale = log_scales.exp()
+        displacement = scale * noise.detach()
+        draws = means + displacement
+        difference = draws[:, :, None, :] - means[:, None, :, :]
+        standardized = difference / scale[:, None, :, :]
+        component = -0.5 * standardized.square().sum(-1) - log_scales.sum(-1)[:, None, :]
+        # Same stable normalization as logsumexp's backward in the reference.
+        responsibility = (component - component.logsumexp(-1, keepdim=True)).exp()
+        weighted = responsibility[..., None] * standardized / scale[:, None, :, :]
+        draw_score = -weighted.sum(dim=2)
+        grad_means = draw_score + weighted.sum(dim=1)
+        grad_log_scales = draw_score * displacement + (
+            responsibility[..., None] * (standardized.square() - 1.0)
+        ).sum(dim=1)
+    return -grad_means, -grad_log_scales
 _LOGIT_EPS = 1e-6
 
 
@@ -240,8 +300,27 @@ class EnergyBelief(nn.Module):
         smi_component_scale: float = 0.1,
         score_parameterization: str = "energy",
         direct_score_bound: float = 10.0,
+        score_implementation: str = "autograd",
+        belief_compile: str = "off",
+        belief_cuda_graphs: bool = False,
     ) -> None:
         super().__init__()
+        if score_implementation not in {"autograd", "analytic"}:
+            raise ValueError("score_implementation must be autograd or analytic")
+        if score_implementation == "analytic" and energy_network_kind != "mlp":
+            raise ValueError("analytic score requires energy_network_kind=mlp; use autograd for kan")
+        self.score_implementation = str(score_implementation)
+        if belief_compile not in {"off", "inductor"}:
+            raise ValueError("belief_compile must be off or inductor")
+        if belief_compile == "inductor" and score_implementation != "analytic":
+            raise ValueError("belief_compile=inductor requires score_implementation=analytic")
+        validate_belief_acceleration(belief_compile, belief_cuda_graphs)
+        self.belief_compile = belief_compile
+        self.belief_cuda_graphs = belief_cuda_graphs
+        self._compiled_chains: dict[tuple, object] = {}
+        self._compile_unavailable = False
+        self._cuda_graph_chains: dict[tuple, object] = {}
+        self._cuda_graph_cpu_warned = False
         if score_parameterization not in SCORE_PARAMETERIZATIONS:
             raise ValueError("score_parameterization must be energy, direct or direct_joint")
         # ``direct``: the three networks output the score itself (no autograd through a scalar
@@ -620,6 +699,48 @@ class EnergyBelief(nn.Module):
             potential_branch,
         )
 
+    def _analytic_score_for_branch(
+        self,
+        query: torch.Tensor,
+        observation: torch.Tensor,
+        previous_particles: torch.Tensor,
+        previous_action: torch.Tensor,
+        initial: torch.Tensor,
+        potential_branch: PotentialBranch,
+    ) -> torch.Tensor:
+        num_query = query.shape[1]
+        obs = observation[:, None, :].expand(-1, num_query, -1)
+
+        def initial_score() -> torch.Tensor:
+            _, gradient = _mlp_value_and_input_gradient(
+                self.initial_energy, torch.cat((obs, query), dim=-1)
+            )
+            return gradient[..., self.observation_dim:] - query
+
+        def recursive_score() -> torch.Tensor:
+            action = previous_action[:, None, :].expand(-1, num_query, -1)
+            _, observation_gradient = _mlp_value_and_input_gradient(
+                self.observation_energy, torch.cat((obs, query, action), dim=-1)
+            )
+            num_previous = previous_particles.shape[1]
+            pairs = torch.cat((
+                query[:, :, None, :].expand(-1, -1, num_previous, -1),
+                previous_particles[:, None, :, :].expand(-1, num_query, -1, -1),
+                previous_action[:, None, None, :].expand(-1, num_query, num_previous, -1),
+            ), dim=-1)
+            value, transition_gradient = _mlp_value_and_input_gradient(self.transition_energy, pairs)
+            weights = (value - value.logsumexp(dim=-1, keepdim=True)).exp()
+            return (
+                observation_gradient[..., self.observation_dim:self.observation_dim + self.state_dim]
+                + (weights[..., None] * transition_gradient[..., :self.state_dim]).sum(dim=2)
+            )
+
+        if potential_branch == "initial":
+            return initial_score()
+        if potential_branch == "recursive":
+            return recursive_score()
+        return torch.where(initial[:, None, None].bool(), initial_score(), recursive_score())
+
     def _score_at_for_branch(
         self,
         particles: torch.Tensor,
@@ -638,6 +759,15 @@ class EnergyBelief(nn.Module):
             query = particles.detach() if detach_query else particles
             with torch.set_grad_enabled(create_graph or torch.is_grad_enabled()):
                 score = self._direct_score_for_branch(
+                    query, observation, previous_particles, previous_action, initial, potential_branch
+                )
+                if self.score_clip > 0:
+                    score = score.clamp(-self.score_clip, self.score_clip)
+            return score if create_graph else score.detach()
+        if self.score_implementation == "analytic":
+            query = particles.detach() if detach_query else particles
+            with torch.set_grad_enabled(create_graph):
+                score = self._analytic_score_for_branch(
                     query, observation, previous_particles, previous_action, initial, potential_branch
                 )
                 if self.score_clip > 0:
@@ -808,6 +938,9 @@ class EnergyBelief(nn.Module):
         for scores. All transport scores (including SMI scale updates) remain.
         """
 
+        # Also guard direct flag changes after construction, before compilation
+        # or CUDA work can build a graph with missing parameter gradients.
+        validate_belief_acceleration(self.belief_compile, self.belief_cuda_graphs)
         if temporal_gradient_mode not in {"full", "tbptt_1"}:
             raise ValueError("temporal_gradient_mode must be 'full' or 'tbptt_1'")
         if initial_noise.ndim != 3:
@@ -911,75 +1044,176 @@ class EnergyBelief(nn.Module):
                 )
             step_betas = self.noise_scale_schedule()
 
+        chain_args = (particles, observation, incoming_particles, previous_action, initial,
+                      increments, tuple(steps), step_alphas, step_temperatures, step_betas,
+                      potential_branch, track_grad, need_scores)
+        with torch.set_grad_enabled(track_grad):
+            if self.belief_compile == "inductor" and not self._compile_unavailable:
+                def tensor_signature(value: torch.Tensor | None) -> tuple | None:
+                    if value is None:
+                        return None
+                    return (tuple(value.shape), tuple(value.stride()), value.dtype,
+                            value.device, value.requires_grad)
+
+                key = (potential_branch, need_scores, tuple(steps), track_grad,
+                       self.training, torch.is_autocast_enabled(),
+                       torch.is_autocast_cpu_enabled(),
+                       *(tensor_signature(value) for value in chain_args[:6]),
+                       *(tensor_signature(value) for value in chain_args[7:10]),
+                       tuple(parameter.requires_grad for parameter in self.parameters()))
+                chain = self._compiled_chains.get(key)
+                first_call = chain is None
+                if chain is None:
+                    logging.getLogger(__name__).info("Compiling belief transport for %s", key)
+                    chain = torch.compile(self._transport_chain, fullgraph=True, dynamic=False,
+                                          options={"triton.cudagraphs": False})
+                    self._compiled_chains[key] = chain
+                try:
+                    # Several branch/shape variants share the same Python code object.
+                    with torch._dynamo.config.patch(cache_size_limit=128, accumulated_cache_size_limit=512):
+                        if first_call:
+                            # AOT traces a joint forward/backward on its first call.
+                            # PyTorch 2.3.1 otherwise lets an enclosing activation
+                            # checkpoint intercept those *tracing* tensors. Compile
+                            # once with private hooks, then execute normally so the
+                            # real saved tensors still belong to the checkpoint.
+                            with torch.autograd.graph.saved_tensors_hooks(
+                                lambda value: value.detach(), lambda value: value,
+                            ):
+                                chain(*chain_args)
+                        return self._execute_transport(chain, chain_args)
+                except Exception as exc:
+                    # A CPU installation may lack an inductor-compatible C++ compiler.
+                    # Do not mask other failures, especially CUDA failures.
+                    if observation.device.type != "cpu" or "InvalidCxxCompiler" not in str(type(exc)) + str(exc):
+                        raise
+                    warnings.warn("Inductor C++ compiler unavailable; using eager belief transport", RuntimeWarning)
+                    self._compile_unavailable = True
+            return self._execute_transport(self._transport_chain, chain_args)
+
+    def _execute_transport(self, function, chain_args):
+        if not self.belief_cuda_graphs:
+            return function(*chain_args)
+        device = chain_args[0].device
+        if device.type != "cuda":
+            if not self._cuda_graph_cpu_warned:
+                warnings.warn("belief_cuda_graphs is a no-op on CPU", RuntimeWarning)
+                self._cuda_graph_cpu_warned = True
+            return function(*chain_args)
+        if self.score_implementation != "analytic":
+            raise ValueError("belief_cuda_graphs requires score_implementation=analytic on CUDA")
+        from .cuda_graphs import CudaGraphStep
+
+        tensor_indices = tuple(i for i, value in enumerate(chain_args) if isinstance(value, torch.Tensor))
+        inputs = tuple(chain_args[i] for i in tensor_indices)
+        parameters = tuple(self.parameters())
+        key = (
+            tuple((i, value) for i, value in enumerate(chain_args) if i not in tensor_indices),
+            tuple((value.shape, value.stride(), value.dtype, value.device, value.requires_grad) for value in inputs),
+            tuple((value.data_ptr(), value.requires_grad) for value in parameters),
+            self.training, self.belief_compile, torch.is_autocast_enabled(),
+            torch.get_autocast_gpu_dtype(),
+            torch.cuda.current_stream(device).cuda_stream,
+        )
+        graph = self._cuda_graph_chains.get(key)
+        if graph is None:
+            # Do not retain the first call's live temporal graph in this closure.
+            template = tuple(None if i in tensor_indices else value for i, value in enumerate(chain_args))
+
+            def tensor_function(*values):
+                arguments = list(template)
+                for index, value in zip(tensor_indices, values):
+                    arguments[index] = value
+                particles, scores = function(*arguments)
+                return (particles,) if scores is None else (particles, scores)
+
+            logging.getLogger(__name__).info("Capturing belief CUDA transport for %s", key)
+            # Capture's one-time warmup must not become part of an enclosing
+            # activation checkpoint's saved-tensor accounting. Runtime nodes
+            # below still use the caller's normal hooks and version checks.
+            with torch.cuda.device(device), torch.autograd.graph.saved_tensors_hooks(
+                lambda value: value.detach(), lambda value: value,
+            ):
+                graph = CudaGraphStep(tensor_function, inputs, self, track_grad=chain_args[-2])
+            self._cuda_graph_chains[key] = graph
+        outputs = graph(*inputs)
+        return outputs[0], outputs[1] if chain_args[-1] else None
+
+    def _transport_chain(
+        self, particles: torch.Tensor, observation: torch.Tensor,
+        incoming_particles: torch.Tensor, previous_action: torch.Tensor, initial: torch.Tensor,
+        increments: torch.Tensor, steps: tuple[float, ...], step_alphas: torch.Tensor | None,
+        step_temperatures: torch.Tensor | None, step_betas: torch.Tensor | None,
+        potential_branch: PotentialBranch, track_grad: bool, need_scores: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         log_scales = (
             torch.full_like(particles, math.log(self.smi_component_scale))
             if self.particle_sampler == "smi"
             else None
         )
-        with torch.set_grad_enabled(track_grad):
-            for step_index, alpha in enumerate(steps):
-                alpha_value = alpha if step_alphas is None else step_alphas[step_index]
-                if self.particle_sampler != "ula":
-                    particles, log_scales = self._stein_step(
-                        particles,
-                        log_scales,
-                        increments[:, step_index],
-                        alpha_value,
-                        observation,
-                        incoming_particles,
-                        previous_action,
-                        initial,
-                        potential_branch,
-                        track_grad=track_grad,
-                    )
-                    continue
-                score = self._score_at_for_branch(
+        for step_index, alpha in enumerate(steps):
+            alpha_value = alpha if step_alphas is None else step_alphas[step_index]
+            if self.particle_sampler != "ula":
+                particles, log_scales = self._stein_step(
                     particles,
+                    log_scales,
+                    increments[:, step_index],
+                    alpha_value,
                     observation,
                     incoming_particles,
                     previous_action,
                     initial,
                     potential_branch,
-                    create_graph=track_grad,
-                    detach_query=not track_grad,
+                    track_grad=track_grad,
                 )
-                if step_betas is not None:
-                    noise_scale = step_betas[step_index]
-                elif self.langevin_noise_scale is not None:
-                    noise_scale = self.langevin_noise_scale
-                elif step_alphas is None and step_temperatures is None:
-                    noise_scale = math.sqrt(2.0 * alpha * self.langevin_temperature)
-                else:
-                    temperature_value = (
-                        self.langevin_temperature
-                        if step_temperatures is None
-                        else step_temperatures[step_index]
-                    )
-                    noise_scale = torch.sqrt(2.0 * alpha_value * temperature_value)
-                particles = (
-                    particles
-                    + alpha_value * score
-                    + noise_scale * increments[:, step_index]
+                continue
+            score = self._score_at_for_branch(
+                particles,
+                observation,
+                incoming_particles,
+                previous_action,
+                initial,
+                potential_branch,
+                create_graph=track_grad,
+                detach_query=not track_grad,
+            )
+            if step_betas is not None:
+                noise_scale = step_betas[step_index]
+            elif self.langevin_noise_scale is not None:
+                noise_scale = self.langevin_noise_scale
+            elif step_alphas is None and step_temperatures is None:
+                noise_scale = math.sqrt(2.0 * alpha * self.langevin_temperature)
+            else:
+                temperature_value = (
+                    self.langevin_temperature
+                    if step_temperatures is None
+                    else step_temperatures[step_index]
                 )
-                if self.particle_clip > 0:
-                    particles = particles.clamp(-self.particle_clip, self.particle_clip)
-                if not track_grad:
-                    particles = particles.detach()
+                noise_scale = torch.sqrt(2.0 * alpha_value * temperature_value)
+            particles = (
+                particles
+                + alpha_value * score
+                + noise_scale * increments[:, step_index]
+            )
+            if self.particle_clip > 0:
+                particles = particles.clamp(-self.particle_clip, self.particle_clip)
+            if not track_grad:
+                particles = particles.detach()
 
-            scores = None
-            if need_scores:
-                scores = self._score_at_for_branch(
-                    particles,
-                    observation,
-                    incoming_particles,
-                    previous_action,
-                    initial,
-                    potential_branch,
-                    create_graph=track_grad,
-                    detach_query=not track_grad,
-                )
-                if log_scales is not None:
-                    scores = torch.cat((scores, log_scales), dim=-1)
+        scores = None
+        if need_scores:
+            scores = self._score_at_for_branch(
+                particles,
+                observation,
+                incoming_particles,
+                previous_action,
+                initial,
+                potential_branch,
+                create_graph=track_grad,
+                detach_query=not track_grad,
+            )
+            if log_scales is not None:
+                scores = torch.cat((scores, log_scales), dim=-1)
         if track_grad:
             return particles, scores
         return particles.detach(), None if scores is None else scores.detach()
@@ -1027,7 +1261,12 @@ class EnergyBelief(nn.Module):
             assert log_scales is not None
             scale = log_scales.exp()
             sample_score = score(particles + scale * noise)
-            entropy_theta, entropy_log_scale = _mixture_entropy_gradient(
+            entropy_gradient = (
+                _analytic_mixture_entropy_gradient
+                if self.score_implementation == "analytic"
+                else _mixture_entropy_gradient
+            )
+            entropy_theta, entropy_log_scale = entropy_gradient(
                 particles, log_scales, noise, create_graph=track_grad
             )
             drive = torch.cat(

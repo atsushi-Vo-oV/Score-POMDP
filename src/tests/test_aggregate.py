@@ -439,3 +439,22 @@ def test_aggregate_rejects_mixed_source_code(tmp_path: Path) -> None:
             expected_config=master,
             output_dir=tmp_path / "reports",
         )
+
+
+def test_aggregate_accepts_execution_only_config_differences(tmp_path: Path) -> None:
+    """Shards run with the analytic score / CUDA graphs / no replay checkpoint aggregate with a
+    master config at the defaults: those keys change how a run executes, not what it computes."""
+    master = _config(methods=["score_transformer"])
+    executed = master.with_overrides({
+        "model.belief_activation_checkpoint": False,
+        "model.score_implementation": "analytic",
+        "model.belief_cuda_graphs": True,
+    })
+    summary = _summary("score_transformer", "masked_pendulum", 0)
+    source = _write_source_root(tmp_path / "execution-source", executed, [summary])
+    run_config_path = source / str(summary["result_dir"]) / "resolved_config.json"
+    run_config = load_config(run_config_path).with_overrides({"model.belief_compile": "inductor",
+                                                              "model.belief_cuda_graphs": False})
+    run_config_path.write_text(json.dumps(run_config.to_dict()), encoding="utf-8")
+
+    aggregate_runs([source], expected_config=master, output_dir=tmp_path / "reports")

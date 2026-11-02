@@ -1,0 +1,9 @@
+{
+  "pytest_exit_code": 0,
+  "max_absolute_errors": {
+    "torch.float32:atol=1e-06:rtol=1e-06": 7.450580596923828e-08,
+    "torch.float32:atol=1e-05:rtol=1e-05": 1.9073486328125e-06,
+    "torch.float64:atol=1e-10:rtol=1e-10": 2.6645352591003757e-15,
+    "torch.float32:atol=0.0001:rtol=1e-05": 3.4971679269801825e-05
+  }
+}
