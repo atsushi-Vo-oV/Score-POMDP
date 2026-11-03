@@ -9,6 +9,8 @@ are returned in `info`, never in the observation.
 from __future__ import annotations
 
 import math
+import sys
+import time
 from typing import List
 
 import gym
@@ -21,6 +23,15 @@ from minerl.herobraine.hero.handler import Handler
 # Minecraft draws the HUD (hearts, hunger, hotbar) over the bottom ~30 rows; render taller and keep the top square.
 RENDER_RESOLUTION = (128, 240)  # (width, height) handed to the Minecraft video producer; toasts sit in the top rows, HUD in the bottom rows (guiScale 1)
 RESOLUTION = (128, 128)  # (width, height) of the observation after cropping the HUD away
+
+# World generation on a loaded machine can exceed MineRL's socket timeout (SOCKTIME, 60 s by default);
+# give the Minecraft process five minutes before a call is declared hung.
+try:
+    from minerl.env import _multiagent as _minerl_multiagent
+
+    _minerl_multiagent.SOCKTIME = max(float(_minerl_multiagent.SOCKTIME), 300.0)
+except Exception:  # pragma: no cover - older / newer MineRL layouts
+    pass
 CROP_TOP = 64
 # (name, keyboard keys held, camera yaw delta in degrees per Minecraft tick)
 DISCRETE_ACTIONS = (
@@ -135,8 +146,26 @@ class WalkForward(gym.Env):
         """The HUD-free top square of the rendered point of view."""
         return np.ascontiguousarray(obs["pov"][CROP_TOP:CROP_TOP + RESOLUTION[1], :RESOLUTION[0]])
 
+    def _restart(self, reason: Exception) -> None:
+        """Replace a hung / crashed Minecraft instance (MineRL socket timeouts happen on world generation)."""
+        print(f"[sbmc] restarting Minecraft after {type(reason).__name__}: {reason}", file=sys.stderr, flush=True)
+        try:
+            self.env.close()
+        except Exception:
+            pass
+        time.sleep(5.0)
+        self.env = gym.make(self.spec_obj.name)
+
     def reset(self):
-        obs = self.env.reset()
+        obs = None
+        for attempt in range(4):
+            try:
+                obs = self.env.reset()
+                break
+            except Exception as exc:  # noqa: BLE001 - any MineRL failure gets a fresh instance
+                if attempt == 3:
+                    raise
+                self._restart(exc)
         if self.turn_at_reset:
             # turn to a uniformly random yaw over a few ticks (camera deltas are clipped per tick)
             total = float(self.rng.uniform(-180.0, 180.0))
@@ -153,10 +182,17 @@ class WalkForward(gym.Env):
 
     def step(self, index: int):
         done, obs = False, None
-        for _ in range(self.action_repeat):
-            obs, _, done, _ = self.env.step(self._minerl_action(int(index)))
-            if done:
-                break
+        try:
+            for _ in range(self.action_repeat):
+                obs, _, done, _ = self.env.step(self._minerl_action(int(index)))
+                if done:
+                    break
+        except Exception as exc:  # noqa: BLE001 - end the episode, the next reset gets a fresh instance
+            self._restart(exc)
+            self.steps = self.max_steps
+            info = {"xz": self.position.copy(), "progress": float(np.dot(self.position - self.start_position, self.heading)),
+                    "yaw": float("nan"), "ypos": float("nan"), "action": DISCRETE_ACTIONS[int(index)][0], "restarted": True}
+            return np.zeros((RESOLUTION[1], RESOLUTION[0], 3), np.uint8), 0.0, True, info
         position = self._xz(obs)
         reward = float(np.dot(position - self.position, self.heading))
         self.position = position

@@ -45,11 +45,17 @@ def main() -> None:
                 break
         episode += 1
         print(f"episode {episode} frames {len(frames)} elapsed {time.time() - t0:.0f}s", flush=True)
+        if episode % 5 == 0:
+            save(a.out + ".partial.npz", frames, actions, rewards, episode_ids, xz, yaw)
     env.close()
-    np.savez_compressed(a.out, frames=np.asarray(frames, dtype=np.uint8), actions=np.asarray(actions, np.int64),
+    save(a.out, frames, actions, rewards, episode_ids, xz, yaw)
+    print("saved", a.out, len(frames), "frames")
+
+
+def save(path, frames, actions, rewards, episode_ids, xz, yaw) -> None:
+    np.savez_compressed(path, frames=np.asarray(frames, dtype=np.uint8), actions=np.asarray(actions, np.int64),
                         rewards=np.asarray(rewards, np.float32), episode=np.asarray(episode_ids, np.int64),
                         xz=np.asarray(xz, np.float32), yaw=np.asarray(yaw, np.float32))
-    print("saved", a.out, len(frames), "frames")
 
 
 if __name__ == "__main__":
