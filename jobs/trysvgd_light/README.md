@@ -42,3 +42,12 @@ Campaigns `trysvgdlight-<task>-tf-svgd-{param,func,prev}-init-v1`, configs
 `trysvgdlight_<task>_svgd-{param,func,prev}init_s{10..14}.sh` for mirror2 (333 updates), tps (213) and tagr (1293).
 The affine / network proposals are zero-initialised, so a fresh model is bit-identical to the reference arm
 (`src/tests/test_proposal_init.py`); they are trained only through the gradients that flow into the chain.
+
+## SVGD-joint without structure (2026-11-03): tf-svgd-flat
+
+`score_parameterization = "direct_flat"`: the recursive score is one MLP over the plain concatenation
+`(o_t, x, a_{t-1}, x_{t-1,1}, ..., x_{t-1,K})` of the query with every previous particle in its stored order; no
+attention, no pairwise terms, no permutation invariance (the initial-step network is unchanged).  The hidden width
+is set so that the per-query multiply-adds equal the joint arm's (`K` pairwise transition evaluations + the context
+network): mirror2 49, tps 51, tagr 27 (vs. 8 in the joint arm).  Campaigns `trysvgdlight-<task>-tf-svgd-flat-v1`,
+configs `config/trysvgdlight_<task>_tf-svgd-flat.json`, jobs `trysvgdlight_<task>_svgd-flat_s{10..14}.sh`.

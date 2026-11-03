@@ -451,6 +451,9 @@ class ScoreBeliefActorCritic(nn.Module):
             observation_anchor=bool(model_config.get("langevin_observation_anchor", False)),
             proposal_hidden=list(model_config.get("proposal_hidden", [64])),
             langevin_proposal=str(model_config.get("langevin_proposal", "noise")),
+            num_particles=(
+                None if model_config.get("num_particles") is None else int(model_config["num_particles"])
+            ),
             particle_sampler=str(model_config.get("particle_sampler", "ula")),
             smi_component_scale=float(model_config.get("smi_component_scale", 0.1)),
             score_parameterization=str(model_config.get("score_parameterization", "energy")),

@@ -110,7 +110,7 @@ _LOG_NOISE_SCALE_MIN = math.log(1e-3)
 _LOG_NOISE_SCALE_MAX = math.log(2.0)
 _SCHEDULE_BOUNDS = ("clamp", "sigmoid")
 PARTICLE_SAMPLERS = ("ula", "svgd", "smi")
-SCORE_PARAMETERIZATIONS = ("energy", "direct", "direct_joint")
+SCORE_PARAMETERIZATIONS = ("energy", "direct", "direct_joint", "direct_flat")
 # Width of the previous-belief summary c(x) that the joint direct score network reads.
 _JOINT_CONTEXT_DIM = 8
 # SMI component scales s_k are kept in [1e-3, 2] (same range as the ULA noise scale).
@@ -297,6 +297,7 @@ class EnergyBelief(nn.Module):
         observation_anchor: bool = False,
         proposal_hidden: Sequence[int] = (64,),
         langevin_proposal: str = "noise",
+        num_particles: int | None = None,
         particle_sampler: str = "ula",
         smi_component_scale: float = 0.1,
         score_parameterization: str = "energy",
@@ -323,7 +324,11 @@ class EnergyBelief(nn.Module):
         self._cuda_graph_chains: dict[tuple, object] = {}
         self._cuda_graph_cpu_warned = False
         if score_parameterization not in SCORE_PARAMETERIZATIONS:
-            raise ValueError("score_parameterization must be energy, direct or direct_joint")
+            raise ValueError("score_parameterization must be energy, direct, direct_joint or direct_flat")
+        # ``direct_flat``: no structure at all - one MLP maps the concatenation
+        # (o, x, a, x_{t-1,1}, ..., x_{t-1,K}) of the query with every previous particle in its
+        # stored order to the score (no attention, no permutation invariance, no pairwise terms).
+        # The input width fixes the particle count K at construction.
         # ``direct``: the three networks output the score itself (no autograd through a scalar
         # potential): g(o, x) - x at t = 0, and f(o, x, a) + sum_j softmax_j(k_j) v_j at t >= 1 with
         # (k_j, v_j) = transition(x, x_{t-1,j}, a), the attention analogue of the gradient of the
@@ -498,19 +503,33 @@ class EnergyBelief(nn.Module):
             )
         direct = self.score_parameterization != "energy"
         joint = self.score_parameterization == "direct_joint"
+        flat = self.score_parameterization == "direct_flat"
         self.initial_energy = energy_network(
             "initial", observation_dim + state_dim, state_dim if direct else 1
         )
-        self.observation_energy = energy_network(
-            "observation",
-            observation_dim + state_dim + action_feature_dim + (_JOINT_CONTEXT_DIM if joint else 0),
-            state_dim if direct else 1,
-        )
-        self.transition_energy = energy_network(
-            "transition",
-            2 * state_dim + action_feature_dim,
-            1 + (_JOINT_CONTEXT_DIM if joint else state_dim) if direct else 1,
-        )
+        self.transition_energy: nn.Module | None
+        if flat:
+            if num_particles is None or int(num_particles) <= 0:
+                raise ValueError("direct_flat needs the particle count (num_particles) at construction")
+            self.num_particles = int(num_particles)
+            self.observation_energy = energy_network(
+                "observation",
+                observation_dim + state_dim + action_feature_dim + self.num_particles * state_dim,
+                state_dim,
+            )
+            self.transition_energy = None
+        else:
+            self.num_particles = None if num_particles is None else int(num_particles)
+            self.observation_energy = energy_network(
+                "observation",
+                observation_dim + state_dim + action_feature_dim + (_JOINT_CONTEXT_DIM if joint else 0),
+                state_dim if direct else 1,
+            )
+            self.transition_energy = energy_network(
+                "transition",
+                2 * state_dim + action_feature_dim,
+                1 + (_JOINT_CONTEXT_DIM if joint else state_dim) if direct else 1,
+            )
 
     def _validate_context(
         self,
@@ -675,6 +694,15 @@ class EnergyBelief(nn.Module):
             num_previous = previous_particles.shape[1]
             obs = observation[:, None, :].expand(-1, num_query, -1)
             action = previous_action[:, None, :].expand(-1, num_query, -1)
+            if self.score_parameterization == "direct_flat":
+                if num_previous != self.num_particles:
+                    raise ValueError(
+                        f"direct_flat was built for {self.num_particles} previous particles, got {num_previous}"
+                    )
+                flat_previous = previous_particles.reshape(previous_particles.shape[0], 1, -1).expand(
+                    -1, num_query, -1
+                )
+                return bounded(self.observation_energy(torch.cat((obs, query, action, flat_previous), dim=-1)))
             pairs = torch.cat(
                 (
                     query[:, :, None, :].expand(-1, -1, num_previous, -1),
