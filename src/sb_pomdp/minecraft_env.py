@@ -68,14 +68,33 @@ class _PipeBackend:
         command = [python, "-m", "sbmc.server", "--max-steps", str(max_steps), "--action-repeat", str(action_repeat),
                    "--seed", str(seed), "--new-world-every-reset", str(int(new_world))]
         env = dict(os.environ, PYTHONPATH=root, CUDA_VISIBLE_DEVICES="")
+        self.xvfb: subprocess.Popen | None = None
+        self.log = open(Path(root) / "logs" / f"server_{os.getpid()}_{seed}.log", "ab")  # noqa: SIM115
         if not os.environ.get("DISPLAY"):
-            command = ["xvfb-run", "-a", "-s", "-screen 0 1024x768x24", *command]
+            # A nested xvfb-run hangs on its display lock; start a private Xvfb instead.
+            env["DISPLAY"] = self._start_xvfb(seed)
         self.process = subprocess.Popen(command, cwd=root, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                        stderr=open(Path(root) / "logs" / f"server_{os.getpid()}_{seed}.log", "ab"))
+                                        stderr=self.log)
         hello = self._recv()
         if not hello or not hello.get("ready"):
             raise RuntimeError(f"Minecraft server did not start: {hello!r}")
         self.num_actions = int(hello["num_actions"])
+
+    def _start_xvfb(self, seed: int) -> str:
+        """Start an X virtual framebuffer on a free display number and return ``:N``."""
+        import time
+
+        for attempt in range(40):
+            number = 200 + (os.getpid() * 7 + seed * 13 + attempt) % 700
+            if Path(f"/tmp/.X{number}-lock").exists():
+                continue
+            proc = subprocess.Popen(["Xvfb", f":{number}", "-screen", "0", "1024x768x24", "-nolisten", "tcp"],
+                                    stdout=self.log, stderr=self.log)
+            time.sleep(1.5)
+            if proc.poll() is None:
+                self.xvfb = proc
+                return f":{number}"
+        raise RuntimeError("could not start Xvfb for the Minecraft server")
 
     def _send(self, payload: Mapping[str, Any]) -> None:
         data = pickle.dumps(dict(payload), protocol=pickle.HIGHEST_PROTOCOL)
@@ -103,8 +122,14 @@ class _PipeBackend:
         try:
             self._send({"cmd": "close"})
             self.process.wait(timeout=30)
-        except Exception:
+        except Exception:  # noqa: BLE001 - a hung server is simply killed
             self.process.kill()
+        if self.xvfb is not None:
+            with contextlib.suppress(Exception):
+                self.xvfb.kill()
+            self.xvfb = None
+        with contextlib.suppress(Exception):
+            self.log.close()
 
 
 class _FakeBackend:

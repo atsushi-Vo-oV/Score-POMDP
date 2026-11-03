@@ -8,6 +8,7 @@ Launch: python -m sbmc.server --max-steps 200 --action-repeat 4 --seed 0  (stdou
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import pickle
 import struct
@@ -39,6 +40,9 @@ def main() -> None:
     # Minecraft and MineRL print to stdout; move the data channel to a private descriptor first.
     data_out = os.fdopen(os.dup(sys.stdout.fileno()), "wb", buffering=0)
     data_in = os.fdopen(os.dup(sys.stdin.fileno()), "rb", buffering=0)
+    # Everything else that writes to file descriptor 1 (this interpreter, MineRL, the Java child) must go
+    # to stderr, or it would corrupt the length-prefixed channel.
+    os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
     sys.stdout = sys.stderr
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from sbmc.walk_env import WalkForward  # noqa: E402
@@ -52,8 +56,9 @@ def main() -> None:
             break
         if message["cmd"] == "reset":
             obs = env.reset()
+            yaw = math.degrees(math.atan2(-env.heading[0], env.heading[1]))  # inverse of WalkForward._heading
             _send(data_out, {"obs": obs, "reward": 0.0, "done": False,
-                             "info": {"xz": env.position.tolist(), "yaw_heading": env.heading.tolist(), "progress": 0.0}})
+                             "info": {"xz": env.position.tolist(), "yaw_heading": env.heading.tolist(), "yaw": yaw, "progress": 0.0}})
         elif message["cmd"] == "step":
             obs, reward, done, info = env.step(int(message["action"]))
             info = {k: (v.tolist() if hasattr(v, "tolist") else v) for k, v in info.items()}
