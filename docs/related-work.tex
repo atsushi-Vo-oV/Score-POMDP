@@ -149,6 +149,36 @@ warm start変種（再帰時刻の連鎖初期値をfresh noiseでなく前時�
 本実験は、この輸送型ベイズ更新をモデルフリー・報酬のみの設定で
 POMDP方策の内部に埋め込む点で異なる。
 
+\subsection{ESCORT（NeurIPS 2025）}
+
+Zhangら\cite{zhang2025escort}のESCORTは、POMDPの信念を等重みの粒子集合で持ち、
+再サンプリングの代わりにSVGDの引力・反発で多峰性と広がりを保つ信念表現である。
+1時刻の更新は、既知の遷移$T$で粒子を動かし、既知の観測尤度$O$で尤度加重平均へ
+引き寄せる局所補正を加えたうえで、$\log O$の有限差分をscoreとするSVGD速度場を適用する。
+これに、状態次元間の相関を保つための学習射影行列による正則化（generalized sliced
+Wasserstein由来）と、連続する信念間のsliced 1-Wasserstein距離を罰則とする時間的一貫性
+（前時刻の対応粒子へ戻す力）を加える。学習されるのは粒子ごとencoderと平均poolingからなる
+方策だけで、信念更新は方策損失から勾配を受けない。評価は既知モデルの10--20次元ドメイン
+（Light-Dark、Kidnapped Robot、多目標追跡）とFlickering Atariで、真の状態に対する
+位置誤差で素のSVGDを8.5--24.7\%改善する。日英の詳細な対応表は
+\texttt{docs/related-work-escort.md}にまとめた。
+
+\matchpoint
+等重み粒子、再サンプリングなし、SVGD輸送、置換不変な読み出しからの方策勾配という骨格は
+本実験と同じである。ESCORTの時間的一貫性は、本実験のwarm start変種（前時刻粒子から
+連鎖を始める）と同じ狙いを罰則として実装したものにあたる。
+
+\difference
+ESCORTは遷移・観測モデルを既知とし（著者も限界として明記）、scoreを既知尤度の有限差分で得る。
+本実験はscore場そのものを報酬と次観測予測から学習し、信念の連鎖を保存noiseから再生して
+方策損失を信念まで逆伝播する。粒子数（100--1000対16）、粒子の空間（物理状態対学習潜在）、
+相関射影の有無もちがう。
+
+\recommendation
+mirror2 / tpsは遷移・観測が解析的に書けるため、ESCORT型の既知モデルSVGD信念に本実験の方策を
+接続すれば「信念が正しければどこまで行けるか」の上限参照になる。時間的一貫性の罰則は
+warm start変種の補完として安価に試せる。
+
 \section{Setから関数を出力するoperator architecture}
 
 \subsection{Deep SetsとSet Transformer}
@@ -730,6 +760,12 @@ Walter R. Gilks, Carlo Berzuini,
 Pierre Del Moral, Arnaud Doucet, Ajay Jasra,
 ``Sequential Monte Carlo samplers,''
 \emph{Journal of the Royal Statistical Society: Series B}, Vol.~68, No.~3, pp.~411--436, 2006.
+
+\bibitem{zhang2025escort}
+Yunuo Zhang, Baiting Luo, Ayan Mukhopadhyay, Gabor Karsai, Abhishek Dubey,
+``ESCORT: Efficient Stein-variational and Sliced Consistency-Optimized Temporal Belief Representation for POMDPs,''
+NeurIPS, 2025.
+arXiv: \url{https://arxiv.org/abs/2510.21107}. Code: \url{https://github.com/scope-lab-vu/ESCORT}.
 
 \end{thebibliography}
 
