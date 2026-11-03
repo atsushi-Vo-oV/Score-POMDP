@@ -103,6 +103,8 @@ _LEGACY_COMPARISON_DEFAULTS: dict[str, object] = {
     "pf_soft_alpha": 0.9,
     "pf_variant": "deterministic",
     "pf_mgf_features": 0,
+    "pf_observation_function": "linear",
+    "pf_observation_hidden": 32,
     "alpha_feedforward_dim": None,
     "rnn_encoder_hidden": [64],
     "rnn_hidden_dim": 32,

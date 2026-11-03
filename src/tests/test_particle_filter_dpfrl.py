@@ -128,3 +128,62 @@ def test_config_validates_pf_variant_keys() -> None:
         {"comparison.pf_variant": "dpfrl", "comparison.pf_mgf_features": 8}
     )
     assert accepted["comparison"]["pf_variant"] == "dpfrl"
+
+
+def test_config_validates_pf_observation_function_keys() -> None:
+    config = load_config("config/local.json")
+    resolved = config.to_dict()["comparison"]
+    assert resolved["pf_observation_function"] == "linear" and resolved["pf_observation_hidden"] == 32
+    for kind in ("mlp", "bilinear"):
+        accepted = config.with_overrides({"comparison.pf_observation_function": kind})
+        assert accepted["comparison"]["pf_observation_function"] == kind
+    with pytest.raises(ConfigError):
+        config.with_overrides({"comparison.pf_observation_function": "quadratic"})
+    with pytest.raises(ConfigError):
+        config.with_overrides({"comparison.pf_observation_hidden": 0})
+
+
+def _weights_given_particles(model: ParticleFilterActorCritic, particles: torch.Tensor, encoded: torch.Tensor):
+    return torch.log_softmax(model.particle_observation_compatibility(particles, encoded), dim=-1)
+
+
+def test_linear_compatibility_cannot_weight_particles_by_the_observation() -> None:
+    """The original head is a^T h_i + b^T e + c: the observation term is shared by all particles and
+    cancels in the per-particle softmax, so for fixed particles the weights ignore the observation."""
+    torch.manual_seed(1)
+    particles = torch.randn(2, K, D)
+    encoded_a, encoded_b = torch.randn(2, 8), torch.randn(2, 8)
+    linear = _model(observation_function="linear")
+    assert torch.allclose(
+        _weights_given_particles(linear, particles, encoded_a),
+        _weights_given_particles(linear, particles, encoded_b),
+        atol=1e-6,
+    )
+    for kind in ("mlp", "bilinear"):
+        model = _model(observation_function=kind)
+        assert not torch.allclose(
+            _weights_given_particles(model, particles, encoded_a),
+            _weights_given_particles(model, particles, encoded_b),
+            atol=1e-4,
+        ), f"{kind} must let the observation reweight the particles"
+
+
+@pytest.mark.parametrize("kind", ["mlp", "bilinear"])
+def test_nonlinear_compatibility_runs_replays_and_trains(kind: str) -> None:
+    model = _model(observation_function=kind)
+    inputs, starts = _inputs(model, time=8, batch=2)
+    hidden = model.initial_hidden(2)
+    a, ha = model.encode_sequence(inputs, hidden, starts)
+    b, hb = model.encode_sequence(inputs, hidden, starts)
+    assert torch.allclose(a, b) and torch.allclose(ha, hb)
+    _particles, log_weights = model._unpack(hb)
+    assert torch.allclose(log_weights.exp().sum(-1), torch.ones(2), atol=1e-5)
+    a.square().mean().backward()
+    assert any(
+        "observation_function" in n and p.grad is not None and p.grad.abs().sum() > 0
+        for n, p in model.named_parameters()
+    )
+    with pytest.raises(ValueError):
+        _model(observation_function="quadratic")
+    with pytest.raises(ValueError):
+        _model(observation_hidden=0)

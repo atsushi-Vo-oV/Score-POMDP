@@ -182,9 +182,12 @@ _COMPARISON_KEYS = frozenset(
         "pf_soft_alpha",
         "pf_variant",
         "pf_mgf_features",
+        "pf_observation_function",
+        "pf_observation_hidden",
         "alpha_feedforward_dim",
     }
 )
+PF_OBSERVATION_FUNCTIONS = frozenset({"linear", "mlp", "bilinear"})
 BELIEF_GRADIENT_MODES = frozenset({"full", "tbptt_1"})
 COMPARISON_METHODS = frozenset(
     {
@@ -431,6 +434,11 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         # PF-RNN/DPFRL-faithful stochastic variant existed.
         "pf_variant": "deterministic",
         "pf_mgf_features": 0,
+        # The DPFRL observation-compatibility head was one linear layer on [h_i, e] in every
+        # earlier run; its observation term cancels in the per-particle softmax.  "mlp" and
+        # "bilinear" add the particle-observation interaction (pf v3, 2026-11-04).
+        "pf_observation_function": "linear",
+        "pf_observation_hidden": 32,
         # score_alpha shares transformer_ff_dim for its trunk unless overridden.
         "alpha_feedforward_dim": None,
         "rnn_encoder_hidden": [64],
@@ -1091,6 +1099,12 @@ def _validate_comparison(
     if pf_variant not in {"deterministic", "dpfrl"}:
         raise ConfigError("comparison.pf_variant must be deterministic or dpfrl")
     _integer(section["pf_mgf_features"], "comparison.pf_mgf_features", minimum=0)
+    pf_observation_function = _nonempty_string(
+        section["pf_observation_function"], "comparison.pf_observation_function"
+    )
+    if pf_observation_function not in PF_OBSERVATION_FUNCTIONS:
+        raise ConfigError("comparison.pf_observation_function must be linear, mlp, or bilinear")
+    _integer(section["pf_observation_hidden"], "comparison.pf_observation_hidden", minimum=1)
     alpha_ff = section["alpha_feedforward_dim"]
     if alpha_ff is not None:
         _integer(alpha_ff, "comparison.alpha_feedforward_dim")

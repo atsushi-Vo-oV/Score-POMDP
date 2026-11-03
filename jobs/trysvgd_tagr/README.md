@@ -22,6 +22,7 @@ light の腕(直接スコア、-joint あり)も同じ設定。v1(trysvgd-tagr-t
 | config | campaign | shards | updates (pretrain + PPO + predict) |
 |---|---|---|---|
 | trysvgd_tagr_base.json | trysvgd-tagr-base-v2 | 15 | 1293 (98 + 1000 + 195) |
+| trysvgd_tagr_pf_v3.json(DPFRL、観測適合度 mlp、pf_hidden [366, 651]。jobs/trysvgd/README.md の 2026-11-04 の項) | trysvgd-tagr-pf-v3 | 5 | 1293 (98 + 1000 + 195) |
 | trysvgd_tagr_tf-ula.json | trysvgd-tagr-tf-ula-v2 | 5 | 1293 (98 + 1000 + 195) |
 | trysvgd_tagr_tf-svgd.json | trysvgd-tagr-tf-svgd-v2 | 5 | 1293 (98 + 1000 + 195) |
 | trysvgd_tagr_tf-smi.json | trysvgd-tagr-tf-smi-v2 | 5 | 1293 (98 + 1000 + 195) |

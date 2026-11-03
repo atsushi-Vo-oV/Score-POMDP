@@ -19,6 +19,14 @@ mirror2 / tps は **trysvgd-{mirror2,tps}-base-v2**(jobs/trysvgd/*_v2_*.sh、mat
 | tps | 1.368 / 1.38 / 1.395 | 1.368 (562k) | 1.368 (561k) | 1.368 (159k) | 39k |
 | tagr | 2.297 / 2.333 / 2.376 | 2.297 (1030k) | 2.297 (1030k) | 2.297 (358k) | 44k |
 
+**2026-11-04 DPFRL の観測適合度ヘッド(pf v3)**: v1 / v2 の DPFRL は観測適合度が [h_i, e] の連結に対する 1 層線形
+(aᵀh_i + bᵀe + c)で、観測項 bᵀe + c が粒子間で共通のため粒子ごとの log-softmax で相殺され、重み更新が粒子と観測の
+相互作用を表せない(Astra の再解析で判明、`baselines.py` で確認)。`comparison.pf_observation_function` を追加し
+(`linear` = 従来、`mlp` = 観測を 32 次元に射影してから粒子と結合する 1 隠れ層 MLP、`bilinear` = h_iᵀ W proj(e) + aᵀh_i)、
+v3(mlp)と v3b(bilinear、mirror2 のみ)として走らせる。幅は現コードで数え直した energy TF-ULA(mirror2 1.239 / tps 1.226 /
+tagr 2.154 MFLOP。11/2 以降に不要な 2 回目の denoiser 計算が消えたので TF・基準線とも同じだけ減り、v2 の対応は保たれる)
+に合わせた: mlp は mirror2 [212, 378]、tps [210, 374]、tagr [366, 651]、bilinear は mirror2 [221, 394]。
+
 旧表(fast path を数えていない値。v1 の基準線はこれに合わせてあった):
 
 | task | TF ULA / SVGD / SMI (MFLOP) | GRU (params) | RNN (params) | DPFRL (params) | TF params |
@@ -34,10 +42,12 @@ mirror2 / tps は **trysvgd-{mirror2,tps}-base-v2**(jobs/trysvgd/*_v2_*.sh、mat
 | task | arm | config | campaign | shards | updates (pretrain + PPO + predict) |
 |---|---|---|---|---|---|
 | mirror2 | base | config/trysvgd_mirror2_base.json | trysvgd-mirror2-base-v1(旧幅)/ **-v2**(数え直した幅、sequence_microbatch_size 512) | 15 | 333 (98 + 200 + 35) |
+| mirror2 | pf v3 / v3b | config/trysvgd_mirror2_pf_v3.json / _pf_v3b.json | trysvgd-mirror2-pf-v3 / -pf-v3b | 5 / 5 | 333 (98 + 200 + 35) |
 | mirror2 | tf-ula | config/trysvgd_mirror2_tf-ula.json | trysvgd-mirror2-tf-ula-v1 | 5 | 333 (98 + 200 + 35) |
 | mirror2 | tf-svgd | config/trysvgd_mirror2_tf-svgd.json | trysvgd-mirror2-tf-svgd-v1 | 5 | 333 (98 + 200 + 35) |
 | mirror2 | tf-smi | config/trysvgd_mirror2_tf-smi.json | trysvgd-mirror2-tf-smi-v1 | 5 | 333 (98 + 200 + 35) |
 | tps | base | config/trysvgd_tps_base.json | trysvgd-tps-base-v1(旧幅)/ **-v2**(数え直した幅、sequence_microbatch_size 512) | 15 | 213 (98 + 100 + 15) |
+| tps | pf v3 | config/trysvgd_tps_pf_v3.json | trysvgd-tps-pf-v3 | 5 | 213 (98 + 100 + 15) |
 | tps | tf-ula | config/trysvgd_tps_tf-ula.json | trysvgd-tps-tf-ula-v1 | 5 | 213 (98 + 100 + 15) |
 | tps | tf-svgd | config/trysvgd_tps_tf-svgd.json | trysvgd-tps-tf-svgd-v1 | 5 | 213 (98 + 100 + 15) |
 | tps | tf-smi | config/trysvgd_tps_tf-smi.json | trysvgd-tps-tf-smi-v1 | 5 | 213 (98 + 100 + 15) |

@@ -225,6 +225,8 @@ def _make_model(
             "pf_soft_alpha": float(comparison_config["pf_soft_alpha"]),
             "pf_variant": str(comparison_config.get("pf_variant", "deterministic")),
             "pf_mgf_features": int(comparison_config.get("pf_mgf_features", 0)),
+            "pf_observation_function": str(comparison_config.get("pf_observation_function", "linear")),
+            "pf_observation_hidden": int(comparison_config.get("pf_observation_hidden", 32)),
             **shared_head_kwargs,
         }
 

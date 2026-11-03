@@ -749,6 +749,18 @@ class GRUActorCritic(nn.Module):
         )
 
 
+class _BilinearCompatibility(nn.Module):
+    """``h_i^T W e + a^T h_i``: the minimal particle-observation interaction for the DPFRL weights."""
+
+    def __init__(self, particle_dim: int, encoded_dim: int) -> None:
+        super().__init__()
+        self.interaction = nn.Bilinear(particle_dim, encoded_dim, 1)
+        self.particle = nn.Linear(particle_dim, 1, bias=False)
+
+    def forward(self, particles: torch.Tensor, encoded: torch.Tensor) -> torch.Tensor:
+        return (self.interaction(particles, encoded) + self.particle(particles)).squeeze(-1)
+
+
 class ParticleFilterActorCritic(nn.Module):
     """Deterministic particle-filter-style recurrent PPO baseline.
 
@@ -800,10 +812,21 @@ class ParticleFilterActorCritic(nn.Module):
         action_high: Sequence[float] | None = None,
         variant: Literal["deterministic", "dpfrl"] = "deterministic",
         mgf_features: int = 0,
+        observation_function: Literal["linear", "mlp", "bilinear"] = "linear",
+        observation_hidden: int = 32,
     ) -> None:
         super().__init__()
         if observation_dim <= 0:
             raise ValueError("observation_dim must be positive")
+        if observation_function not in ("linear", "mlp", "bilinear"):
+            raise ValueError("observation_function must be 'linear', 'mlp', or 'bilinear'")
+        if (
+            isinstance(observation_hidden, bool)
+            or not isinstance(observation_hidden, int)
+            or observation_hidden <= 0
+        ):
+            raise ValueError("observation_hidden must be a positive integer")
+        self.observation_function_kind: Literal["linear", "mlp", "bilinear"] = observation_function
         if (
             isinstance(num_particles, bool)
             or not isinstance(num_particles, int)
@@ -865,9 +888,28 @@ class ParticleFilterActorCritic(nn.Module):
             self.noise_scale = nn.Linear(particle_dim + encoded_dim, particle_dim)
             self.initial_mean = nn.Linear(encoded_dim, particle_dim)
             self.initial_noise_scale = nn.Linear(encoded_dim, particle_dim)
-            # Discriminative observation function: one linear layer, no
-            # activation, producing the log-compatibility added to log-weights.
-            self.observation_function = nn.Linear(particle_dim + encoded_dim, 1)
+            # Discriminative observation function producing the log-compatibility
+            # added to the log-weights.  ``linear`` is the original one-layer head on
+            # the concatenation [h_i, e]: a^T h_i + b^T e + c, whose observation term
+            # is shared by every particle and therefore cancels in the per-particle
+            # log-softmax, so the weight update cannot express a particle-observation
+            # interaction (the observation reaches the weights only through the
+            # transition).  ``mlp`` (a hidden layer on the concatenation) and
+            # ``bilinear`` (h_i^T W e + a^T h_i) restore that interaction.
+            # Both non-linear heads first project the (per-step, particle-independent) encoding
+            # to ``observation_hidden`` dimensions, so the per-particle cost stays small.
+            if observation_function == "linear":
+                self.observation_function: nn.Module = nn.Linear(particle_dim + encoded_dim, 1)
+            else:
+                self.observation_projection = nn.Linear(encoded_dim, observation_hidden)
+                if observation_function == "mlp":
+                    self.observation_function = nn.Sequential(
+                        nn.Linear(particle_dim + observation_hidden, observation_hidden),
+                        nn.SiLU(),
+                        nn.Linear(observation_hidden, 1),
+                    )
+                else:
+                    self.observation_function = _BilinearCompatibility(particle_dim, observation_hidden)
             # Moment-generating-function features M_j = sum_i w_i exp(v_j . h_i).
             self.mgf_vectors = nn.Parameter(
                 torch.randn(max(self.mgf_features, 1), particle_dim) / particle_dim**0.5
@@ -972,6 +1014,21 @@ class ParticleFilterActorCritic(nn.Module):
         uniforms = noise[..., self.num_particles * self.particle_dim :]
         return features, normals, uniforms
 
+    def particle_observation_compatibility(
+        self, particles: torch.Tensor, encoded: torch.Tensor
+    ) -> torch.Tensor:
+        """Log-compatibility of every particle ``[batch, K, D]`` with the encoded observation
+        ``[batch, E]``, returned as ``[batch, K]``."""
+
+        num_particles = particles.shape[1]
+        if self.observation_function_kind == "linear":
+            tiled = encoded.unsqueeze(1).expand(-1, num_particles, -1)
+            return self.observation_function(torch.cat((particles, tiled), dim=-1)).squeeze(-1)
+        projected = self.observation_projection(encoded).unsqueeze(1).expand(-1, num_particles, -1)
+        if self.observation_function_kind == "bilinear":
+            return self.observation_function(particles, projected)
+        return self.observation_function(torch.cat((particles, projected), dim=-1)).squeeze(-1)
+
     def _dpfrl_step(
         self,
         inputs: torch.Tensor,
@@ -1000,7 +1057,7 @@ class ParticleFilterActorCritic(nn.Module):
         # Discriminative weight update in log space, normalised (eta).
         uniform_log = torch.full_like(log_weights, -math.log(self.num_particles))
         previous = torch.where(starts, uniform_log, log_weights)
-        compatibility = self.observation_function(torch.cat((new_particles, tiled), dim=-1)).squeeze(-1)
+        compatibility = self.particle_observation_compatibility(new_particles, encoded)
         posterior_log = torch.log_softmax(previous + compatibility, dim=-1)
 
         # Soft resampling every step: ancestors from q = alpha w + (1-alpha)/K,
@@ -1223,6 +1280,8 @@ def make_baseline_actor_critic(
     pf_soft_alpha: float = 0.9,
     pf_variant: Literal["deterministic", "dpfrl"] = "deterministic",
     pf_mgf_features: int = 0,
+    pf_observation_function: Literal["linear", "mlp", "bilinear"] = "linear",
+    pf_observation_hidden: int = 32,
     critic_kind: Literal["state", "action"] = "state",
     q_value_samples: int = 8,
 ) -> FeedForwardBaselineActorCritic | RecurrentBaseline:
@@ -1250,6 +1309,8 @@ def make_baseline_actor_critic(
             soft_alpha=pf_soft_alpha,
             variant=pf_variant,
             mgf_features=pf_mgf_features,
+            observation_function=pf_observation_function,
+            observation_hidden=pf_observation_hidden,
             policy_condition_dim=policy_condition_dim,
             head_hidden_dims=head_hidden_dims,
             continuous_policy_kind=continuous_policy_kind,
