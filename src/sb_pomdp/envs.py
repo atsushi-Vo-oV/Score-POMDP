@@ -1901,6 +1901,11 @@ def make_env(
     if key in {"disktag", "tag"}:
         kwargs = _factory_kwargs(config, _DISK_TAG_KEYS)
         return DiskTagEnv(seed=seed, **kwargs)
+    if key in {"minecraftwalk", "sbwalk", "minecraft"}:
+        from .minecraft_env import _MINECRAFT_KEYS, MinecraftWalkEnv
+
+        kwargs = _factory_kwargs(config, _MINECRAFT_KEYS)
+        return MinecraftWalkEnv(seed=seed, **kwargs)
 
     raise ValueError(
         f"Unknown environment {name!r}; expected masked_cartpole, masked_pendulum, "

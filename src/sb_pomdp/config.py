@@ -105,6 +105,20 @@ _DISK_TAG_TASK_DEFAULTS: dict[str, Any] = {
     "range_noise_scale": 0.2,
 }
 _DISK_TAG_TASK_KEYS = _ENVIRONMENT_TASK_KEYS | frozenset(_DISK_TAG_TASK_DEFAULTS)
+# Minecraft "walk in one direction" (MineRL 1.0, 128x128 point of view encoded by a trained VAE; the Minecraft
+# process runs in its own interpreter and is driven over a pipe, see sb_pomdp.minecraft_env).
+_MINECRAFT_ALIASES = frozenset({"minecraftwalk", "sbwalk", "minecraft"})
+_MINECRAFT_TASK_DEFAULTS: dict[str, Any] = {
+    "action_repeat": 4,
+    "latent_dim": 32,
+    "vae_checkpoint": "",
+    "minecraft_python": "",
+    "minecraft_root": "",
+    "new_world_every_reset": True,
+    "progress_scale": 10.0,
+    "backend": "minerl",
+}
+_MINECRAFT_TASK_KEYS = _ENVIRONMENT_TASK_KEYS | frozenset(_MINECRAFT_TASK_DEFAULTS)
 _MOUNTAIN_HIKE_TASK_KEYS = frozenset(
     {
         "horizon",
@@ -669,6 +683,7 @@ def _validate_environment(value: Any, requested_tasks: Sequence[str]) -> Mapping
         is_car_flag = normalized_name in _CAR_FLAG_ALIASES
         is_heaven_hell = normalized_name in _HEAVEN_HELL_ALIASES
         is_disk_tag = normalized_name in _DISK_TAG_ALIASES
+        is_minecraft = normalized_name in _MINECRAFT_ALIASES
         expected_keys = (
             _LIGHT_DARK_TASK_KEYS
             if is_light_dark
@@ -682,6 +697,8 @@ def _validate_environment(value: Any, requested_tasks: Sequence[str]) -> Mapping
             if is_heaven_hell
             else _DISK_TAG_TASK_KEYS
             if is_disk_tag
+            else _MINECRAFT_TASK_KEYS
+            if is_minecraft
             else _ENVIRONMENT_TASK_KEYS
         )
         path = f"environment.tasks.{task_name}"
@@ -714,6 +731,18 @@ def _validate_environment(value: Any, requested_tasks: Sequence[str]) -> Mapping
             for key in sorted(set(_DISK_TAG_TASK_DEFAULTS) - {"num_ghosts", "capture_reward", "observation_mode"}):
                 _number(task[key], f"{path}.{key}", minimum=0.0)
             _number(task["capture_reward"], f"{path}.capture_reward")
+        if is_minecraft:
+            if _integer(task["action_repeat"], f"{path}.action_repeat") <= 0:
+                raise ConfigError(f"{path}.action_repeat must be positive")
+            if _integer(task["latent_dim"], f"{path}.latent_dim") <= 0:
+                raise ConfigError(f"{path}.latent_dim must be positive")
+            _number(task["progress_scale"], f"{path}.progress_scale", minimum=0.0)
+            _boolean(task["new_world_every_reset"], f"{path}.new_world_every_reset")
+            for key in ("vae_checkpoint", "minecraft_python", "minecraft_root"):
+                if not isinstance(task[key], str):
+                    raise ConfigError(f"{path}.{key} must be a string")
+            if task["backend"] not in {"minerl", "fake"}:
+                raise ConfigError(f"{path}.backend must be minerl or fake")
 
     missing = [task for task in requested_tasks if task not in tasks]
     if missing:
@@ -1230,6 +1259,7 @@ def normalize_legacy_resolved_config(config: Mapping[str, Any]) -> dict[str, Any
     _fill_alias_task_defaults(result, _CAR_FLAG_ALIASES, _CAR_FLAG_TASK_DEFAULTS)
     _fill_alias_task_defaults(result, _HEAVEN_HELL_ALIASES, _HEAVEN_HELL_TASK_DEFAULTS)
     _fill_alias_task_defaults(result, _DISK_TAG_ALIASES, _DISK_TAG_TASK_DEFAULTS)
+    _fill_alias_task_defaults(result, _MINECRAFT_ALIASES, _MINECRAFT_TASK_DEFAULTS)
     return result
 
 
