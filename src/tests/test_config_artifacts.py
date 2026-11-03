@@ -81,6 +81,7 @@ _LEGACY_MODEL_DEFAULTS: dict[str, object] = {
     "aux_mixture_components": 4,
     "langevin_transition_proposal": False,
     "langevin_observation_anchor": False,
+    "langevin_proposal": "noise",
     "proposal_hidden": [64],
     "encoder_use_scores": True,
     "critic_kind": "state",

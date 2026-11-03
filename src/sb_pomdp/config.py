@@ -241,6 +241,7 @@ _MODEL_KEYS = frozenset(
         "aux_mixture_components",
         "langevin_transition_proposal",
         "langevin_observation_anchor",
+        "langevin_proposal",
         "proposal_hidden",
         "encoder_use_scores",
         "critic_kind",
@@ -383,6 +384,10 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         "aux_mixture_components": 4,
         "langevin_transition_proposal": False,
         "langevin_observation_anchor": False,
+        # Chain start of the steps that begin at noise: "noise" (standard normal), "affine" (one
+        # learned mean / scale) or "network" (per-particle mean / scale from the previous particle,
+        # the previous action and the current observation).  Earlier runs all used "noise".
+        "langevin_proposal": "noise",
         "proposal_hidden": [64],
         "encoder_use_scores": True,
         # Every earlier run used a state-value critic V(b).
@@ -772,6 +777,13 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
     if section["langevin_transition_proposal"] and not section["langevin_warm_start"]:
         raise ConfigError(
             "model.langevin_transition_proposal requires model.langevin_warm_start"
+        )
+    proposal = _nonempty_string(section["langevin_proposal"], "model.langevin_proposal")
+    if proposal not in {"noise", "affine", "network"}:
+        raise ConfigError("model.langevin_proposal must be noise, affine, or network")
+    if proposal != "noise" and section["langevin_warm_start"]:
+        raise ConfigError(
+            "model.langevin_proposal affine/network cannot be combined with model.langevin_warm_start"
         )
     energy_kind = _nonempty_string(section["energy_network_kind"], "model.energy_network_kind")
     if energy_kind not in {"mlp", "kan"}:

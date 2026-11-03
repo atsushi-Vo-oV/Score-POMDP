@@ -296,6 +296,7 @@ class EnergyBelief(nn.Module):
         transition_proposal: bool = False,
         observation_anchor: bool = False,
         proposal_hidden: Sequence[int] = (64,),
+        langevin_proposal: str = "noise",
         particle_sampler: str = "ula",
         smi_component_scale: float = 0.1,
         score_parameterization: str = "energy",
@@ -474,6 +475,27 @@ class EnergyBelief(nn.Module):
             if observation_anchor
             else None
         )
+        # Learned chain start for the steps that would otherwise begin at standard-normal
+        # noise (every recursive step, and an initial step without the anchor):
+        #   "affine"  : xi -> mu + exp(log sigma) * xi with one global (mu, log sigma),
+        #   "network" : per particle, (mu_k, log sigma_k) = h(x^{k}_{t-1}, a_{t-1}, o_t), zero-initialised.
+        # Both start bit-identical to the plain sampler; a warm start already fixes the chain
+        # start at the previous particles, so the two are exclusive.
+        if langevin_proposal not in {"noise", "affine", "network"}:
+            raise ValueError("langevin_proposal must be noise, affine, or network")
+        if langevin_proposal != "noise" and self.langevin_warm_start:
+            raise ValueError("langevin_proposal affine/network cannot be combined with langevin_warm_start")
+        self.langevin_proposal = str(langevin_proposal)
+        self.proposal_mean: nn.Parameter | None = None
+        self.proposal_log_scale: nn.Parameter | None = None
+        self.proposal_network: nn.Module | None = None
+        if langevin_proposal == "affine":
+            self.proposal_mean = nn.Parameter(torch.zeros(state_dim))
+            self.proposal_log_scale = nn.Parameter(torch.zeros(state_dim))
+        elif langevin_proposal == "network":
+            self.proposal_network = _zero_final_mlp(
+                state_dim + action_feature_dim + observation_dim, proposal_hidden, 2 * state_dim
+            )
         direct = self.score_parameterization != "energy"
         joint = self.score_parameterization == "direct_joint"
         self.initial_energy = energy_network(
@@ -1002,6 +1024,29 @@ class EnergyBelief(nn.Module):
                 anchor_mean[:, None, :] + anchor_log_scale.exp()[:, None, :] * particles
             )
             particles = torch.where(initial.view(-1, 1, 1), anchored, particles)
+        if self.langevin_proposal != "noise":
+            noise = initial_noise.detach()
+            if self.proposal_network is not None:
+                num_particles = noise.shape[1]
+                proposal_input = torch.cat(
+                    (
+                        incoming_particles,
+                        previous_action[:, None, :].expand(-1, num_particles, -1),
+                        observation[:, None, :].expand(-1, num_particles, -1),
+                    ),
+                    dim=-1,
+                )
+                proposal_mean, proposal_log_scale = self.proposal_network(proposal_input).chunk(2, dim=-1)
+            else:
+                assert self.proposal_mean is not None and self.proposal_log_scale is not None
+                proposal_mean, proposal_log_scale = self.proposal_mean, self.proposal_log_scale
+            proposal_log_scale = proposal_log_scale.clamp(_ANCHOR_LOG_SCALE_MIN, _ANCHOR_LOG_SCALE_MAX)
+            proposed = proposal_mean + proposal_log_scale.exp() * noise
+            if self.observation_anchor is not None:
+                # the anchor keeps the initial rows; the learned proposal takes the recursive rows
+                particles = torch.where(initial.view(-1, 1, 1), particles, proposed)
+            else:
+                particles = proposed
         if self.langevin_warm_start:
             if incoming_particles.shape[1] != particles.shape[1]:
                 raise ValueError(

@@ -23,3 +23,22 @@ diffusion 方策の PPO)で、エネルギーを自動微分する代わりに�
 | tps | tf-ula-joint | config/trysvgdlight_tps_tf-ula-joint.json | trysvgdlight-tps-tf-ula-joint-v1 | 5 | 213 |
 | tps | tf-svgd-joint | config/trysvgdlight_tps_tf-svgd-joint.json | trysvgdlight-tps-tf-svgd-joint-v1 | 5 | 213 |
 | tps | tf-smi-joint | config/trysvgdlight_tps_tf-smi-joint.json | trysvgdlight-tps-tf-smi-joint-v1 | 5 | 213 |
+
+## Learned chain start (2026-11-03): param_init / func_init / prev_init
+
+Same light TF-SVGD configs, only the start of the 12-step SVGD chain changes (`model.langevin_proposal`,
+`model.langevin_warm_start`).  The plain arm starts every recursive time step at standard-normal noise
+(initial steps use the observation anchor in all four arms).
+
+| arm | config change | start of the chain at a recursive step |
+|---|---|---|
+| tf-svgd (reference) | - | `xi ~ N(0, I)` |
+| tf-svgd-param-init | `langevin_proposal = "affine"` | `mu + exp(log sigma) * xi`, one learned `(mu, log sigma)` per latent dimension |
+| tf-svgd-func-init | `langevin_proposal = "network"` | per particle `mu_k + exp(log sigma_k) * xi_k` with `(mu_k, log sigma_k) = h(x^k_{t-1}, a_{t-1}, o_t)` (MLP `proposal_hidden`, zero-initialised final layer) |
+| tf-svgd-prev-init | `langevin_warm_start = true` | the previous particles `x_{t-1}` themselves (no transition proposal) |
+
+Campaigns `trysvgdlight-<task>-tf-svgd-{param,func,prev}-init-v1`, configs
+`config/trysvgdlight_<task>_tf-svgd-{param,func,prev}-init.json`, jobs
+`trysvgdlight_<task>_svgd-{param,func,prev}init_s{10..14}.sh` for mirror2 (333 updates), tps (213) and tagr (1293).
+The affine / network proposals are zero-initialised, so a fresh model is bit-identical to the reference arm
+(`src/tests/test_proposal_init.py`); they are trained only through the gradients that flow into the chain.
