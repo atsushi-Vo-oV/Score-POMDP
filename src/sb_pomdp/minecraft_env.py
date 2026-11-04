@@ -61,6 +61,21 @@ class _VAEEncoder:
             return ((mu[0] - self.mu_mean) / self.mu_std).numpy().astype(np.float32)
 
 
+# X display bookkeeping of the private Xvfb servers (module level so tests can redirect it).
+_X_LOCK_DIR = Path("/tmp")
+_X_SOCKET_DIR = Path("/tmp/.X11-unix")
+_X_DISPLAY_MIN, _X_DISPLAY_MAX = 200, 900
+_XVFB_ATTEMPTS = 200
+
+
+def _pid_alive(pid: int) -> bool:
+    """Whether a process exists (via ``/proc``; elsewhere every pid counts as alive, so no lock is ever removed)."""
+    if pid <= 0:
+        return False
+    proc = Path("/proc")
+    return (proc / str(pid)).exists() if proc.is_dir() else True
+
+
 class _PipeBackend:
     """Drive ``sbmc/server.py`` (Minecraft in the MineRL venv) over stdin/stdout."""
 
@@ -80,14 +95,40 @@ class _PipeBackend:
             raise RuntimeError(f"Minecraft server did not start: {hello!r}")
         self.num_actions = int(hello["num_actions"])
 
+    @staticmethod
+    def _stale_display(number: int) -> bool:
+        """True when the lock of display ``number`` names a process that no longer exists.
+
+        An Xvfb that was killed (SIGKILL) leaves ``/tmp/.X<N>-lock`` and ``/tmp/.X11-unix/X<N>`` behind, and a
+        new Xvfb refuses that display.  A lock whose pid is dead can be removed and the number reused.
+        """
+        try:
+            pid = int((_X_LOCK_DIR / f".X{number}-lock").read_text().strip() or "0")
+        except (OSError, ValueError):
+            return False
+        return pid > 0 and not _pid_alive(pid)
+
     def _start_xvfb(self, seed: int) -> str:
-        """Start an X virtual framebuffer on a free display number and return ``:N``."""
+        """Start an X virtual framebuffer on a free display number and return ``:N``.
+
+        The candidates are drawn from the whole range so that the leftovers of earlier servers of this process
+        (every evaluation starts and stops its own instances) cannot exhaust a fixed band of numbers; a stale
+        lock (dead pid) is removed first instead of being skipped.
+        """
+        import random
         import time
 
-        for attempt in range(40):
-            number = 200 + (os.getpid() * 7 + seed * 13 + attempt) % 700
-            if Path(f"/tmp/.X{number}-lock").exists():
-                continue
+        rng = random.Random(os.getpid() * 7 + seed * 13 + time.time_ns())
+        for _ in range(_XVFB_ATTEMPTS):
+            number = rng.randrange(_X_DISPLAY_MIN, _X_DISPLAY_MAX)
+            lock = _X_LOCK_DIR / f".X{number}-lock"
+            if lock.exists():
+                if not self._stale_display(number):
+                    continue
+                with contextlib.suppress(OSError):
+                    lock.unlink()
+                with contextlib.suppress(OSError):
+                    (_X_SOCKET_DIR / f"X{number}").unlink()
             proc = subprocess.Popen(["Xvfb", f":{number}", "-screen", "0", "1024x768x24", "-nolisten", "tcp"],
                                     stdout=self.log, stderr=self.log)
             time.sleep(1.5)
@@ -95,6 +136,19 @@ class _PipeBackend:
                 self.xvfb = proc
                 return f":{number}"
         raise RuntimeError("could not start Xvfb for the Minecraft server")
+
+    def _stop_xvfb(self) -> None:
+        """Stop the private Xvfb gracefully (SIGTERM lets it remove its lock file and socket)."""
+        proc, self.xvfb = self.xvfb, None
+        if proc is None:
+            return
+        with contextlib.suppress(Exception):
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=10)
 
     def _send(self, payload: Mapping[str, Any]) -> None:
         data = pickle.dumps(dict(payload), protocol=pickle.HIGHEST_PROTOCOL)
@@ -124,10 +178,7 @@ class _PipeBackend:
             self.process.wait(timeout=30)
         except Exception:  # noqa: BLE001 - a hung server is simply killed
             self.process.kill()
-        if self.xvfb is not None:
-            with contextlib.suppress(Exception):
-                self.xvfb.kill()
-            self.xvfb = None
+        self._stop_xvfb()
         with contextlib.suppress(Exception):
             self.log.close()
 
