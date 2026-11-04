@@ -151,7 +151,8 @@ def test_production_job_segments_only_full_score_shards_in_one_fixed_root() -> N
     script = _PRODUCTION_PATH.read_text(encoding="utf-8")
 
     assert 'SEGMENT_UPDATES="${SB_POMDP_SEGMENT_UPDATES:-}"' in script
-    assert 'if (( 10#$SHARD_INDEX > 20 )); then' in script
+    # every production shard may be segmented (commit 40f76f7); only the shard range is checked
+    assert 'if (( 10#$SHARD_INDEX < 1 || 10#$SHARD_INDEX > EXPECTED_PRODUCTION_SHARDS )); then' in script
     assert '--segment-updates "$SEGMENT_UPDATES"' in script
     assert '--run-dir "results/campaigns/$CAMPAIGN_ID/shard${SHARD_TAG}"' in script
     assert "--resume" in script
