@@ -43,6 +43,23 @@ Campaigns `trysvgdlight-<task>-tf-svgd-{param,func,prev}-init-v1`, configs
 The affine / network proposals are zero-initialised, so a fresh model is bit-identical to the reference arm
 (`src/tests/test_proposal_init.py`); they are trained only through the gradients that flow into the chain.
 
+## One input domain for t = 0 and t >= 1 (2026-11-05): tf-svgd-prior
+
+`model.initial_belief = "prior"` (with `langevin_observation_anchor = false`): the initial network `g(o_0, x) - x`
+and the observation anchor are removed.  An initial step is scored by the *recursive* networks exactly like every
+later step, with `K` learned prior particles (`num_particles x state_dim`, standard-normal initialised, trained
+through the chain) in place of the previous particles and a zero previous action, and its chain starts at
+`N(0, I)` like every recursive step.  Motivation: in the reference arm the t = 0 cloud is 2-4x wider and its
+score 2-3x larger than at t >= 1 (the anchor log-scale saturates at its upper bound), so the readout sees t = 0
+in a different input domain; with one network and one chain start for all t the scales agree by construction.
+The chain cost is unchanged (one recursive score per step); the initial network's parameters disappear.
+Campaigns `trysvgdlight-<task>-tf-svgd-prior-v1`, configs `config/trysvgdlight_<task>_tf-svgd-prior.json`,
+jobs `trysvgdlight_<task>_svgd-prior_s{10..14}.sh` (mirror2 333, tps 213, tagr 1293 updates).  The zero-code
+control `tf-svgd-noanchor` is the reference config with only `langevin_observation_anchor = false` (initial
+network kept, t = 0 chain starts at noise): campaigns `trysvgdlight-<task>-tf-svgd-noanchor-v1`, configs
+`config/trysvgdlight_<task>_tf-svgd-noanchor.json`, jobs `trysvgdlight_<task>_svgd-noanchor_s{10..14}.sh`.
+Tests: `src/tests/test_prior_initial_belief.py`.
+
 ## SVGD-joint without structure (2026-11-03): tf-svgd-flat
 
 `score_parameterization = "direct_flat"`: the recursive score is one MLP over the plain concatenation

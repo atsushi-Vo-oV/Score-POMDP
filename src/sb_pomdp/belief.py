@@ -111,6 +111,9 @@ _LOG_NOISE_SCALE_MAX = math.log(2.0)
 _SCHEDULE_BOUNDS = ("clamp", "sigmoid")
 PARTICLE_SAMPLERS = ("ula", "svgd", "smi")
 SCORE_PARAMETERIZATIONS = ("energy", "direct", "direct_joint", "direct_flat")
+# "branch": t = 0 has its own initial network (+ optional observation anchor);
+# "prior": t = 0 is a recursive step over K learned prior particles and a zero action.
+INITIAL_BELIEFS = ("branch", "prior")
 # Width of the previous-belief summary c(x) that the joint direct score network reads.
 _JOINT_CONTEXT_DIM = 8
 # SMI component scales s_k are kept in [1e-3, 2] (same range as the ULA noise scale).
@@ -268,6 +271,19 @@ class EnergyBelief(nn.Module):
     ``mu(o_0) + sigma(o_0) * xi``.  Both are zero-initialised, so a fresh model
     is bit-identical to the plain cold/warm sampler, and both are trained only
     through the policy/auxiliary gradients that flow into the chain (no state).
+
+    ``initial_belief`` selects how the first step of an episode is scored.
+    ``"branch"`` (the original model) gives t = 0 its own network: the initial
+    potential ``g(o_0, x) - |x|^2 / 2`` (energy) or the score ``g(o_0, x) - x``
+    (direct), with the observation anchor as its optional chain start.  ``"prior"``
+    removes that branch: an initial row is scored by the *recursive* networks,
+    exactly like every later step, with ``K`` learned prior particles
+    ``x_prior`` (``num_particles x state_dim``, standard-normal initialised) in
+    place of the previous particles and a zero previous action.  The chain of
+    an initial row then starts where a recursive row starts (noise, the learned
+    proposal, or - with a warm start - the prior particles themselves), so the
+    initial belief lives in the same input domain and on the same scale as the
+    recursive ones by construction; the anchor cannot be combined with it.
     """
 
     def __init__(
@@ -305,8 +321,20 @@ class EnergyBelief(nn.Module):
         score_implementation: str = "autograd",
         belief_compile: str = "off",
         belief_cuda_graphs: bool = False,
+        initial_belief: str = "branch",
     ) -> None:
         super().__init__()
+        if initial_belief not in INITIAL_BELIEFS:
+            raise ValueError("initial_belief must be branch or prior")
+        self.initial_belief = str(initial_belief)
+        if self.initial_belief == "prior":
+            if observation_anchor:
+                raise ValueError(
+                    "initial_belief=prior scores the initial step with the recursive networks; "
+                    "the observation anchor of the initial branch does not apply"
+                )
+            if num_particles is None or int(num_particles) <= 0:
+                raise ValueError("initial_belief=prior needs the particle count (num_particles) at construction")
         if score_implementation not in {"autograd", "analytic"}:
             raise ValueError("score_implementation must be autograd or analytic")
         if score_implementation == "analytic" and energy_network_kind != "mlp":
@@ -504,9 +532,17 @@ class EnergyBelief(nn.Module):
         direct = self.score_parameterization != "energy"
         joint = self.score_parameterization == "direct_joint"
         flat = self.score_parameterization == "direct_flat"
-        self.initial_energy = energy_network(
-            "initial", observation_dim + state_dim, state_dim if direct else 1
-        )
+        self.initial_energy: nn.Module | None
+        self.prior_particles: nn.Parameter | None
+        if self.initial_belief == "prior":
+            # The initial step is a recursive step whose "previous belief" is this learned cloud.
+            self.initial_energy = None
+            self.prior_particles = nn.Parameter(torch.randn(int(num_particles), state_dim))
+        else:
+            self.initial_energy = energy_network(
+                "initial", observation_dim + state_dim, state_dim if direct else 1
+            )
+            self.prior_particles = None
         self.transition_energy: nn.Module | None
         if flat:
             if num_particles is None or int(num_particles) <= 0:
@@ -560,17 +596,47 @@ class EnergyBelief(nn.Module):
         if previous_particles.shape[-1] != self.state_dim:
             raise ValueError("previous particle state dimension does not match")
 
+    def _resolve_context(
+        self,
+        previous_particles: torch.Tensor,
+        previous_action: torch.Tensor,
+        initial: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Substitute the learned prior for the previous belief of initial rows (prior mode).
+
+        Returns the context unchanged in branch mode.  In prior mode every initial row reads
+        the prior particles and a zero previous action, and the returned ``initial`` flags are
+        all false: the row is a recursive step from then on (branch classification, chain
+        start, warm start, and transition proposal included).
+        """
+
+        if self.prior_particles is None:
+            return previous_particles, previous_action, initial
+        if previous_particles.shape[1] != self.prior_particles.shape[0]:
+            raise ValueError(
+                f"initial_belief=prior holds {self.prior_particles.shape[0]} prior particles, "
+                f"got {previous_particles.shape[1]} previous particles"
+            )
+        mask = initial.bool()
+        prior = self.prior_particles.to(previous_particles.dtype)[None, :, :].expand_as(previous_particles)
+        previous_particles = torch.where(mask[:, None, None], prior, previous_particles)
+        previous_action = torch.where(mask[:, None], torch.zeros_like(previous_action), previous_action)
+        return previous_particles, previous_action, torch.zeros_like(mask)
+
     def classify_potential_branch(self, initial: torch.Tensor) -> PotentialBranch:
         """Classify one vectorised environment step with one device synchronisation.
 
         ULA evaluates the score repeatedly for the same environment context.  The
         caller can classify that context once outside the Langevin loop (and
         outside activation-checkpoint recomputation), then reuse the returned
-        Python value for every score evaluation.
+        Python value for every score evaluation.  In prior mode every step is
+        recursive and no synchronisation is needed.
         """
 
         if initial.ndim != 1:
             raise ValueError("initial must have shape [batch]")
+        if self.prior_particles is not None:
+            return "recursive"
         initial_count = int(torch.count_nonzero(initial.bool()).item())
         if initial_count == initial.numel():
             return "initial"
@@ -586,6 +652,8 @@ class EnergyBelief(nn.Module):
 
         if initial.ndim != 2:
             raise ValueError("initial must have shape [time, batch]")
+        if self.prior_particles is not None:
+            return ("recursive",) * int(initial.shape[0])
         batch_size = initial.shape[1]
         initial_counts = torch.count_nonzero(initial.bool(), dim=1).detach().cpu().tolist()
         return tuple(
@@ -739,6 +807,9 @@ class EnergyBelief(nn.Module):
             raise ValueError("a directly parameterised score field has no scalar potential")
 
         self._validate_context(query, observation, previous_particles, previous_action, initial)
+        previous_particles, previous_action, initial = self._resolve_context(
+            previous_particles, previous_action, initial
+        )
         potential_branch = self.classify_potential_branch(initial)
         return self._log_potential_for_branch(
             query,
@@ -869,6 +940,9 @@ class EnergyBelief(nn.Module):
             previous_particles,
             previous_action,
             initial,
+        )
+        previous_particles, previous_action, initial = self._resolve_context(
+            previous_particles, previous_action, initial
         )
         potential_branch = self.classify_potential_branch(initial)
         return self._score_at_for_branch(
@@ -1037,7 +1111,14 @@ class EnergyBelief(nn.Module):
             previous_action,
             initial,
         )
-        if potential_branch is None:
+        # Prior mode: the initial rows read the learned prior particles (gradient flows into
+        # them through the substitution, also under tbptt_1) and become recursive rows.
+        incoming_particles, previous_action, initial = self._resolve_context(
+            incoming_particles, previous_action, initial
+        )
+        if self.prior_particles is not None:
+            potential_branch = "recursive"
+        elif potential_branch is None:
             potential_branch = self.classify_potential_branch(initial)
         elif potential_branch not in {"initial", "recursive", "mixed"}:
             raise ValueError("potential_branch must be initial, recursive, or mixed")

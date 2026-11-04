@@ -260,6 +260,7 @@ _MODEL_KEYS = frozenset(
         "langevin_observation_anchor",
         "langevin_proposal",
         "proposal_hidden",
+        "initial_belief",
         "encoder_use_scores",
         "critic_kind",
         "q_value_samples",
@@ -406,6 +407,9 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         # the previous action and the current observation).  Earlier runs all used "noise".
         "langevin_proposal": "noise",
         "proposal_hidden": [64],
+        # Every earlier run scored t = 0 with its own initial network ("branch"); "prior" scores
+        # it with the recursive networks over K learned prior particles and a zero action.
+        "initial_belief": "branch",
         "encoder_use_scores": True,
         # Every earlier run used a state-value critic V(b).
         "critic_kind": "state",
@@ -821,6 +825,14 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
     if proposal != "noise" and section["langevin_warm_start"]:
         raise ConfigError(
             "model.langevin_proposal affine/network cannot be combined with model.langevin_warm_start"
+        )
+    initial_belief = _nonempty_string(section["initial_belief"], "model.initial_belief")
+    if initial_belief not in {"branch", "prior"}:
+        raise ConfigError("model.initial_belief must be branch or prior")
+    if initial_belief == "prior" and section["langevin_observation_anchor"]:
+        raise ConfigError(
+            "model.initial_belief=prior has no initial branch; "
+            "model.langevin_observation_anchor must be false"
         )
     energy_kind = _nonempty_string(section["energy_network_kind"], "model.energy_network_kind")
     if energy_kind not in {"mlp", "kan"}:

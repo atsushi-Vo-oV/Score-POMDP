@@ -461,6 +461,7 @@ class ScoreBeliefActorCritic(nn.Module):
             score_implementation=str(model_config.get("score_implementation", "autograd")),
             belief_compile=str(model_config.get("belief_compile", "off")),
             belief_cuda_graphs=bool(model_config.get("belief_cuda_graphs", False)),
+            initial_belief=str(model_config.get("initial_belief", "branch")),
         )
         encoder_use_scores = bool(model_config.get("encoder_use_scores", True))
         self.value_encoder_mode = str(model_config.get("value_encoder", "shared"))
