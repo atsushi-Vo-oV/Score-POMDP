@@ -1645,7 +1645,10 @@ class DiskTagEnv(_BaseMaskedEnv):
     (fixed ghost order, all directions, no range limit): ``d_i + eps_i`` with
     ``eps_i ~ N(0, (range_noise_base + range_noise_scale * d_i)^2)``.  A range carries no bearing,
     so each ghost's belief is a ring (and a mirror pair about the player's path), resolved over
-    time by moving.
+    time by moving.  ``observation_mode="elliptic_ranges"`` measures that distance in the body frame
+    with the forward / sideways axes scaled by ``range_forward_scale`` / ``range_side_scale``: the
+    observation-consistent set is an ellipse aligned with the heading, so turning rotates it and the
+    bearing can be recovered by looking around (active sensing; the ring case is ``1.0`` / ``1.0``).
 
     State ``(x, y, phi, v, [g_x, g_y, g_heading, g_mode, g_target_x, g_target_y] * N, s_1..s_N)``.
     """
@@ -1676,15 +1679,25 @@ class DiskTagEnv(_BaseMaskedEnv):
         observation_mode: str = "count",
         range_noise_base: float = 0.05,
         range_noise_scale: float = 0.2,
+        range_forward_scale: float = 1.0,
+        range_side_scale: float = 1.0,
     ) -> None:
         super().__init__(horizon=horizon, observation_noise_std=observation_noise_std, seed=seed)
-        if observation_mode not in ("count", "ranges"):
-            raise ValueError("observation_mode must be count or ranges")
+        if observation_mode not in ("count", "ranges", "elliptic_ranges"):
+            raise ValueError("observation_mode must be count, ranges or elliptic_ranges")
         if not (np.isfinite(range_noise_base) and np.isfinite(range_noise_scale)) or min(range_noise_base, range_noise_scale) < 0:
             raise ValueError("range noise parameters must be finite and non-negative")
+        if not (np.isfinite(range_forward_scale) and np.isfinite(range_side_scale)) or min(range_forward_scale, range_side_scale) <= 0:
+            raise ValueError("range_forward_scale and range_side_scale must be finite and positive")
         self.observation_mode = str(observation_mode)
         self.range_noise_base = float(range_noise_base)
         self.range_noise_scale = float(range_noise_scale)
+        # ``elliptic_ranges``: the "distance" is measured in the player's body frame with the forward and
+        # sideways axes scaled by (a, b): r_i = sqrt((d_par / a)^2 + (d_perp / b)^2).  A value r is then
+        # consistent with an ellipse of semi-axes (a r, b r) aligned with the heading, so turning the body
+        # rotates the ellipse and two headings pin the bearing down: looking around carries information.
+        self.range_forward_scale = float(range_forward_scale)
+        self.range_side_scale = float(range_side_scale)
         if isinstance(num_ghosts, bool) or not isinstance(num_ghosts, (int, np.integer)) or num_ghosts < 1:
             raise ValueError("num_ghosts must be a positive integer")
         values = (arena_radius, max_speed, acceleration, turn_rate, ghost_speed_min, ghost_speed_max,
@@ -1720,7 +1733,7 @@ class DiskTagEnv(_BaseMaskedEnv):
         self.step_reward = float(step_reward)
         self.capture_reward = float(capture_reward)
         self.state_dim = 4 + 7 * self.num_ghosts
-        self.observation_dim = 5 + (self.num_ghosts if self.observation_mode == "ranges" else 1)
+        self.observation_dim = 5 + (self.num_ghosts if self.observation_mode in ("ranges", "elliptic_ranges") else 1)
         self.oracle_dim = 5 + 4 * self.num_ghosts
         self.action_spec = ActionSpec.continuous(-1.0, 1.0, shape=(2,))
 
@@ -1757,14 +1770,27 @@ class DiskTagEnv(_BaseMaskedEnv):
         bearing = (bearing + math.pi) % (2.0 * math.pi) - math.pi
         return int(np.sum((distances <= self.view_range) & (np.abs(bearing) <= self.view_half_angle)))
 
+    def ghost_ranges(self) -> np.ndarray:
+        """Noise-free range of every ghost: Euclidean (``ranges``) or body-frame elliptic (``elliptic_ranges``)."""
+
+        assert self._state is not None
+        x, y, phi = self._state[:3]
+        offsets = self._ghosts() - np.array([x, y])
+        if self.observation_mode != "elliptic_ranges":
+            return np.linalg.norm(offsets, axis=1)
+        cos_phi, sin_phi = math.cos(phi), math.sin(phi)
+        parallel = offsets[:, 0] * cos_phi + offsets[:, 1] * sin_phi
+        perpendicular = -offsets[:, 0] * sin_phi + offsets[:, 1] * cos_phi
+        return np.sqrt((parallel / self.range_forward_scale) ** 2 + (perpendicular / self.range_side_scale) ** 2)
+
     def _observation(self) -> np.ndarray:
         assert self._state is not None
         x, y, phi, speed = self._state[:4]
         own = [x, y, math.cos(phi), math.sin(phi), speed / self.max_speed]
-        if self.observation_mode == "ranges":
-            distances = np.linalg.norm(self._ghosts() - np.array([x, y]), axis=1)
-            noise = self._rng.normal(size=self.num_ghosts) * (self.range_noise_base + self.range_noise_scale * distances)
-            values = np.concatenate([own, distances + noise]).astype(np.float64)
+        if self.observation_mode in ("ranges", "elliptic_ranges"):
+            ranges = self.ghost_ranges()
+            noise = self._rng.normal(size=self.num_ghosts) * (self.range_noise_base + self.range_noise_scale * ranges)
+            values = np.concatenate([own, ranges + noise]).astype(np.float64)
         else:
             values = np.array(own + [self.visible_count() / self.num_ghosts], dtype=np.float64)
         return self._add_observation_noise(values)
@@ -1844,6 +1870,8 @@ _DISK_TAG_KEYS = {
     "observation_mode",
     "range_noise_base",
     "range_noise_scale",
+    "range_forward_scale",
+    "range_side_scale",
 }
 
 _CAR_FLAG_KEYS = {

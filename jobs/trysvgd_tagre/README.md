@@ -1,0 +1,10 @@
+# trysvgd_tagre: 鬼ごっこ、楕円距離観測（向き依存）、学習 2 倍
+
+`observation_mode = elliptic_ranges`, `range_forward_scale = 1.0`, `range_side_scale = 0.6`: 距離を体座標で測り、横方向の軸を 0.6 で割る。観測と整合する集合は向きに沿った楕円（半軸 1.0 r, 0.6 r）になり、体を回すと楕円が回るので、見回すことで方位が決まる（能動的センシング）。ノイズは tagr と同じ σ = 0.05 + 0.2 r。PPO 2000 update（tagr の 2 倍）。
+
+| ジョブ | config | campaign | shard |
+|---|---|---|---|
+| trysvgdlight_tagre_svgd-funcinit_s10-14 | trysvgdlight_tagre_tf-svgd-func-init.json | trysvgdlight-tagre-tf-svgd-func-init-v1 | 1-5 |
+| trysvgdlight_tagre_svgd-paraminit_s10-14 | trysvgdlight_tagre_tf-svgd-param-init.json | trysvgdlight-tagre-tf-svgd-param-init-v1 | 1-5 |
+| trysvgd_tagre_gru_s10-14 | trysvgd_tagre_gru.json (methods = gru) | trysvgd-tagre-gru-v1 | 1-5 |
+| trysvgd_tagre_pf_v3_s10-14 | trysvgd_tagre_pf_v3.json | trysvgd-tagre-pf-v3-v1 | 1-5 |

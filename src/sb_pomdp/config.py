@@ -103,6 +103,8 @@ _DISK_TAG_TASK_DEFAULTS: dict[str, Any] = {
     "observation_mode": "count",
     "range_noise_base": 0.05,
     "range_noise_scale": 0.2,
+    "range_forward_scale": 1.0,
+    "range_side_scale": 1.0,
 }
 _DISK_TAG_TASK_KEYS = _ENVIRONMENT_TASK_KEYS | frozenset(_DISK_TAG_TASK_DEFAULTS)
 # Minecraft "walk in one direction" (MineRL 1.0, 128x128 point of view encoded by a trained VAE; the Minecraft
@@ -738,10 +740,13 @@ def _validate_environment(value: Any, requested_tasks: Sequence[str]) -> Mapping
             _integer(task["corridor_length"], f"{path}.corridor_length")
         if is_disk_tag:
             _integer(task["num_ghosts"], f"{path}.num_ghosts")
-            if task["observation_mode"] not in {"count", "ranges"}:
-                raise ConfigError(f"{path}.observation_mode must be count or ranges")
+            if task["observation_mode"] not in {"count", "ranges", "elliptic_ranges"}:
+                raise ConfigError(f"{path}.observation_mode must be count, ranges or elliptic_ranges")
             for key in sorted(set(_DISK_TAG_TASK_DEFAULTS) - {"num_ghosts", "capture_reward", "observation_mode"}):
                 _number(task[key], f"{path}.{key}", minimum=0.0)
+            for key in ("range_forward_scale", "range_side_scale"):
+                if not _number(task[key], f"{path}.{key}", minimum=0.0) > 0.0:
+                    raise ConfigError(f"{path}.{key} must be positive")
             _number(task["capture_reward"], f"{path}.capture_reward")
         if is_minecraft:
             if _integer(task["action_repeat"], f"{path}.action_repeat") <= 0:

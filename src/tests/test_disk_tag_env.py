@@ -150,3 +150,41 @@ def test_range_observation_reports_every_ghost_distance_with_growing_noise() -> 
     assert errors.std() == pytest.approx(np.sqrt(np.mean((0.05 + 0.2 * distances) ** 2)), rel=0.15)
     count_env = DiskTagEnv(seed=0)
     assert count_env.observation_dim == 6 and count_env.observation_mode == "count"
+
+
+def test_elliptic_ranges_depend_on_the_heading_and_reduce_to_ranges_at_unit_scales() -> None:
+    env = DiskTagEnv(seed=0, observation_mode="elliptic_ranges", range_forward_scale=1.0, range_side_scale=0.5,
+                     range_noise_base=0.0, range_noise_scale=0.0)
+    assert env.observation_dim == 8
+    env.reset(seed=0)
+    ahead, aside, diagonal = [0.4, 0.0], [0.0, 0.4], [0.3, 0.3]
+    _place(env, [0.0, 0.0], 0.0, [ahead, aside, diagonal], [0.0, 0.0, 0.0])
+    observation = env._observation()
+    # facing +x: the ghost ahead keeps its Euclidean distance, the one at the side is stretched by 1 / 0.5
+    assert observation[5] == pytest.approx(0.4)
+    assert observation[6] == pytest.approx(0.8)
+    assert observation[7] == pytest.approx(math.sqrt(0.3**2 + (0.3 / 0.5) ** 2))
+    # turning the body by 90 degrees swaps the roles: the same ghosts now read 0.8 / 0.4
+    _place(env, [0.0, 0.0], math.pi / 2, [ahead, aside, diagonal], [0.0, 0.0, 0.0])
+    turned = env._observation()
+    assert turned[5] == pytest.approx(0.8) and turned[6] == pytest.approx(0.4)
+    # the stretched value is consistent with an ellipse of semi-axes (a r, b r) aligned with the heading
+    r = turned[5]
+    assert ahead[0] == pytest.approx(env.range_side_scale * r)
+    # unit scales recover the Euclidean ranges exactly (same noise draw, same seed)
+    iso = DiskTagEnv(seed=0, observation_mode="ranges")
+    ell = DiskTagEnv(seed=0, observation_mode="elliptic_ranges")
+    assert np.array_equal(iso.reset(seed=3)[0], ell.reset(seed=3)[0])
+    with pytest.raises(ValueError):
+        DiskTagEnv(seed=0, observation_mode="elliptic_ranges", range_side_scale=0.0)
+    resolved = load_config("config/core4_tps.json").to_dict()
+    resolved["experiment"]["tasks"] = ["disk_tag"]
+    resolved["environment"]["tasks"] = {"disk_tag": {"horizon": 200, "observation_noise_std": 0.0,
+                                                     "observation_mode": "elliptic_ranges", "range_side_scale": 0.6}}
+    resolved = normalize_legacy_resolved_config(resolved)
+    validate_config(resolved)
+    filled = resolved["environment"]["tasks"]["disk_tag"]
+    assert filled["range_forward_scale"] == 1.0 and filled["range_side_scale"] == 0.6
+    filled["range_side_scale"] = 0.0
+    with pytest.raises(ConfigError):
+        validate_config(resolved)
