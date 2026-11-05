@@ -62,6 +62,7 @@ from .train import (
     configure_logging,
     encode_action,
     final_step_features,
+    reset_unresumable_environments,
     resolve_device,
     runtime_metadata,
     save_checkpoint,
@@ -1326,13 +1327,35 @@ def _restore_baseline_trainer_state(
         or float(wall_time_seconds) < 0.0
     ):
         raise ValueError("checkpoint wall_time_seconds must be finite and non-negative")
+
+    # The checkpoint is consistent as saved.  Environments that cannot continue
+    # their episode (Minecraft) restart one now; the interrupted episode leaves
+    # the accumulators and the retained prefix, and the hidden state the caller
+    # rebuilds from the (now empty) prefix is the initial one.
+    episode_returns = episode_returns.copy()
+    episode_lengths = episode_lengths.copy()
+    for index, restarted_observation in reset_unresumable_environments(environments):
+        LOGGER.warning(
+            "Environment %d cannot continue its interrupted episode after resume "
+            "(%d steps, return %.4f discarded); it starts a new episode",
+            index,
+            int(episode_lengths[index]),
+            float(episode_returns[index]),
+        )
+        observation[index] = torch.as_tensor(restarted_observation, dtype=torch.float32)
+        previous_action[index] = 0.0
+        episode_starts[index] = True
+        if recurrent_histories:
+            recurrent_histories[index].clear()
+        episode_returns[index] = 0.0
+        episode_lengths[index] = 0
     return (
         observation.numpy(),
         previous_action,
         episode_starts,
         recurrent_histories,
-        episode_returns.copy(),
-        episode_lengths.copy(),
+        episode_returns,
+        episode_lengths,
         completed_returns,
         completed_lengths,
         metric_rows,

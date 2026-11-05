@@ -1254,6 +1254,26 @@ def _finite_numeric_list(value: Any, *, name: str, integer: bool) -> list[Any]:
     return restored
 
 
+def reset_unresumable_environments(environments: Sequence[Any]) -> list[tuple[int, np.ndarray]]:
+    """Restart the environments whose restored episode cannot continue.
+
+    A simulator restores its exact state from the checkpoint, so its episode
+    goes on where it stopped.  An environment backed by an external world (the
+    Minecraft server) cannot: its ``load_state_dict`` leaves ``needs_reset`` set,
+    and stepping it would raise.  Those environments are reset here, after the
+    checkpoint's internal consistency has been validated, and the caller drops
+    the interrupted episode's partial bookkeeping for them.  Returns
+    ``(environment index, first observation of the new episode)`` pairs.
+    """
+
+    restarted: list[tuple[int, np.ndarray]] = []
+    for index, environment in enumerate(environments):
+        if bool(getattr(environment, "needs_reset", False)):
+            observation, _ = environment.reset()
+            restarted.append((index, np.asarray(observation)))
+    return restarted
+
+
 def _restore_trainer_state(
     state_dict: Any,
     *,
@@ -1432,11 +1452,33 @@ def _restore_trainer_state(
         or float(wall_time_seconds) < 0.0
     ):
         raise ValueError("checkpoint wall_time_seconds must be finite and non-negative")
+
+    # The checkpoint is consistent as saved.  Environments that cannot continue
+    # their episode (Minecraft) restart one now: their context row becomes an
+    # initial step on the new observation and the interrupted episode is
+    # dropped from the per-environment accumulators (it is never counted).
+    episode_returns = episode_returns.copy()
+    episode_lengths = episode_lengths.copy()
+    for index, observation in reset_unresumable_environments(environments):
+        LOGGER.warning(
+            "Environment %d cannot continue its interrupted episode after resume "
+            "(%d steps, return %.4f discarded); it starts a new episode",
+            index,
+            int(episode_lengths[index]),
+            float(episode_returns[index]),
+        )
+        context.observation[index] = torch.as_tensor(observation, dtype=torch.float32, device=device)
+        context.previous_particles[index] = 0.0
+        context.previous_action[index] = 0.0
+        context.initial[index] = True
+        belief_histories[index].clear()
+        episode_returns[index] = 0.0
+        episode_lengths[index] = 0
     return (
         context,
         belief_histories,
-        episode_returns.copy(),
-        episode_lengths.copy(),
+        episode_returns,
+        episode_lengths,
         completed_returns,
         completed_lengths,
         metric_rows,

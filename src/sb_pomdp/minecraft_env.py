@@ -358,7 +358,10 @@ class MinecraftWalkEnv(_BaseMaskedEnv):
 
     def load_state_dict(self, state_dict: Mapping[str, Any]) -> None:
         super().load_state_dict(state_dict)
-        # the world itself is not restorable: force a fresh episode at the next reset
+        # The world itself is not restorable: the restored bookkeeping describes an
+        # episode that no longer exists, so ``needs_reset`` turns true and the
+        # trainers' resume path (``train.reset_unresumable_environments``) starts a
+        # fresh episode here, discarding the interrupted one.
         self._needs_reset = True
 
     def close(self) -> None:

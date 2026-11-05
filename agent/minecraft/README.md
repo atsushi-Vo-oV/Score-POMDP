@@ -33,5 +33,7 @@ Python 3.10, `src/minerl-1.0.2` built with gradle); the training side lives in `
    and a block-mean "encoder" (48-d) for tests and CPU smoke runs (`src/tests/test_minecraft_env.py`).
 
 Caveats: a Minecraft world cannot be restored from a checkpoint, so a resumed run continues with fresh episodes
-(`load_state_dict` forces a reset); FLOPs of the baselines are not matched to the transformer here yet; the
+(`load_state_dict` leaves `needs_reset` set; both trainers reset such environments at resume and drop the
+interrupted episode from the accumulators, logging a warning; `src/tests/test_minecraft_resume.py`); FLOPs of the
+baselines are not matched to the transformer here yet; the
 crosshair stays in the frame.

@@ -235,6 +235,19 @@ class _BaseMaskedEnv:
             raise RuntimeError("The environment has not been reset")
         return self._state.copy()
 
+    @property
+    def needs_reset(self) -> bool:
+        """``True`` when only :meth:`reset` may be called next.
+
+        That is the case before the first episode, after an episode ends, and
+        after a :meth:`load_state_dict` that could not bring the world back (the
+        Minecraft server, see :class:`~sb_pomdp.minecraft_env.MinecraftWalkEnv`).
+        A trainer resuming from a checkpoint reads it to restart such episodes
+        instead of stepping into the ``RuntimeError`` that :meth:`step` raises.
+        """
+
+        return self._needs_reset or self._state is None
+
     def state_dict(self) -> dict[str, Any]:
         """Return all mutable simulator state needed for an exact continuation."""
 
