@@ -33,6 +33,9 @@ try:
 except Exception:  # pragma: no cover - older / newer MineRL layouts
     pass
 CROP_TOP = 64
+# Largest horizontal displacement (blocks) a player can make in one Minecraft tick (sprint-jumping is
+# about 0.4; falling adds nothing horizontally).  A larger per-step displacement is a location glitch.
+MAX_STEP_DISPLACEMENT = 0.6
 # (name, keyboard keys held, camera yaw delta in degrees per Minecraft tick)
 DISCRETE_ACTIONS = (
     ("noop", (), 0.0),
@@ -194,14 +197,28 @@ class WalkForward(gym.Env):
                     "yaw": float("nan"), "ypos": float("nan"), "action": DISCRETE_ACTIONS[int(index)][0], "restarted": True}
             return np.zeros((RESOLUTION[1], RESOLUTION[0], 3), np.uint8), 0.0, True, info
         position = self._xz(obs)
-        reward = float(np.dot(position - self.position, self.heading))
+        displacement = float(np.dot(position - self.position, self.heading))
+        ended_by_minecraft = bool(done)
+        if ended_by_minecraft:
+            # MineRL ended the episode itself (DoneOnDeath, time up): the location stats of that final
+            # observation are not the player's position any more (respawn / teardown values hundreds of
+            # thousands of blocks away were observed), so the step earns nothing and keeps the last position.
+            reward = 0.0
+            position = self.position.copy()
+        elif abs(displacement) > MAX_STEP_DISPLACEMENT * self.action_repeat:
+            # A displacement no walking or falling player can make in action_repeat ticks: a location glitch.
+            print(f"[sbmc] implausible displacement {displacement:.1f} blocks in one step ignored", file=sys.stderr, flush=True)
+            reward = 0.0
+            position = self.position.copy()
+        else:
+            reward = displacement
         self.position = position
         self.steps += 1
         if self.steps >= self.max_steps:
             done = True
         info = {"xz": position.copy(), "progress": float(np.dot(position - self.start_position, self.heading)),
                 "yaw": float(obs["location_stats"]["yaw"]), "ypos": float(obs["location_stats"]["ypos"]),
-                "action": DISCRETE_ACTIONS[int(index)][0]}
+                "action": DISCRETE_ACTIONS[int(index)][0], "ended_by_minecraft": ended_by_minecraft}
         return self._frame(obs), reward, bool(done), info
 
     def close(self):

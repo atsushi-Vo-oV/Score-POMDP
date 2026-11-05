@@ -307,6 +307,10 @@ class MinecraftWalkEnv(_BaseMaskedEnv):
                                          seed=self._episode_seed, new_world=bool(new_world_every_reset))
         self._yaw0 = 0.0
         self._last_frame: np.ndarray | None = None
+        # 0.6 blocks per Minecraft tick is above any walking / sprint-jumping speed; a larger per-step
+        # displacement reward is a location glitch and is ignored (counted in implausible_rewards).
+        self.max_step_reward = 0.6 * self.action_repeat
+        self.implausible_rewards = 0
 
     # -- state bookkeeping -------------------------------------------------------------------------
     def _set_state(self, info: Mapping[str, Any], heading: np.ndarray, progress: float) -> None:
@@ -352,9 +356,16 @@ class MinecraftWalkEnv(_BaseMaskedEnv):
         info = result["info"]
         assert self._state is not None
         heading = self._state[3:5]
-        self._set_state(info, heading, float(info.get("progress", self._state[5] + result["reward"])))
+        reward = float(result["reward"])
+        if abs(reward) > self.max_step_reward:
+            # Safety net behind the server-side check (sbmc/walk_env.py): a reward no walking player can
+            # earn in one step is a location glitch (seen at MineRL's own episode end), not progress.
+            self.implausible_rewards += 1
+            reward = 0.0
+            info = {**info, "xz": self._state[:2].tolist(), "progress": float(self._state[5])}
+        self._set_state(info, heading, float(info.get("progress", self._state[5] + reward)))
         terminated, truncated = self._finish_step(bool(result["done"]) and self._elapsed_steps + 1 < self.horizon)
-        return self._observation(result["obs"]), float(result["reward"]), terminated, truncated, self._info()
+        return self._observation(result["obs"]), reward, terminated, truncated, self._info()
 
     def load_state_dict(self, state_dict: Mapping[str, Any]) -> None:
         super().load_state_dict(state_dict)

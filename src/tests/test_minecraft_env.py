@@ -74,3 +74,28 @@ def test_config_schema_fills_minecraft_defaults_and_validates():
 def test_minerl_backend_needs_paths():
     with pytest.raises(ValueError):
         MinecraftWalkEnv(horizon=10, backend="minerl")
+
+
+def test_implausible_step_reward_is_ignored():
+    """A location glitch (MineRL's own episode end, teleport-like jumps) must not become progress."""
+    env = _env(seed=5)
+    env.reset(seed=5)
+    state_before = env.state.copy()
+    backend = env._backend
+    real_step = backend.step
+
+    def glitchy_step(action):
+        result = real_step(action)
+        result["reward"] = -162220.9  # the value seen in a math evaluation at MineRL's done
+        result["info"] = {**result["info"], "xz": [1e5, -1e5], "progress": -162220.9}
+        return result
+
+    backend.step = glitchy_step
+    obs, reward, terminated, truncated, info = env.step(2)
+    assert reward == 0.0 and env.implausible_rewards == 1
+    assert env.state[5] == state_before[5]  # progress unchanged
+    assert np.allclose(env.state[:2], state_before[:2])  # position kept
+    assert obs.shape == (48,) and not terminated and not truncated
+    backend.step = real_step
+    _, reward, _, _, _ = env.step(2)
+    assert abs(reward) <= env.max_step_reward and env.implausible_rewards == 1
