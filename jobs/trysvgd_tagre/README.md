@@ -4,7 +4,7 @@
 
 | ジョブ | config | campaign | shard |
 |---|---|---|---|
-| trysvgdlight_tagre_svgd-funcinit_s10-14 | trysvgdlight_tagre_tf-svgd-func-init.json | trysvgdlight-tagre-tf-svgd-func-init-v1 | 1-5 |
-| trysvgdlight_tagre_svgd-paraminit_s10-14 | trysvgdlight_tagre_tf-svgd-param-init.json | trysvgdlight-tagre-tf-svgd-param-init-v1 | 1-5 |
-| trysvgd_tagre_gru_s10-14 | trysvgd_tagre_gru.json (methods = gru) | trysvgd-tagre-gru-v1 | 1-5 |
-| trysvgd_tagre_pf_v3_s10-14 | trysvgd_tagre_pf_v3.json | trysvgd-tagre-pf-v3-v1 | 1-5 |
+| trysvgdlight_tagre_svgd-funcinit_s10-14 | trysvgdlight_tagre_tf-svgd-func-init.json | trysvgdlight-tagre-tf-svgd-func-init-env64-k64-v1 | 1-5 |
+| trysvgdlight_tagre_svgd-paraminit_s10-14 | trysvgdlight_tagre_tf-svgd-param-init.json | trysvgdlight-tagre-tf-svgd-param-init-env64-k64-v1 | 1-5 |
+| trysvgd_tagre_gru_s10-14 | trysvgd_tagre_gru.json (methods = gru) | trysvgd-tagre-gru-env64-k64-v1 | 1-5 |
+| trysvgd_tagre_pf_v3_s10-14 | trysvgd_tagre_pf_v3.json | trysvgd-tagre-pf-v3-env64-k64-v1 | 1-5 |

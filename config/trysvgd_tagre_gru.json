@@ -35,7 +35,7 @@
     }
   },
   "model": {
-    "num_particles": 16,
+    "num_particles": 64,
     "langevin_steps": 12,
     "langevin_step_size": 0.2,
     "particle_clip": 0.0,
@@ -92,12 +92,12 @@
     "prediction_head": "condition"
   },
   "ppo": {
-    "total_steps": 4096000,
-    "num_envs": 16,
+    "total_steps": 16384000,
+    "num_envs": 64,
     "rollout_steps": 128,
     "epochs": 4,
-    "minibatch_size": 512,
-    "sequence_microbatch_size": 512,
+    "minibatch_size": 2048,
+    "sequence_microbatch_size": 2048,
     "learning_rate": 0.00025,
     "gamma": 0.99,
     "gae_lambda": 0.95,
