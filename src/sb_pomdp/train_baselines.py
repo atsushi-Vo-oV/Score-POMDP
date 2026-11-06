@@ -194,6 +194,13 @@ def _make_model(
         "critic_kind": str(model_config.get("critic_kind", "state")),
         "q_value_samples": int(model_config.get("q_value_samples", 8)),
         "policy_condition_dim": int(model_config["d_model"]),
+        # policy_observation_input: the heads read the raw current observation next to the condition
+        # (the leading entries of the stored inputs); the prediction head keeps the condition alone.
+        "control_observation_dim": (
+            int(environment.observation_dim)
+            if bool(model_config.get("policy_observation_input", False))
+            else 0
+        ),
         "head_hidden_dims": model_config["policy_hidden"],
         "continuous_policy_kind": model_config["continuous_policy_kind"],
         "diffusion_steps": int(model_config["diffusion_steps"]),
@@ -362,7 +369,7 @@ def _truncation_bootstrap_values(
                 final_hidden,
                 torch.zeros(len(indices), dtype=torch.bool, device=device),
             )
-            bootstrap = model.heads.value(features)
+            bootstrap = model.heads.value(model.control_features(features, inputs))
         else:
             bootstrap = model.value(inputs)
     bootstrap = (value_transform or ValueTransform()).to_raw(bootstrap)
@@ -779,15 +786,18 @@ def _update_recurrent(
                     *diffusion_chains.shape[2:],
                 )
             )
+            flat_control = model.control_features(
+                flat_features, rollout.inputs[:, selected].reshape(transitions, -1)
+            )
             evaluation = model.heads.evaluate_actions(
-                flat_features,
+                flat_control,
                 flat_actions,
                 pre_tanh_actions=flat_pre_tanh,
                 diffusion_chains=flat_diffusion_chain,
             )
             flat_advantages = _mix_action_value_advantages(
                 model.heads,
-                flat_features,
+                flat_control,
                 evaluation.value,
                 minibatch_advantages.reshape(transitions),
                 ppo_config,
@@ -1779,7 +1789,9 @@ def train_baseline_single(
             if isinstance(model, RECURRENT_BASELINE_TYPES):
                 assert hidden is not None
                 bootstrap_features, _ = model.step(bootstrap_inputs, hidden, episode_starts)
-                last_value = value_transform.to_raw(model.heads.value(bootstrap_features))
+                last_value = value_transform.to_raw(
+                    model.heads.value(model.control_features(bootstrap_features, bootstrap_inputs))
+                )
             else:
                 last_value = value_transform.to_raw(model.value(bootstrap_inputs))
 

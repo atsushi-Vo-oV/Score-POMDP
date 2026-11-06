@@ -267,6 +267,7 @@ _MODEL_KEYS = frozenset(
         "critic_kind",
         "q_value_samples",
         "value_encoder",
+        "policy_observation_input",
         "energy_network_kind",
         "kan_grid_size",
         "kan_spline_order",
@@ -418,6 +419,10 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         "q_value_samples": 8,
         # The critic shared the policy encoder in every earlier run.
         "value_encoder": "shared",
+        # Every earlier run fed the actor and critic the belief condition only; true appends the
+        # raw current observation to their input (all compared models alike; the prediction head
+        # keeps reading the belief condition alone).
+        "policy_observation_input": False,
         # Energy networks were plain MLPs before the KAN option existed.
         "energy_network_kind": "mlp",
         "kan_grid_size": 8,
@@ -880,6 +885,9 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
         raise ConfigError("model.score_parameterization must be energy, direct, direct_joint or direct_flat")
     _positive_number(section["direct_score_bound"], "model.direct_score_bound")
     _boolean(section["belief_activation_checkpoint"], "model.belief_activation_checkpoint")
+    _boolean(section["policy_observation_input"], "model.policy_observation_input")
+    if section["policy_observation_input"] and section["policy_head_kind"] == "alpha_lse":
+        raise ConfigError("model.policy_observation_input is not defined for policy_head_kind=alpha_lse")
     if section["score_implementation"] not in {"autograd", "analytic"}:
         raise ConfigError("model.score_implementation must be autograd or analytic")
     if section["score_implementation"] == "analytic" and section["energy_network_kind"] != "mlp":

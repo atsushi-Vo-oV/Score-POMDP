@@ -504,6 +504,14 @@ class ScoreBeliefActorCritic(nn.Module):
             build_encoder() if self.value_encoder_mode == "separate" else None
         )
         condition_dim = model_config["d_model"]
+        # ``policy_observation_input``: the actor and critic read ``[condition, o_t]`` instead of the
+        # belief condition alone.  The prediction head below keeps the bare condition, so the
+        # next-observation objective still has to pass through the belief.
+        self.policy_observation_input = bool(model_config.get("policy_observation_input", False))
+        if self.policy_observation_input and self.policy_head_kind == "alpha_lse":
+            raise ValueError("policy_observation_input is not defined for the alpha_lse head")
+        self.control_observation_dim = int(observation_dim) if self.policy_observation_input else 0
+        control_dim = condition_dim + self.control_observation_dim
         prediction_enabled = int(model_config.get("prediction_pretrain_steps", 0)) > 0 or (
             int(model_config.get("prediction_interval_updates", 0)) > 0
             and int(model_config.get("prediction_phase_updates", 0)) > 0
@@ -581,10 +589,10 @@ class ScoreBeliefActorCritic(nn.Module):
         elif self.policy_head_kind == "alpha_lse":
             # A convex (PWLC) value functional; with the alpha_pool encoder the
             # value is exactly a smooth max of belief-linear functionals.
-            self.value_head = AlphaLSEHead(condition_dim, 1, alpha_pieces, alpha_temperature)
+            self.value_head = AlphaLSEHead(control_dim, 1, alpha_pieces, alpha_temperature)
         else:
             self.value_head = make_head_network(
-                condition_dim,
+                control_dim,
                 model_config["policy_hidden"],
                 1,
             )
@@ -593,7 +601,7 @@ class ScoreBeliefActorCritic(nn.Module):
                 raise ValueError("a discrete policy requires a positive action count")
             if self.policy_head_kind == "alpha_lse":
                 self.categorical_head: nn.Module | None = AlphaLSEHead(
-                    condition_dim,
+                    control_dim,
                     discrete_actions,
                     alpha_pieces,
                     alpha_temperature,
@@ -601,7 +609,7 @@ class ScoreBeliefActorCritic(nn.Module):
                 )
             else:
                 self.categorical_head = make_head_network(
-                    condition_dim,
+                    control_dim,
                     model_config["policy_hidden"],
                     discrete_actions,
                 )
@@ -614,7 +622,7 @@ class ScoreBeliefActorCritic(nn.Module):
             self.categorical_head = None
             if self.continuous_policy_kind == "diffusion":
                 self.diffusion_policy = DiffusionPolicy(
-                    condition_dim,
+                    control_dim,
                     action_low,
                     action_high,
                     model_config["policy_hidden"],
@@ -627,7 +635,7 @@ class ScoreBeliefActorCritic(nn.Module):
             else:
                 self.diffusion_policy = None
                 self.gaussian_policy = TanhGaussianPolicy(
-                    condition_dim,
+                    control_dim,
                     action_low,
                     action_high,
                     model_config["policy_hidden"],
@@ -638,7 +646,7 @@ class ScoreBeliefActorCritic(nn.Module):
             raise ValueError(f"unsupported action kind: {action_kind}")
         if self.critic_kind == "action":
             self.action_value_head: ActionValueHead | None = ActionValueHead(
-                condition_dim,
+                control_dim,
                 model_config["policy_hidden"],
                 discrete_actions=discrete_actions if action_kind == "discrete" else None,
                 action_dim=None if action_kind == "discrete" else len(action_low or ()),
@@ -648,6 +656,30 @@ class ScoreBeliefActorCritic(nn.Module):
 
     def encode(self, particles: torch.Tensor, scores: torch.Tensor | None) -> torch.Tensor:
         return self.encoder(particles, scores)
+
+    def control_condition(
+        self, condition: torch.Tensor, observation: torch.Tensor | None
+    ) -> torch.Tensor:
+        """Actor / critic input for a belief ``condition``.
+
+        Without ``policy_observation_input`` this is the condition itself.  With it, the raw
+        current observation is appended row by row (``observation`` may carry leading batch
+        dimensions; it is flattened to the condition's rows).
+        """
+
+        if self.control_observation_dim == 0:
+            return condition
+        if observation is None:
+            raise ValueError(
+                "policy_observation_input=true: the actor / critic need the current observation"
+            )
+        flat = observation.reshape(-1, observation.shape[-1]).to(condition.dtype)
+        if flat.shape[0] != condition.shape[0] or flat.shape[1] != self.control_observation_dim:
+            raise ValueError(
+                f"observation rows {tuple(flat.shape)} do not match the condition rows "
+                f"{tuple(condition.shape)} and observation width {self.control_observation_dim}"
+            )
+        return torch.cat((condition, flat), dim=-1)
 
     def encode_value(self, particles: torch.Tensor, scores: torch.Tensor | None) -> torch.Tensor:
         """Condition vector for the critic (own encoder, detached shared, or shared)."""

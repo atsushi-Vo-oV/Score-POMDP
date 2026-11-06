@@ -188,6 +188,18 @@ class SquashedDiagonalGaussian(nn.Module):
         )
 
 
+def _validate_control_observation_dim(control_observation_dim: int, observation_dim: int) -> int:
+    """Leading raw-observation width the actor / critic read directly (0 = condition only)."""
+
+    if isinstance(control_observation_dim, bool) or not isinstance(control_observation_dim, int):
+        raise ValueError("control_observation_dim must be an integer")
+    if not 0 <= control_observation_dim <= observation_dim:
+        raise ValueError(
+            f"control_observation_dim must lie in [0, {observation_dim}], got {control_observation_dim}"
+        )
+    return int(control_observation_dim)
+
+
 class _PolicyValueHeads(nn.Module):
     """Categorical, Gaussian, or diffusion actor with a scalar critic."""
 
@@ -539,6 +551,7 @@ class GRUActorCritic(nn.Module):
         recurrent_layers: int = 1,
         recurrent_cell: Literal["gru", "rnn"] = "gru",
         policy_condition_dim: int | None = None,
+        control_observation_dim: int = 0,
         head_hidden_dims: Sequence[int] = (),
         continuous_policy_kind: Literal["gaussian", "diffusion"] = "gaussian",
         diffusion_steps: int = 10,
@@ -579,13 +592,16 @@ class GRUActorCritic(nn.Module):
         if condition_dim <= 0:
             raise ValueError("policy_condition_dim must be positive")
         self.policy_condition_dim = condition_dim
+        self.control_observation_dim = _validate_control_observation_dim(
+            control_observation_dim, observation_dim
+        )
         self.condition_projection: nn.Module = (
             nn.Identity()
             if recurrent_hidden_dim == condition_dim
             else nn.Linear(recurrent_hidden_dim, condition_dim)
         )
         self.heads = _PolicyValueHeads(
-            condition_dim,
+            condition_dim + self.control_observation_dim,
             action_kind=action_kind,
             discrete_actions=discrete_actions,
             action_low=action_low,
@@ -607,6 +623,23 @@ class GRUActorCritic(nn.Module):
     @property
     def continuous_policy_kind(self) -> Literal["gaussian", "diffusion"]:
         return self.heads.continuous_policy_kind
+
+    def control_features(self, features: torch.Tensor, inputs: torch.Tensor) -> torch.Tensor:
+        """Actor / critic input: the condition, with the raw current observation appended.
+
+        ``inputs`` are the model inputs that produced ``features`` (same leading shape); their
+        first ``control_observation_dim`` entries are the raw observation.  Without
+        ``policy_observation_input`` the features are returned unchanged.
+        """
+
+        if self.control_observation_dim == 0:
+            return features
+        if inputs.shape[:-1] != features.shape[:-1]:
+            raise ValueError(
+                f"inputs {tuple(inputs.shape)} do not align with features {tuple(features.shape)}"
+            )
+        observation = inputs[..., : self.control_observation_dim].to(features.dtype)
+        return torch.cat((features, observation), dim=-1)
 
     def initial_hidden(
         self,
@@ -709,12 +742,13 @@ class GRUActorCritic(nn.Module):
         generator: torch.Generator | None = None,
     ) -> tuple[PolicySample, torch.Tensor, torch.Tensor]:
         features, next_hidden = self.step(observation, hidden, episode_start)
+        control = self.control_features(features, observation)
         sample = self.heads.sample_policy(
-            features,
+            control,
             deterministic=deterministic,
             generator=generator,
         )
-        return sample, self.heads.value(features), next_hidden
+        return sample, self.heads.value(control), next_hidden
 
     def evaluate_sequence(
         self,
@@ -736,7 +770,7 @@ class GRUActorCritic(nn.Module):
             temporal_gradient_mode=temporal_gradient_mode,
         )
         evaluation = self.heads.evaluate_actions(
-            features,
+            self.control_features(features, observations),
             actions,
             pre_tanh_actions=pre_tanh_actions,
             diffusion_chains=diffusion_chains,
@@ -799,6 +833,7 @@ class ParticleFilterActorCritic(nn.Module):
         hidden_dims: Sequence[int],
         soft_alpha: float = 0.9,
         policy_condition_dim: int | None = None,
+        control_observation_dim: int = 0,
         head_hidden_dims: Sequence[int] = (),
         continuous_policy_kind: Literal["gaussian", "diffusion"] = "gaussian",
         diffusion_steps: int = 10,
@@ -915,8 +950,11 @@ class ParticleFilterActorCritic(nn.Module):
                 torch.randn(max(self.mgf_features, 1), particle_dim) / particle_dim**0.5
             )
             self.condition_projection = nn.Linear(particle_dim + self.mgf_features, condition_dim)
+        self.control_observation_dim = _validate_control_observation_dim(
+            control_observation_dim, observation_dim
+        )
         self.heads = _PolicyValueHeads(
-            condition_dim,
+            condition_dim + self.control_observation_dim,
             action_kind=action_kind,
             discrete_actions=discrete_actions,
             action_low=action_low,
@@ -938,6 +976,23 @@ class ParticleFilterActorCritic(nn.Module):
     @property
     def continuous_policy_kind(self) -> Literal["gaussian", "diffusion"]:
         return self.heads.continuous_policy_kind
+
+    def control_features(self, features: torch.Tensor, inputs: torch.Tensor) -> torch.Tensor:
+        """Actor / critic input: the condition, with the raw current observation appended.
+
+        ``inputs`` are the model inputs that produced ``features`` (same leading shape); their
+        first ``control_observation_dim`` entries are the raw observation.  Without
+        ``policy_observation_input`` the features are returned unchanged.
+        """
+
+        if self.control_observation_dim == 0:
+            return features
+        if inputs.shape[:-1] != features.shape[:-1]:
+            raise ValueError(
+                f"inputs {tuple(inputs.shape)} do not align with features {tuple(features.shape)}"
+            )
+        observation = inputs[..., : self.control_observation_dim].to(features.dtype)
+        return torch.cat((features, observation), dim=-1)
 
     @property
     def recurrent_hidden_dim(self) -> int:
@@ -1212,12 +1267,13 @@ class ParticleFilterActorCritic(nn.Module):
         generator: torch.Generator | None = None,
     ) -> tuple[PolicySample, torch.Tensor, torch.Tensor]:
         features, next_hidden = self.step(observation, hidden, episode_start)
+        control = self.control_features(features, observation)
         sample = self.heads.sample_policy(
-            features,
+            control,
             deterministic=deterministic,
             generator=generator,
         )
-        return sample, self.heads.value(features), next_hidden
+        return sample, self.heads.value(control), next_hidden
 
     def evaluate_sequence(
         self,
@@ -1239,7 +1295,7 @@ class ParticleFilterActorCritic(nn.Module):
             temporal_gradient_mode=temporal_gradient_mode,
         )
         evaluation = self.heads.evaluate_actions(
-            features,
+            self.control_features(features, observations),
             actions,
             pre_tanh_actions=pre_tanh_actions,
             diffusion_chains=diffusion_chains,
@@ -1269,6 +1325,7 @@ def make_baseline_actor_critic(
     recurrent_hidden_dim: int = 128,
     recurrent_layers: int = 1,
     policy_condition_dim: int | None = None,
+    control_observation_dim: int = 0,
     head_hidden_dims: Sequence[int] = (),
     continuous_policy_kind: Literal["gaussian", "diffusion"] = "gaussian",
     diffusion_steps: int = 10,
@@ -1312,6 +1369,7 @@ def make_baseline_actor_critic(
             observation_function=pf_observation_function,
             observation_hidden=pf_observation_hidden,
             policy_condition_dim=policy_condition_dim,
+            control_observation_dim=control_observation_dim,
             head_hidden_dims=head_hidden_dims,
             continuous_policy_kind=continuous_policy_kind,
             diffusion_steps=diffusion_steps,
@@ -1327,6 +1385,7 @@ def make_baseline_actor_critic(
             recurrent_hidden_dim=recurrent_hidden_dim,
             recurrent_layers=recurrent_layers,
             policy_condition_dim=policy_condition_dim,
+            control_observation_dim=control_observation_dim,
             head_hidden_dims=head_hidden_dims,
             continuous_policy_kind=continuous_policy_kind,
             diffusion_steps=diffusion_steps,

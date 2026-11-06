@@ -218,6 +218,28 @@ def value_from_conditions(
     return model.value(policy_condition, critic_condition)
 
 
+def control_conditions(
+    model: ScoreBeliefActorCritic,
+    condition: torch.Tensor,
+    value_condition: torch.Tensor,
+    observation: torch.Tensor | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Actor / critic inputs from the belief conditions.
+
+    Models without ``policy_observation_input`` return the conditions unchanged.  Otherwise the
+    raw current observation (rows aligned with the conditions) is appended to both; a shared
+    condition stays shared so :func:`value_from_conditions` keeps its single-condition path.
+    """
+
+    control = getattr(model, "control_condition", None)
+    if control is None or int(getattr(model, "control_observation_dim", 0) or 0) == 0:
+        return condition, value_condition
+    policy_input = control(condition, observation)
+    if value_condition is condition:
+        return policy_input, policy_input
+    return policy_input, control(value_condition, observation)
+
+
 def _time_environment_flatten(value: torch.Tensor) -> torch.Tensor:
     """Flatten a selected ``[time, environment, ...]`` sequence minibatch."""
 
@@ -797,6 +819,14 @@ def update_ppo(
                     _time_environment_flatten(particles),
                     _time_environment_flatten(scores),
                 )
+                # The prediction head reads the bare belief conditions; the actor and critic
+                # read the control inputs (the same, or with o_t appended).
+                policy_input, value_input = control_conditions(
+                    model,
+                    condition,
+                    value_condition,
+                    _time_environment_flatten(rollout.observations[:, environment_indices]),
+                )
                 if objective == "prediction":
                     slice_kwargs = {
                         "observations": rollout.observations[:, environment_indices],
@@ -819,23 +849,23 @@ def update_ppo(
                     continue
                 if getattr(model, "action_value_head", None) is not None:
                     taken = _time_environment_flatten(rollout.actions[:, environment_indices])
-                    new_values = model.action_value(value_condition, taken)
+                    new_values = model.action_value(value_input, taken)
                     minibatch_advantages = action_value_advantages(
                         model,
-                        condition,
+                        policy_input,
                         new_values,
                         advantages,
                         environment_indices,
                         value_transform,
                         ppo_config,
-                        critic_condition=value_condition,
+                        critic_condition=value_input,
                     )
                 else:
-                    new_values = value_from_conditions(model, condition, value_condition)
+                    new_values = value_from_conditions(model, policy_input, value_input)
                     minibatch_advantages = advantages
                 policy_loss, approximate_kl, clip_fraction, entropy = policy_objective(
                     model,
-                    condition,
+                    policy_input,
                     rollout,
                     environment_indices,
                     minibatch_advantages,

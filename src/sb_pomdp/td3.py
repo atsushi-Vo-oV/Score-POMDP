@@ -374,6 +374,8 @@ def train_td3_single(
         raise ValueError("TD3 needs a continuous action space")
     if model_config.get("prediction_head", "condition") != "condition":
         raise ValueError("TD3 prediction phases support model.prediction_head=condition only")
+    if bool(model_config.get("policy_observation_input", False)):
+        raise ValueError("TD3 does not support model.policy_observation_input")
     action_dim = first.action_spec.feature_dim
     latent_dim = None
     with use_network_kinds(NetworkKinds.from_config(model_config)):

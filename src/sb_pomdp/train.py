@@ -37,7 +37,7 @@ from .config import (
 from .envs import ActionSpec, make_env
 from .networks import AlphaPoolBeliefEncoder, NetworkKinds, use_network_kinds
 from .policies import ScoreBeliefActorCritic
-from .ppo import encode_conditions, update_ppo, value_from_conditions
+from .ppo import control_conditions, encode_conditions, update_ppo, value_from_conditions
 from .prediction_schedule import PredictionSchedule, random_actions
 from .value_transform import ValueTransform
 
@@ -810,6 +810,7 @@ def _policy_from_particles(
     *,
     deterministic: bool,
     generator: torch.Generator | None = None,
+    observation: torch.Tensor | None = None,
 ) -> tuple[
     torch.Tensor,
     torch.Tensor,
@@ -818,7 +819,10 @@ def _policy_from_particles(
     torch.Tensor | None,
     torch.Tensor,
 ]:
+    """Act and value from a belief; ``observation`` is required under ``policy_observation_input``."""
+
     condition, value_condition = encode_conditions(model, particles, scores)
+    condition, value_condition = control_conditions(model, condition, value_condition, observation)
     sample = model.sample_policy(
         condition,
         deterministic=deterministic,
@@ -925,6 +929,9 @@ def truncation_bootstrap_values(
         policy_condition, critic_condition = encode_conditions(
             model, final_particles, final_scores
         )
+        policy_condition, critic_condition = control_conditions(
+            model, policy_condition, critic_condition, final_context.observation
+        )
         bootstrap = (value_transform or ValueTransform()).to_raw(
             value_from_conditions(model, policy_condition, critic_condition)
         )
@@ -994,6 +1001,7 @@ def evaluate(
                     scores,
                     deterministic=deterministic,
                     generator=generator,
+                    observation=context.observation,
                 )
                 environment_action = _environment_actions(environment.action_spec, action)[0]
                 episode_observations.append(context.observation[0].detach().cpu().numpy())
@@ -2099,7 +2107,9 @@ def train_single(
                 diffusion_chain,
                 pre_tanh_action,
                 old_value,
-            ) = _policy_from_particles(model, particles, scores, deterministic=False)
+            ) = _policy_from_particles(
+                model, particles, scores, deterministic=False, observation=context.observation
+            )
             if phase == "pretrain":
                 # The pretraining block explores with uniformly random actions; the policy
                 # outputs above are discarded (the prediction objective does not read them).
@@ -2352,6 +2362,9 @@ def train_single(
         with torch.no_grad():
             policy_condition, critic_condition = encode_conditions(
                 model, bootstrap_particles, bootstrap_scores
+            )
+            policy_condition, critic_condition = control_conditions(
+                model, policy_condition, critic_condition, context.observation
             )
             last_value = value_transform.to_raw(
                 value_from_conditions(model, policy_condition, critic_condition)
