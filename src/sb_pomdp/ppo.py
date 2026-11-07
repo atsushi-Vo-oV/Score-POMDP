@@ -827,7 +827,11 @@ def update_ppo(
                     value_condition,
                     _time_environment_flatten(rollout.observations[:, environment_indices]),
                 )
-                if objective == "prediction":
+                prediction_only = (
+                    str(model_config.get("belief_training", "joint")) == "prediction_only"
+                )
+                prediction_loss = None
+                if objective == "prediction" or prediction_only:
                     slice_kwargs = {
                         "observations": rollout.observations[:, environment_indices],
                         "previous_actions": rollout.previous_actions[:, environment_indices],
@@ -841,12 +845,21 @@ def update_ppo(
                         prediction_loss = condition_prediction_loss(
                             model.prediction_predictor, condition, **slice_kwargs
                         )
+                if objective == "prediction":
                     (prediction_loss * microbatch_weight).backward()
                     minibatch_metrics["policy_loss"] += (
                         float(prediction_loss.detach().cpu()) * microbatch_weight
                     )
                     del particles, scores, condition, value_condition, prediction_loss
                     continue
+                if prediction_only:
+                    # belief_training=prediction_only: the belief and its readout learn from the
+                    # next-observation loss alone (added to the total loss below); PPO reaches the
+                    # actor / critic heads through a stop-gradient on their inputs.
+                    if value_input is policy_input:
+                        policy_input = value_input = policy_input.detach()
+                    else:
+                        policy_input, value_input = policy_input.detach(), value_input.detach()
                 if getattr(model, "action_value_head", None) is not None:
                     taken = _time_environment_flatten(rollout.actions[:, environment_indices])
                     new_values = model.action_value(value_input, taken)
@@ -879,6 +892,8 @@ def update_ppo(
                     + float(ppo_config["value_coef"]) * value_loss
                     - float(ppo_config["entropy_coef"]) * entropy
                 )
+                if prediction_loss is not None:
+                    total_loss = total_loss + prediction_loss
                 if getattr(model, "observation_predictor", None) is not None:
                     prediction_loss = observation_prediction_loss(
                         model,

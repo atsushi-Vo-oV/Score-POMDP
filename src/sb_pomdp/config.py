@@ -268,6 +268,7 @@ _MODEL_KEYS = frozenset(
         "q_value_samples",
         "value_encoder",
         "policy_observation_input",
+        "belief_training",
         "energy_network_kind",
         "kan_grid_size",
         "kan_spline_order",
@@ -423,6 +424,10 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         # raw current observation to their input (all compared models alike; the prediction head
         # keeps reading the belief condition alone).
         "policy_observation_input": False,
+        # Every earlier run trained the belief (and its readout) jointly with PPO and the
+        # prediction phases ("joint").  "prediction_only" trains them with the next-observation
+        # loss alone, on every rollout, and lets PPO reach the actor / critic heads only.
+        "belief_training": "joint",
         # Energy networks were plain MLPs before the KAN option existed.
         "energy_network_kind": "mlp",
         "kan_grid_size": 8,
@@ -911,6 +916,15 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
     _integer(section["prediction_mixture_components"], "model.prediction_mixture_components")
     if section["prediction_head"] not in {"condition", "belief_mixture"}:
         raise ConfigError("model.prediction_head must be condition or belief_mixture")
+    if section["belief_training"] not in {"joint", "prediction_only"}:
+        raise ConfigError("model.belief_training must be joint or prediction_only")
+    if section["belief_training"] == "prediction_only" and not (
+        section["prediction_pretrain_steps"] > 0 or section["prediction_interval_updates"] > 0
+    ):
+        raise ConfigError(
+            "model.belief_training=prediction_only needs the next-observation prediction "
+            "(prediction_pretrain_steps or prediction_interval_updates / prediction_phase_updates)"
+        )
     if sampler != "ula" and (
         section["langevin_noise_scale"] is not None
         or section["langevin_noise_scale_learnable"]

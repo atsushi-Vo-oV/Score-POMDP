@@ -376,6 +376,8 @@ def train_td3_single(
         raise ValueError("TD3 prediction phases support model.prediction_head=condition only")
     if bool(model_config.get("policy_observation_input", False)):
         raise ValueError("TD3 does not support model.policy_observation_input")
+    if str(model_config.get("belief_training", "joint")) != "joint":
+        raise ValueError("TD3 supports model.belief_training=joint only")
     action_dim = first.action_spec.feature_dim
     latent_dim = None
     with use_network_kinds(NetworkKinds.from_config(model_config)):

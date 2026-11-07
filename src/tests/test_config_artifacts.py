@@ -89,6 +89,7 @@ _LEGACY_MODEL_DEFAULTS: dict[str, object] = {
     "q_value_samples": 8,
     "value_encoder": "shared",
     "policy_observation_input": False,
+    "belief_training": "joint",
     "energy_network_kind": "mlp",
     "kan_grid_size": 8,
     "kan_spline_order": 3,

@@ -480,8 +480,13 @@ def _optimise_minibatch(
     returns: torch.Tensor,
     entropy_values: torch.Tensor,
     ppo_config: dict[str, Any],
+    extra_loss: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | None:
-    """One PPO minibatch step; ``None`` when a non-finite gradient made it skip the step."""
+    """One PPO minibatch step; ``None`` when a non-finite gradient made it skip the step.
+
+    ``extra_loss`` (belief_training=prediction_only: the next-observation loss of the recurrent
+    representation) is added to the PPO total before the single backward pass.
+    """
 
     policy_loss, approximate_kl, clip_fraction = _clipped_policy_loss(
         new_log_prob,
@@ -497,6 +502,8 @@ def _optimise_minibatch(
         + float(ppo_config["value_coef"]) * value_loss
         - float(ppo_config["entropy_coef"]) * entropy
     )
+    if extra_loss is not None:
+        total_loss = total_loss + extra_loss
     optimizer.zero_grad(set_to_none=True)
     total_loss.backward()
     gradient_norm, finite = clip_gradients_or_skip(
@@ -727,9 +734,16 @@ def _update_recurrent(
     ppo_config: dict[str, Any],
     *,
     temporal_gradient_mode: TemporalGradientMode,
+    observation_dim: int | None = None,
+    action_feature_dim: int | None = None,
 ) -> PPOMetrics:
     time_steps, num_envs = rollout.rollout_shape
     configured_minibatch_size = int(ppo_config["minibatch_size"])
+    # belief_training=prediction_only: the recurrent representation learns from the
+    # next-observation loss on every rollout; PPO reaches the heads through a stop-gradient.
+    prediction_only = str(model_config.get("belief_training", "joint")) == "prediction_only"
+    if prediction_only and (observation_dim is None or action_feature_dim is None):
+        raise ValueError("belief_training=prediction_only needs observation_dim and action_feature_dim")
     if configured_minibatch_size < time_steps:
         raise ValueError(
             "ppo.minibatch_size must be at least ppo.rollout_steps for recurrent replay"
@@ -786,8 +800,29 @@ def _update_recurrent(
                     *diffusion_chains.shape[2:],
                 )
             )
+            prediction_loss = None
+            if prediction_only:
+                slice_kwargs = {
+                    "observations": rollout.inputs[:, selected, :observation_dim],
+                    "previous_actions": rollout.inputs[
+                        :, selected, observation_dim : observation_dim + action_feature_dim
+                    ],
+                    "dones": rollout.dones[:, selected],
+                }
+                if getattr(model, "prediction_head", "condition") == "belief_mixture":
+                    particles, log_weights = model.last_sequence_states
+                    prediction_loss = belief_mixture_prediction_loss(
+                        model.prediction_predictor, particles, log_weights=log_weights, **slice_kwargs
+                    )
+                else:
+                    prediction_loss = condition_prediction_loss(
+                        model.prediction_predictor, flat_features, **slice_kwargs
+                    )
+                head_features = flat_features.detach()
+            else:
+                head_features = flat_features
             flat_control = model.control_features(
-                flat_features, rollout.inputs[:, selected].reshape(transitions, -1)
+                head_features, rollout.inputs[:, selected].reshape(transitions, -1)
             )
             evaluation = model.heads.evaluate_actions(
                 flat_control,
@@ -825,6 +860,7 @@ def _update_recurrent(
                 returns=returns.reshape(transitions),
                 entropy_values=evaluation.entropy,
                 ppo_config=ppo_config,
+                extra_loss=prediction_loss,
             )
             if values is not None:
                 _accumulate_metrics(
@@ -1837,6 +1873,8 @@ def train_baseline_single(
                     model_config,
                     ppo_config,
                     temporal_gradient_mode=temporal_gradient_mode,
+                    observation_dim=first_environment.observation_dim,
+                    action_feature_dim=first_environment.action_spec.feature_dim,
                 )
             else:
                 ppo_metrics = _update_recurrent_prediction(
