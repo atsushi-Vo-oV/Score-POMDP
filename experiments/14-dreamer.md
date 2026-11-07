@@ -22,7 +22,12 @@ Hafner らの世界モデル系列（PlaNet → Dreamer → V2 → V3）。環�
 | 時間方向の学習圧 | 間接的（PPO の BPTT、1 step 予測） | 直接的（復元と KL が系列全体にかかる） |
 | 不確かさの表現 | K 粒子の集合 | z のカテゴリカル分布の 1 サンプル |
 
-## 状態
+- **問い**: 生成的な遷移モデルと想像での方策学習（Dreamer）は、同じ課題・同じ環境遷移数で GRU とスコア腕に対してどう出るか。
+- **腕（campaign）**: Dreamer（未実装）vs [12](12-obs-leak.md) の `*-ctl-v1` と GRU。
+- **課題**: tagr / mirror2。
+- **状態**: 実装予定（2〜3 日）。
+
+## 状態の詳細
 
 - 未実装。見積り: 新モジュール（RSSM、ヘッド、想像、λ-return、リプレイ）、`comparison.methods` に `dreamer`、artifacts / 評価 / 再開の契約、FLOPs 幅合わせ、テストで 2〜3 日 + math でのデバッグ 1 日。
 - 参考: [DreamerV3 論文](https://arxiv.org/pdf/2301.04104)、[TorchRL の実装](https://docs.pytorch.org/rl/main/reference/dreamer_v3.html)。関連研究の整理は [related-work.pdf](../docs/related-work.pdf)。

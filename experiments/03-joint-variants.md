@@ -2,7 +2,8 @@
 
 - **問い**: 予測フェーズと PPO を交互にする既定に対し、同時に学ぶ joint 版（light ULA / SVGD / SMI）は良くなるか。
 - **腕（campaign）**: `trysvgdlight-<task>-tf-{ula,svgd,smi}-joint-v1` vs 素の light（[02](02-light-vs-energy.md)）。
-- **課題**: mirror2 / tps（完走）、tagr（待ち行列、3 + 2 seed）。
+- **課題**: mirror2 / tps / tagr。
+- **状態**: mirror2 / tps 完走、tagr は待ち行列（3 + 2 seed）。
 - **設定とジョブ**: `../config/trysvgdlight_<task>_tf-*-joint.json`、`../jobs/trysvgd_light/*joint*`。
 
 ## 結果の解説
