@@ -82,6 +82,7 @@ _LEGACY_MODEL_DEFAULTS: dict[str, object] = {
     "langevin_transition_proposal": False,
     "langevin_observation_anchor": False,
     "langevin_proposal": "noise",
+    "langevin_uniform_half_width": 3.0 ** 0.5,
     "proposal_hidden": [64],
     "initial_belief": "branch",
     "encoder_use_scores": True,

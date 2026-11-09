@@ -451,6 +451,9 @@ class ScoreBeliefActorCritic(nn.Module):
             observation_anchor=bool(model_config.get("langevin_observation_anchor", False)),
             proposal_hidden=list(model_config.get("proposal_hidden", [64])),
             langevin_proposal=str(model_config.get("langevin_proposal", "noise")),
+            langevin_uniform_half_width=float(
+                model_config.get("langevin_uniform_half_width", 3.0 ** 0.5)
+            ),
             num_particles=(
                 None if model_config.get("num_particles") is None else int(model_config["num_particles"])
             ),

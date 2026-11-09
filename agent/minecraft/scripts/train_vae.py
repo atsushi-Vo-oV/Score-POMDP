@@ -105,8 +105,12 @@ def main() -> None:
         mus = torch.cat([model.encoder(batch(train[i:i + 512]))[0] for i in range(0, min(len(train), 8192), 512)])
     torch.save({"latent": a.latent, "model": model.state_dict(), "mu_mean": mus.mean(0).cpu(), "mu_std": mus.std(0).cpu(),
                 "frames": int(len(frames)), "epochs": a.epochs, "beta": a.beta}, a.out)
-    # reconstruction sheet: 8 validation frames, originals above reconstructions
-    from PIL import Image
+    # reconstruction sheet: 8 validation frames, originals above reconstructions (skipped without Pillow)
+    try:
+        from PIL import Image
+    except ImportError:
+        print("saved", a.out, "(no Pillow: reconstruction sheet skipped)")
+        return
     with torch.no_grad():
         xv = batch(val[:8])
         recon = model.decoder(model.encoder(xv)[0]).clamp(0, 1)

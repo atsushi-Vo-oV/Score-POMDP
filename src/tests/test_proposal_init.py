@@ -112,14 +112,68 @@ def test_proposal_conflicts_with_warm_start():
     with pytest.raises(ValueError):
         _belief("affine", langevin_warm_start=True)
     with pytest.raises(ValueError):
+        _belief("uniform", langevin_warm_start=True)
+    with pytest.raises(ValueError):
         _belief("spline")
+    with pytest.raises(ValueError):
+        _belief("uniform", langevin_uniform_half_width=0.0)
+
+
+def _chain_start(belief: EnergyBelief, inputs: dict) -> torch.Tensor:
+    captured = {}
+    original = EnergyBelief._transport_chain
+
+    def spy(self, particles, *args, **kwargs):
+        captured["start"] = particles.detach().clone()
+        return original(self, particles, *args, **kwargs)
+
+    EnergyBelief._transport_chain = spy
+    try:
+        belief.particles_from_noise(**inputs, step_size=0.2, track_grad=False)
+    finally:
+        EnergyBelief._transport_chain = original
+    return captured["start"]
+
+
+def test_uniform_proposal_starts_recursive_rows_in_the_box_and_keeps_the_anchor():
+    """U(-w, w) per coordinate on the noise-started rows; the anchored initial rows are untouched."""
+    plain, uniform = _belief("noise"), _belief("uniform", langevin_uniform_half_width=2.0)
+    uniform.load_state_dict(plain.state_dict(), strict=False)
+    inputs = _inputs((True, False, False))
+    inputs["initial_noise"] = torch.randn(3, 4, 2, generator=torch.Generator().manual_seed(3)) * 4.0
+    start_plain, start_uniform = _chain_start(plain, inputs), _chain_start(uniform, inputs)
+    assert torch.equal(start_plain[0], start_uniform[0])  # initial row: anchor in both arms
+    assert start_uniform[1:].abs().max() <= 2.0
+    assert start_plain[1:].abs().max() > 2.0  # the wide Gaussian noise left the box
+    # monotone map of the stored noise: the same noise gives the same start (replay), order preserved
+    expected = (2.0 * torch.special.ndtr(inputs["initial_noise"][1:]) - 1.0) * 2.0
+    assert torch.allclose(start_uniform[1:], expected)
+    assert not any(n.startswith("proposal_") for n, _ in uniform.named_parameters())
+
+
+def test_uniform_proposal_default_half_width_matches_unit_variance():
+    belief = _belief("uniform", anchor=False)
+    g = torch.Generator().manual_seed(1)
+    inputs = _inputs((False,) * 64)
+    inputs["initial_noise"] = torch.randn(64, 4, 2, generator=g)
+    start = _chain_start(belief, inputs)
+    assert start.abs().max() <= 3.0 ** 0.5 + 1e-6
+    assert abs(start.var().item() - 1.0) < 0.1
 
 
 def test_config_validation(tmp_path):
     base = load_config("config/trysvgdlight_mirror2_tf-svgd.json")
     assert base.to_dict()["model"]["langevin_proposal"] == "noise"
     assert isinstance(base.with_overrides({"model.langevin_proposal": "network"}), ExperimentConfig)
+    assert isinstance(base.with_overrides({"model.langevin_proposal": "uniform"}), ExperimentConfig)
     with pytest.raises(ConfigError):
         base.with_overrides({"model.langevin_proposal": "spline"})
     with pytest.raises(ConfigError):
         base.with_overrides({"model.langevin_proposal": "affine", "model.langevin_warm_start": True})
+    with pytest.raises(ConfigError):
+        base.with_overrides({"model.langevin_proposal": "uniform", "model.langevin_warm_start": True})
+    with pytest.raises(ConfigError):
+        base.with_overrides({"model.langevin_uniform_half_width": 0.0})
+    uniform = load_config("config/trysvgdlight_mirror2_tf-svgd-uniform-init.json").to_dict()["model"]
+    assert uniform["langevin_proposal"] == "uniform"
+    assert abs(uniform["langevin_uniform_half_width"] - 3.0 ** 0.5) < 1e-12

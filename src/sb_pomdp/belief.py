@@ -313,6 +313,7 @@ class EnergyBelief(nn.Module):
         observation_anchor: bool = False,
         proposal_hidden: Sequence[int] = (64,),
         langevin_proposal: str = "noise",
+        langevin_uniform_half_width: float = 3.0 ** 0.5,
         num_particles: int | None = None,
         particle_sampler: str = "ula",
         smi_component_scale: float = 0.1,
@@ -511,14 +512,19 @@ class EnergyBelief(nn.Module):
         # Learned chain start for the steps that would otherwise begin at standard-normal
         # noise (every recursive step, and an initial step without the anchor):
         #   "affine"  : xi -> mu + exp(log sigma) * xi with one global (mu, log sigma),
-        #   "network" : per particle, (mu_k, log sigma_k) = h(x^{k}_{t-1}, a_{t-1}, o_t), zero-initialised.
-        # Both start bit-identical to the plain sampler; a warm start already fixes the chain
-        # start at the previous particles, so the two are exclusive.
-        if langevin_proposal not in {"noise", "affine", "network"}:
-            raise ValueError("langevin_proposal must be noise, affine, or network")
+        #   "network" : per particle, (mu_k, log sigma_k) = h(x^{k}_{t-1}, a_{t-1}, o_t), zero-initialised,
+        #   "uniform" : xi -> (2 Phi(xi) - 1) * w, i.e. U(-w, w) per coordinate (fixed, no parameters;
+        #               w = sqrt(3) keeps the unit variance of the standard-normal start).
+        # Affine / network start bit-identical to the plain sampler; a warm start already fixes the
+        # chain start at the previous particles, so it is exclusive with every proposal.
+        if langevin_proposal not in {"noise", "affine", "network", "uniform"}:
+            raise ValueError("langevin_proposal must be noise, affine, network, or uniform")
         if langevin_proposal != "noise" and self.langevin_warm_start:
-            raise ValueError("langevin_proposal affine/network cannot be combined with langevin_warm_start")
+            raise ValueError("langevin_proposal affine/network/uniform cannot be combined with langevin_warm_start")
         self.langevin_proposal = str(langevin_proposal)
+        if float(langevin_uniform_half_width) <= 0.0:
+            raise ValueError("langevin_uniform_half_width must be positive")
+        self.langevin_uniform_half_width = float(langevin_uniform_half_width)
         self.proposal_mean: nn.Parameter | None = None
         self.proposal_log_scale: nn.Parameter | None = None
         self.proposal_network: nn.Module | None = None
@@ -1135,7 +1141,13 @@ class EnergyBelief(nn.Module):
             particles = torch.where(initial.view(-1, 1, 1), anchored, particles)
         if self.langevin_proposal != "noise":
             noise = initial_noise.detach()
-            if self.proposal_network is not None:
+            if self.langevin_proposal == "uniform":
+                # Phi(xi) is exactly U(0, 1) for standard-normal xi, so the replayed noise keeps its
+                # role (the same stored noise reproduces the same chain start in the PPO replay).
+                proposal_mean = torch.zeros((), dtype=noise.dtype, device=noise.device)
+                proposal_log_scale = torch.zeros((), dtype=noise.dtype, device=noise.device)
+                noise = (2.0 * torch.special.ndtr(noise) - 1.0) * self.langevin_uniform_half_width
+            elif self.proposal_network is not None:
                 num_particles = noise.shape[1]
                 proposal_input = torch.cat(
                     (

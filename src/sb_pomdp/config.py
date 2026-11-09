@@ -261,6 +261,7 @@ _MODEL_KEYS = frozenset(
         "langevin_transition_proposal",
         "langevin_observation_anchor",
         "langevin_proposal",
+        "langevin_uniform_half_width",
         "proposal_hidden",
         "initial_belief",
         "encoder_use_scores",
@@ -408,8 +409,11 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         "langevin_observation_anchor": False,
         # Chain start of the steps that begin at noise: "noise" (standard normal), "affine" (one
         # learned mean / scale) or "network" (per-particle mean / scale from the previous particle,
-        # the previous action and the current observation).  Earlier runs all used "noise".
+        # the previous action and the current observation), or "uniform" (fixed U(-w, w) per
+        # coordinate, w = langevin_uniform_half_width; sqrt(3) matches the unit variance of the
+        # standard-normal start).  Earlier runs all used "noise".
         "langevin_proposal": "noise",
+        "langevin_uniform_half_width": 3.0 ** 0.5,
         "proposal_hidden": [64],
         # Every earlier run scored t = 0 with its own initial network ("branch"); "prior" scores
         # it with the recursive networks over K learned prior particles and a zero action.
@@ -835,12 +839,13 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
             "model.langevin_transition_proposal requires model.langevin_warm_start"
         )
     proposal = _nonempty_string(section["langevin_proposal"], "model.langevin_proposal")
-    if proposal not in {"noise", "affine", "network"}:
-        raise ConfigError("model.langevin_proposal must be noise, affine, or network")
+    if proposal not in {"noise", "affine", "network", "uniform"}:
+        raise ConfigError("model.langevin_proposal must be noise, affine, network, or uniform")
     if proposal != "noise" and section["langevin_warm_start"]:
         raise ConfigError(
-            "model.langevin_proposal affine/network cannot be combined with model.langevin_warm_start"
+            "model.langevin_proposal affine/network/uniform cannot be combined with model.langevin_warm_start"
         )
+    _positive_number(section["langevin_uniform_half_width"], "model.langevin_uniform_half_width")
     initial_belief = _nonempty_string(section["initial_belief"], "model.initial_belief")
     if initial_belief not in {"branch", "prior"}:
         raise ConfigError("model.initial_belief must be branch or prior")
