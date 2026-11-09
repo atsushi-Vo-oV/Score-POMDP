@@ -14,6 +14,8 @@
 - 統計（Holm 補正）と原因候補: [WHY_REPORT.md](../results/reports/codex_why_2026-11-07/WHY_REPORT.md)
 - 設計メモ: [belief-aux-losses.pdf](../docs/belief-aux-losses.pdf)、関連研究 [related-work.pdf](../docs/related-work.pdf)
 
+- mirror2 の腕ごとの動きの比較（軌跡・m 別リターン・信念の動き・学習曲線、日英）: https://claude.ai/artifact/12CJkE2XUB5wLjhk8a7Zh9
+
 ## 結論メモ
 
 - tagr: GRU 4.2、PF v3 3.5、RNN 3.2 に対し energy TF-SVGD 2.3、TF-ULA 2.5（3 seed）。energy tagr の方策は加速ゼロで止まる seed が多い。

@@ -33,6 +33,7 @@ tagr（鬼ごっこ、距離観測、1293）、tagre（楕円距離、環境 64�
 
 - 全 run の最新評価: [results_summary_1109.md](../results/reports/summary_2026-11-09/results_summary_1109.md)（旧版 [1107](../results/reports/codex_why_2026-11-07/results_summary_1107.md)）
 - 信念ビューア（粒子・復号・run 横断表）: https://claude.ai/artifact/9DeCqi4xsok7n1VCPY5Rf3
+- mirror2 の腕ごとの動きの比較（日英）: https://claude.ai/artifact/12CJkE2XUB5wLjhk8a7Zh9 （鬼ごっこの比較は信念ビューア内）
 - 中間報告 PDF: [2026-11-02](../results/reports/trysvgd_interim_20261102.pdf)、[2026-11-05](../results/reports/trysvgd_interim_20261105.pdf)
 
 ## 進め方の約束

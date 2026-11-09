@@ -15,6 +15,8 @@
 - 復号（MDN）: [MDN_REPORT.md](../results/reports/mdn_2026-11-07/MDN_REPORT.md)、ビューア https://claude.ai/artifact/9DeCqi4xsok7n1VCPY5Rf3
 - 評価値一覧: [results_summary_1107.md](../results/reports/codex_why_2026-11-07/results_summary_1107.md)
 
+- mirror2 の腕ごとの動きの比較（軌跡・m 別リターン・信念の動き・学習曲線、日英）: https://claude.ai/artifact/12CJkE2XUB5wLjhk8a7Zh9
+
 ## 結論メモ
 
 - param は素と同じ（μ ≈ 0、σ 0.8〜1.0、PPO は提案分布を押していない）。func は full BPTT で勾配爆発し seed 差が大きい。prev は座標が流れ（最大 2419）復号も崩れる。

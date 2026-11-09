@@ -14,6 +14,8 @@
 - direct 場の curl（反対称成分 0.47〜0.57、energy は 0）: [GRAD_REPORT.md §7.4](../results/reports/codex_grad_2026-11-07/GRAD_REPORT.md)
 - 評価値一覧: [results_summary_1107.md](../results/reports/codex_why_2026-11-07/results_summary_1107.md)
 
+- mirror2 の腕ごとの動きの比較（軌跡・m 別リターン・信念の動き・学習曲線、日英）: https://claude.ai/artifact/12CJkE2XUB5wLjhk8a7Zh9
+
 ## 結論メモ
 
 - mirror2: light SVGD −368 は PF v1（5/5 崩壊）より良いが GRU に届かず、11 比較の Holm 補正では PF より有意な腕なし。コストは PF の 5〜20 倍。
