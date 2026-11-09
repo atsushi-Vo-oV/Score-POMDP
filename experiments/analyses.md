@@ -23,3 +23,4 @@
 - 最適化の問題か目的の問題かは未決。識別実験は [GRAD_REPORT.md §6.2](../results/reports/codex_grad_2026-11-07/GRAD_REPORT.md)。
 
 - **学習が進まない理由の検証（Codex / Astra、2026-11-10）**: [STALL_REPORT.md](../results/reports/codex_stall_2026-11-10/STALL_REPORT.md)。PPO の更新は動いている（KL・clip 率は伸びた PF と同程度）、価値のノイズでは順位を説明できない（light EV 0.30、停滞 GRU s11 は 0.59）、凍結した light 表現に GRU 教師の行動クローンを載せると 512 話で 3.1 → 4.0 に改善（表現の絶対天井ではない）。残る候補は表現の距離保持不足（最近接距離 R² 0.55 vs GRU 0.88）、予測目的と制御目的の不整合、交互学習のドリフト、信用割当。次は「同じ凍結表現・同じ教師で拡散ヘッドも BC」と「予測頻度をそろえた PPO 勾配遮断 2×2」。私の「light tagr は何をしても 2.2〜2.6」は言い過ぎ（noanchor s13 9.39、func s10 4.39、param s13 4.89）。
+- **追試（Codex / Astra 第 2 ラウンド、2026-11-10）**: [STALL_FOLLOWUP.md](../results/reports/codex_stall_2026-11-10/STALL_FOLLOWUP.md)。元と同じ 5 段拡散ヘッドの行動クローンでも凍結 light 表現で 3.10 → 4.16 / 2.90 → 3.98（512 話）→ 方策クラスの表現力不足は不支持。行動 ±0.2 の介入で Q 差が安定する 5 成分のうち局所 PPO 勾配が逆行・反転する例あり（限定支持、GRU にもある）。観測窓 8 / 32 でも最近接距離の復号は light < GRU（0.49〜0.52 vs 0.83）。GPU の次手は「表現凍結 + 拡散 BC actor で PPO 再開」4 本。
