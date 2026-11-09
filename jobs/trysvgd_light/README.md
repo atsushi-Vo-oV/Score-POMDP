@@ -59,6 +59,9 @@ the flag.  Same light TF-SVGD model and schedule as mirror2 (333 updates = 98 + 
 light TF-SVGD acting cost (1.072 MFLOP, scratchpad flops_carflag.py): GRU [800, 308] / hidden 147
 (`config/trysvgd_carflag_gru.json`, campaign `trysvgd-carflag-gru-v1`) and PF v3 mlp [181, 322]
 (`config/trysvgd_carflag_pf_v3.json`, `trysvgd-carflag-pf-v3-v1`), jobs `jobs/trysvgd/trysvgd_carflag_{gru,pf_v3}_s{10..14}.sh`.
+Sampler controls with the plain N(0, I) chain start: energy TF-ULA (`config/trysvgd_carflag_tf-ula.json`, campaign
+`trysvgd-carflag-tf-ula-v1`, jobs `jobs/trysvgd/trysvgd_carflag_ula_s{10..14}.sh`, 1.36 MFLOP) and light TF-ULA
+(`config/trysvgdlight_carflag_tf-ula.json`, `trysvgdlight-carflag-tf-ula-v1`, `trysvgdlight_carflag_ula_s{10..14}.sh`).
 
 ## One input domain for t = 0 and t >= 1 (2026-11-05): tf-svgd-prior
 
