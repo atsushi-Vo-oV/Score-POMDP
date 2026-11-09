@@ -4,7 +4,7 @@
 - **腕（campaign）**: `trysvgdlight-<task>-tf-svgd-{param,func,prev,uniform}-init-v1` vs 素の light SVGD。
 - **課題**: mirror2 / tps / tagr × 5 seed = 60 本（uniform 15 本を 2026-11-10 に追加）。
 - **設定とジョブ**: `model.langevin_proposal` ∈ {noise, affine, network, uniform}、`langevin_warm_start`、`langevin_uniform_half_width`（既定 √3）、`../config/trysvgdlight_<task>_tf-svgd-{param,func,prev,uniform}-init.json`、`../jobs/trysvgd_light/*-{param,func,prev,uniform}init_s*.sh`。
-- **状態**: param / func / prev は完走。uniform は未投入（投入 OK 待ち、seed 10–11 先行・12–14 は待ち行列の後ろ）。
+- **状態**: param / func / prev は完走。uniform は 2026-11-10 01:10 に math へ投入（seed 10–11 の 6 本が未実行分の先頭、seed 12–14 の 9 本が最後尾。木 v18）。
 
 ## 結果の解説
 
