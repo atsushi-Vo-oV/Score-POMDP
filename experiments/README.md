@@ -15,7 +15,7 @@ tagr（鬼ごっこ、距離観測、1293）、tagre（楕円距離、環境 64�
 | 1 | サンプラーの違いは効くか（energy ULA / SVGD / SMI vs GRU / RNN / PF） | [01-sampler-energy.md](01-sampler-energy.md) | mirror2 / tps / tagr | 主要腕完走、SMI 一部待ち |
 | 2 | スコアを直接出す light は energy / PF と比べてどうか | [02-light-vs-energy.md](02-light-vs-energy.md) | mirror2 / tps / tagr | 完走 |
 | 3 | joint 変種（予測と PPO の同時学習）は効くか | [03-joint-variants.md](03-joint-variants.md) | mirror2 / tps / tagr | mirror2 / tps 完走、tagr 待ち |
-| 4 | 連鎖の開始分布を変えれば良くなるか（param / func / prev / uniform） | [04-chain-start.md](04-chain-start.md) | mirror2 / tps / tagr / Car-Flag | param / func / prev 完走、uniform 投入済み、Car-Flag 準備中（2026-11-10） |
+| 4 | 連鎖の開始分布を変えれば良くなるか（param / func / prev / uniform） | [04-chain-start.md](04-chain-start.md) | mirror2 / tps / tagr / Car-Flag | param / func / prev 完走、uniform と Car-Flag 投入済み（2026-11-10） |
 | 5 | t = 0 の尺度不一致を直せば良くなるか（prior / noanchor / flat） | [05-t0-scale.md](05-t0-scale.md) | mirror2 / tps / tagr | 完走 |
 | 6 | PF 基準線の観測適合度を非線形にすると（v1 / v2 / v3 / v3b） | [06-pf-observation-function.md](06-pf-observation-function.md) | mirror2 / tps / tagr | 完走 |
 | 7 | 凸な α-vector 型読み出しは TF 読み出しに勝つか | [07-alpha-readout.md](07-alpha-readout.md) | tagr / mirror2（tps 待ち） | tagr 完走、mirror2 energy-ULA 完走（全 seed 崩壊）、残り走行中 |

@@ -4,7 +4,7 @@
 - **腕（campaign）**: `trysvgdlight-<task>-tf-svgd-{param,func,prev,uniform}-init-v1` vs 素の light SVGD。Car-Flag では基準線 `trysvgd-carflag-{gru,pf-v3}-v1` も同時に走らせる（幅は light TF-SVGD の 1.07 MFLOP に一致: GRU [800, 308] / 147、PF v3 [181, 322]）。
 - **課題**: mirror2 / tps / tagr × 5 seed = 60 本（uniform 15 本を 2026-11-10 に追加）＋ **Car-Flag**（2026-11-10 追加、ユーザー「多峰性があるタスクをさらに追加」→ Car-Flag を選択）: light 5 腕 + GRU + PF v3 × 5 seed = 35 本。Car-Flag は緑旗が +1 か −1 かの 2 値の隠れ変数を、青旗（priest、0.5 ± 0.2）の近くでしか観測できない課題。信念は 2 点の混合で、観測後はその符号を旗まで保持する必要がある（離散モードの記憶）。
 - **設定とジョブ**: `model.langevin_proposal` ∈ {noise, affine, network, uniform}、`langevin_warm_start`、`langevin_uniform_half_width`（既定 √3）、`../config/trysvgdlight_<task>_tf-svgd-{param,func,prev,uniform}-init.json`、`../jobs/trysvgd_light/*-{param,func,prev,uniform}init_s*.sh`。Car-Flag は `../config/trysvgdlight_carflag_tf-svgd*.json`、`../config/trysvgd_carflag_{gru,pf_v3}.json`、`../jobs/trysvgd_light/trysvgdlight_carflag_*.sh`、`../jobs/trysvgd/trysvgd_carflag_*.sh`（333 update、horizon 160、観測ノイズ 0）。
-- **状態**: param / func / prev は完走。uniform は 2026-11-10 01:10 に math へ投入（seed 10–12 の 9 本が未実行分の先頭、seed 13–14 の 6 本が最後尾。木 v18）。Car-Flag 35 本は準備中（投入 OK 済み）。
+- **状態**: param / func / prev は完走。uniform は 2026-11-10 01:10 に math へ投入（seed 10–12 の 9 本が未実行分の先頭、seed 13–14 の 6 本が最後尾。木 v18）。Car-Flag 35 本は 2026-11-10 02:00 に math へ投入（木 v19。seed 10–12 の 21 本が uniform-init s10–12 の直後、seed 13–14 の 14 本が最後尾）。
 
 ## 結果の解説
 
