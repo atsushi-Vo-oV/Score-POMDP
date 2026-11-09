@@ -222,6 +222,7 @@ _MODEL_KEYS = frozenset(
         "belief_latent_dim",
         "score_parameterization",
         "direct_score_bound",
+        "initial_score_prior",
         "belief_activation_checkpoint",
         "score_implementation",
         "belief_compile",
@@ -374,6 +375,10 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         # The score was always the autograd gradient of the learned scalar potential.
         "score_parameterization": "energy",
         "direct_score_bound": 10.0,
+        # Weight of the N(0, I) prior term in the t = 0 score (g(o, x) - p x; energy: - p |x|^2 / 2).
+        # Every earlier run used 1.0; 0.0 removes the restoring term.  direct_score_bound null
+        # disables the tanh bound of the direct score, "log" replaces it by x / log(e + x^2).
+        "initial_score_prior": 1.0,
         # Replay checkpointed every belief step (exact, but 10-16x slower; see ppo._replay_belief_step).
         "belief_activation_checkpoint": True,
         "score_implementation": "autograd",
@@ -893,7 +898,15 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
     _positive_number(section["smi_component_scale"], "model.smi_component_scale")
     if section["score_parameterization"] not in {"energy", "direct", "direct_joint", "direct_flat"}:
         raise ConfigError("model.score_parameterization must be energy, direct, direct_joint or direct_flat")
-    _positive_number(section["direct_score_bound"], "model.direct_score_bound")
+    bound = section["direct_score_bound"]
+    if isinstance(bound, str):
+        if bound != "log":
+            raise ConfigError("model.direct_score_bound must be a positive number, null, or 'log'")
+    elif bound is not None:
+        _positive_number(bound, "model.direct_score_bound")
+    prior = section["initial_score_prior"]
+    if isinstance(prior, bool) or not isinstance(prior, (int, float)) or float(prior) < 0.0:
+        raise ConfigError("model.initial_score_prior must be a non-negative number")
     _boolean(section["belief_activation_checkpoint"], "model.belief_activation_checkpoint")
     _boolean(section["policy_observation_input"], "model.policy_observation_input")
     if section["policy_observation_input"] and section["policy_head_kind"] == "alpha_lse":

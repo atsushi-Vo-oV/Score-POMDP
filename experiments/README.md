@@ -23,6 +23,7 @@ tagr（鬼ごっこ、距離観測、1293）、tagre（楕円距離、環境 64�
 | 9 | 表現の次元を GRU に合わせると（K × D = 隠れ次元） | [09-representation-size.md](09-representation-size.md) | mirror2 / tagr | 完走 |
 | 15 | 粒子数を増やせば良くなるか（K = 16 / 64 / 256 / 1024） | [15-particle-count.md](15-particle-count.md) | mirror2 / tps / tagr / Car-Flag | 投入済み（2026-11-10、tagr K1024 は GPU が空いてから） |
 | 16 | 粒子の潜在次元をそろえると（PF 2 次元、light 16 次元） | [16-latent-dimension.md](16-latent-dimension.md) | mirror2 / Car-Flag | 投入済み（2026-11-10） |
+| 17 | スコアの有界化と t = 0 の −x は要るか（nobound / logbound） | [17-unbounded-score.md](17-unbounded-score.md) | mirror2 / tagr / Car-Flag | nobound 投入（2026-11-10）、logbound は控え |
 | 10 | 楕円距離観測（能動的センシング）で信念は効くか | [10-tagre-elliptic.md](10-tagre-elliptic.md) | tagre | 2 seed 完走（FLOPs 未一致に注意） |
 | 11 | 画像観測（Minecraft）で動くか | [11-minecraft.md](11-minecraft.md) | MineRL | ほぼ完走 |
 | 12 | 現在観測を方策に直結すると差は埋まるか（leak 2 × 3） | [12-obs-leak.md](12-obs-leak.md) | tagr / mirror2 | seed 10〜11 完走、12〜14 待ち |

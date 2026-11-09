@@ -59,6 +59,7 @@ _LEGACY_MODEL_DEFAULTS: dict[str, object] = {
     "belief_latent_dim": None,
     "score_parameterization": "energy",
     "direct_score_bound": 10.0,
+    "initial_score_prior": 1.0,
     "belief_activation_checkpoint": True,
     "score_implementation": "autograd",
     "belief_compile": "off",

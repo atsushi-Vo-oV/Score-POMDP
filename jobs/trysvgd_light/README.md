@@ -61,6 +61,16 @@ Uniform-start twins (`langevin_proposal = "uniform"`): configs `trysvgdlight_<ta
 campaigns `trysvgdlight-<task>-tf-svgd-k{64,256,1024}-uniform-init-v1`, jobs `trysvgdlight_<task>_svgd-k{64,256,1024}-uniforminit_s*.sh`
 (K = 1024 without tagr).  Experiment 15.
 
+## Unbounded direct score (2026-11-10): tf-svgd-nobound / tf-svgd-logbound (experiment 17)
+
+`model.direct_score_bound = null` removes the `10 tanh(x / 10)` bound of the direct score (raw network outputs),
+`"log"` replaces it by the unbounded, sublinear `x / log(e + x^2)`; `model.initial_score_prior = 0` removes the `-x`
+restoring term of the t = 0 score (energy: `-p |x|^2 / 2`).  Configs `config/trysvgdlight_<task>_tf-svgd-{nobound,logbound}.json`
+(mirror2, tagr, carflag), campaigns `trysvgdlight-<task>-tf-svgd-{nobound,logbound}-v1`, jobs
+`trysvgdlight_<task>_svgd-{nobound,logbound}_s{10..14}.sh`.  `logbound` is the standby if `nobound` diverges.  Post-hoc
+check on trained K16 checkpoints (bound removed at evaluation only): no change on tagr / carflag (scores stay below 10),
+mirror2 s11 diverges (scores 9.6e3) -- the bound is active in the trained mirror2 models.
+
 ## Latent dimension (2026-11-10): pf_v3-d2 and tf-svgd-d16 (experiment 16)
 
 mirror2 and carflag only.  `trysvgd-<task>-pf-v3-d2-v1`: PF v3 with `pf_particle_dim` 16 -> 2 and `pf_hidden`

@@ -318,7 +318,8 @@ class EnergyBelief(nn.Module):
         particle_sampler: str = "ula",
         smi_component_scale: float = 0.1,
         score_parameterization: str = "energy",
-        direct_score_bound: float = 10.0,
+        direct_score_bound: float | None = 10.0,
+        initial_score_prior: float = 1.0,
         score_implementation: str = "autograd",
         belief_compile: str = "off",
         belief_cuda_graphs: bool = False,
@@ -369,9 +370,25 @@ class EnergyBelief(nn.Module):
         # A SiLU energy network has a bounded gradient; a network that outputs the score grows
         # linearly in |x| and makes the transport expand without limit, so its outputs are bounded
         # smoothly by B * tanh(raw / B) (the -x restoring term of the t = 0 base stays unbounded).
-        if not float(direct_score_bound) > 0.0:
-            raise ValueError("direct_score_bound must be positive")
-        self.direct_score_bound = float(direct_score_bound)
+        # ``None`` disables the bound (raw network outputs are the score); ``"log"`` applies the
+        # slowly growing, unbounded squashing x / log(e + x^2) (identity slope at 0, ~ x / (2 ln|x|)
+        # for large |x|) instead of the tanh bound.
+        if isinstance(direct_score_bound, str):
+            if direct_score_bound != "log":
+                raise ValueError("direct_score_bound must be a positive number, None, or 'log'")
+            self.direct_score_bound: float | str | None = "log"
+        elif direct_score_bound is None:
+            self.direct_score_bound = None
+        else:
+            if not float(direct_score_bound) > 0.0:
+                raise ValueError("direct_score_bound must be positive or None")
+            self.direct_score_bound = float(direct_score_bound)
+        # Weight of the standard-normal prior term of the initial (t = 0) potential: the direct
+        # score is g(o, x) - p * x and the energy potential is g(o, x) - p * |x|^2 / 2.  Every
+        # earlier run used p = 1; p = 0 removes the restoring term.
+        if not float(initial_score_prior) >= 0.0:
+            raise ValueError("initial_score_prior must be non-negative")
+        self.initial_score_prior = float(initial_score_prior)
         if particle_sampler not in PARTICLE_SAMPLERS:
             raise ValueError("particle_sampler must be ula, svgd or smi")
         self.particle_sampler = str(particle_sampler)
@@ -680,7 +697,7 @@ class EnergyBelief(nn.Module):
         obs = observation[:, None, :].expand(-1, num_query, -1)
         initial_input = torch.cat((obs, query), dim=-1)
         initial_value = self.initial_energy(initial_input).squeeze(-1)
-        return initial_value - 0.5 * query.square().sum(dim=-1)
+        return initial_value - 0.5 * self.initial_score_prior * query.square().sum(dim=-1)
 
     def _recursive_log_potential(
         self,
@@ -756,13 +773,18 @@ class EnergyBelief(nn.Module):
 
         num_query = query.shape[1]
         bound = self.direct_score_bound
+        prior = self.initial_score_prior
 
         def bounded(raw: torch.Tensor) -> torch.Tensor:
+            if bound is None:
+                return raw
+            if bound == "log":
+                return raw / torch.log(math.e + raw.square())
             return bound * torch.tanh(raw / bound)
 
         def initial_score() -> torch.Tensor:
             obs = observation[:, None, :].expand(-1, num_query, -1)
-            return bounded(self.initial_energy(torch.cat((obs, query), dim=-1))) - query
+            return bounded(self.initial_energy(torch.cat((obs, query), dim=-1))) - prior * query
 
         def recursive_score() -> torch.Tensor:
             num_previous = previous_particles.shape[1]
@@ -842,7 +864,7 @@ class EnergyBelief(nn.Module):
             _, gradient = _mlp_value_and_input_gradient(
                 self.initial_energy, torch.cat((obs, query), dim=-1)
             )
-            return gradient[..., self.observation_dim:] - query
+            return gradient[..., self.observation_dim:] - self.initial_score_prior * query
 
         def recursive_score() -> torch.Tensor:
             action = previous_action[:, None, :].expand(-1, num_query, -1)
