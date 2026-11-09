@@ -36,12 +36,17 @@ Same light TF-SVGD configs, only the start of the 12-step SVGD chain changes (`m
 | tf-svgd-param-init | `langevin_proposal = "affine"` | `mu + exp(log sigma) * xi`, one learned `(mu, log sigma)` per latent dimension |
 | tf-svgd-func-init | `langevin_proposal = "network"` | per particle `mu_k + exp(log sigma_k) * xi_k` with `(mu_k, log sigma_k) = h(x^k_{t-1}, a_{t-1}, o_t)` (MLP `proposal_hidden`, zero-initialised final layer) |
 | tf-svgd-prev-init | `langevin_warm_start = true` | the previous particles `x_{t-1}` themselves (no transition proposal) |
+| tf-svgd-uniform-init (2026-11-10) | `langevin_proposal = "uniform"` | `(2 Phi(xi) - 1) * sqrt(3)`, i.e. `U(-sqrt(3), sqrt(3))` per latent coordinate: fixed, no parameters, same variance as `N(0, I)`, bounded support (`model.langevin_uniform_half_width`) |
 
 Campaigns `trysvgdlight-<task>-tf-svgd-{param,func,prev}-init-v1`, configs
 `config/trysvgdlight_<task>_tf-svgd-{param,func,prev}-init.json`, jobs
 `trysvgdlight_<task>_svgd-{param,func,prev}init_s{10..14}.sh` for mirror2 (333 updates), tps (213) and tagr (1293).
 The affine / network proposals are zero-initialised, so a fresh model is bit-identical to the reference arm
 (`src/tests/test_proposal_init.py`); they are trained only through the gradients that flow into the chain.
+The uniform start (campaigns `trysvgdlight-<task>-tf-svgd-uniform-init-v1`, configs
+`config/trysvgdlight_<task>_tf-svgd-uniform-init.json`, jobs `trysvgdlight_<task>_svgd-uniforminit_s{10..14}.sh`)
+maps the stored standard-normal noise through the normal CDF, so the PPO replay reproduces the same chain start
+from the same stored noise; the initial (anchored) rows are unchanged, as in the other three arms.
 
 ## One input domain for t = 0 and t >= 1 (2026-11-05): tf-svgd-prior
 

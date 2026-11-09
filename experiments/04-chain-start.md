@@ -1,10 +1,10 @@
-# 04 連鎖の開始分布を学べば良くなるか（param / func / prev）
+# 04 連鎖の開始分布を変えれば良くなるか（param / func / prev / uniform）
 
-- **問い**: 毎時刻 N(0, I) から始める SVGD 連鎖の開始を学習すれば信念が良くなるか。param = 大域の N(μ, σ)、func = 前粒子・前行動・現在観測から粒子ごとに出す網、prev = 前時刻の粒子から開始（warm start）。
-- **腕（campaign）**: `trysvgdlight-<task>-tf-svgd-{param,func,prev}-init-v1` vs 素の light SVGD。
-- **課題**: mirror2 / tps / tagr × 5 seed = 45 本。
-- **設定とジョブ**: `model.langevin_proposal` ∈ {noise, affine, network}、`langevin_warm_start`、`../config/trysvgdlight_<task>_tf-svgd-{param,func,prev}-init.json`、`../jobs/trysvgd_light/*-{param,func,prev}init_s*.sh`。
-- **状態**: 完走。
+- **問い**: 毎時刻 N(0, I) から始める SVGD 連鎖の開始を変えれば信念が良くなるか。param = 大域の N(μ, σ)（学習）、func = 前粒子・前行動・現在観測から粒子ごとに出す網（学習）、prev = 前時刻の粒子から開始（warm start）、uniform = 固定の一様分布 U(−√3, √3)（分散は N(0, I) と同じ、台が有界。学習なし）。
+- **腕（campaign）**: `trysvgdlight-<task>-tf-svgd-{param,func,prev,uniform}-init-v1` vs 素の light SVGD。
+- **課題**: mirror2 / tps / tagr × 5 seed = 60 本（uniform 15 本を 2026-11-10 に追加）。
+- **設定とジョブ**: `model.langevin_proposal` ∈ {noise, affine, network, uniform}、`langevin_warm_start`、`langevin_uniform_half_width`（既定 √3）、`../config/trysvgdlight_<task>_tf-svgd-{param,func,prev,uniform}-init.json`、`../jobs/trysvgd_light/*-{param,func,prev,uniform}init_s*.sh`。
+- **状態**: param / func / prev は完走。uniform は未投入（投入 OK 待ち、seed 10–11 先行・12–14 は待ち行列の後ろ）。
 
 ## 結果の解説
 
