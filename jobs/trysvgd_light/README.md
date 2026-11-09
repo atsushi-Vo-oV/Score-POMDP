@@ -57,7 +57,9 @@ jobs `trysvgdlight_<task>_svgd-k{64,256,1024}_s{10..14}.sh` for mirror2 (333), t
 Measured on math (shared GPU, mirror2): one update 30-37 s at K = 64, 45-48 s at K = 128, 86-103 s at K = 256 and
 840-870 s at K = 1024 (K = 16 under the same load: 35-49 s); peak GPU memory 0.3 / 0.4 / 0.7 / 7.0 GB.  The tagr
 K = 1024 runs (about 310 h each) are started only once the math queue and all GPUs are idle, one run per GPU.
-Experiment 15.
+Uniform-start twins (`langevin_proposal = "uniform"`): configs `trysvgdlight_<task>_tf-svgd-k{64,256,1024}-uniform-init.json`,
+campaigns `trysvgdlight-<task>-tf-svgd-k{64,256,1024}-uniform-init-v1`, jobs `trysvgdlight_<task>_svgd-k{64,256,1024}-uniforminit_s*.sh`
+(K = 1024 without tagr).  Experiment 15.
 
 ## Latent dimension (2026-11-10): pf_v3-d2 and tf-svgd-d16 (experiment 16)
 
