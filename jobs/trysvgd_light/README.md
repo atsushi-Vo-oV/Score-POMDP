@@ -48,6 +48,18 @@ The uniform start (campaigns `trysvgdlight-<task>-tf-svgd-uniform-init-v1`, conf
 maps the stored standard-normal noise through the normal CDF, so the PPO replay reproduces the same chain start
 from the same stored noise; the initial (anchored) rows are unchanged, as in the other three arms.
 
+### Car-Flag (2026-11-10): a fourth task for the chain-start comparison
+
+`car_flag` (horizon 160, no observation noise): the green flag is at +1 or -1 with equal probability, the hidden
+side is observed only within 0.2 of the priest at 0.5, so the belief is a two-point mixture that must be carried to
+the flag.  Same light TF-SVGD model and schedule as mirror2 (333 updates = 98 + 200 PPO + 35).  Configs
+`config/trysvgdlight_carflag_tf-svgd{,-param-init,-func-init,-prev-init,-uniform-init}.json`, campaigns
+`trysvgdlight-carflag-tf-svgd{,-param-init,-func-init,-prev-init,-uniform-init}-v1`, jobs
+`trysvgdlight_carflag_svgd{,-paraminit,-funcinit,-previnit,-uniforminit}_s{10..14}.sh`.  Baselines matched to the
+light TF-SVGD acting cost (1.072 MFLOP, scratchpad flops_carflag.py): GRU [800, 308] / hidden 147
+(`config/trysvgd_carflag_gru.json`, campaign `trysvgd-carflag-gru-v1`) and PF v3 mlp [181, 322]
+(`config/trysvgd_carflag_pf_v3.json`, `trysvgd-carflag-pf-v3-v1`), jobs `jobs/trysvgd/trysvgd_carflag_{gru,pf_v3}_s{10..14}.sh`.
+
 ## One input domain for t = 0 and t >= 1 (2026-11-05): tf-svgd-prior
 
 `model.initial_belief = "prior"` (with `langevin_observation_anchor = false`): the initial network `g(o_0, x) - x`
