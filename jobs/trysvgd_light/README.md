@@ -59,6 +59,14 @@ Measured on math (shared GPU, mirror2): one update 30-37 s at K = 64, 45-48 s at
 K = 1024 runs (about 310 h each) are started only once the math queue and all GPUs are idle, one run per GPU.
 Experiment 15.
 
+## Latent dimension (2026-11-10): pf_v3-d2 and tf-svgd-d16 (experiment 16)
+
+mirror2 and carflag only.  `trysvgd-<task>-pf-v3-d2-v1`: PF v3 with `pf_particle_dim` 16 -> 2 and `pf_hidden`
+re-matched to the task's PF v3 FLOPs (mirror2 [463, 823] = 1.24 MFLOP, carflag [419, 744] = 1.07 MFLOP;
+scratchpad flops_d2.py), configs `config/trysvgd_<task>_pf_v3-d2.json`, jobs `jobs/trysvgd/trysvgd_<task>_pf_v3-d2_s*.sh`.
+`trysvgdlight-<task>-tf-svgd-d16-v1`: light TF-SVGD with `model.belief_latent_dim` 2 -> 16 (3.4 MFLOP, compute not
+matched), configs `config/trysvgdlight_<task>_tf-svgd-d16.json`, jobs `trysvgdlight_<task>_svgd-d16_s*.sh`.
+
 ### Car-Flag (2026-11-10): a fourth task for the chain-start comparison
 
 `car_flag` (horizon 160, no observation noise): the green flag is at +1 or -1 with equal probability, the hidden
