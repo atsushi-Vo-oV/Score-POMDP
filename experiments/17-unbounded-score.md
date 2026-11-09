@@ -5,7 +5,7 @@
 - **課題**: mirror2 / tagr / Car-Flag × 5 seed（nobound 15 本、logbound 15 本は控え）。
 - **設定とジョブ**: `../config/trysvgdlight_<task>_tf-svgd-{nobound,logbound}.json`、`../jobs/trysvgd_light/trysvgdlight_<task>_svgd-{nobound,logbound}_s*.sh`。実装: `model.direct_score_bound` に null / "log" を追加、`model.initial_score_prior`（既定 1.0、energy 版は −p|x|²/2）を追加。テスト `src/tests/test_score_bound_prior.py`。
 - **事前診断（2026-11-10、学習済み checkpoint で有界化だけを外した再評価、32 話）**: tagr と Car-Flag は返り値・スコアとも不変（スコアの最大値 5〜9 で上限 10 に届かない）。mirror2 は s10 で −406 → −416、**s11 で −329 → −843、スコア最大 9,600、1 step の粒子移動 790**（tanh が飽和していた成分 4 % が解放されて発散）。学習済みモデルの mirror2 では有界化が効いている。非有界で最初から学習した場合は別問題（この実験）。
-- **状態**: 生成・CPU スモーク済み。nobound を投入（seed 10–12 が先、13–14 は最後尾）。logbound は未投入（nobound が発散したら差し替え）。
+- **状態**: 生成・CPU スモーク済み。nobound 15 本を 2026-11-10 06:00 に math へ投入（木 v21。mirror2 / tagr の seed 10–12 は優先ブロックの Car-Flag 直前、Car-Flag の seed 10–12 は Car-Flag ブロック、13–14 は最後尾）。logbound は未投入（nobound が発散したら差し替え）。
 
 ## 結果の解説
 
