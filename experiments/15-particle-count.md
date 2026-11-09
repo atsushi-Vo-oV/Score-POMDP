@@ -5,7 +5,7 @@
 - **課題**: mirror2（333 update）/ tps（213）/ tagr（1293）/ Car-Flag（333）× 5 seed。計算量は合わせない（遷移の粒子対と注意は K² に比例）。
 - **設定とジョブ**: `../config/trysvgdlight_<task>_tf-svgd-k<K>.json`（`model.num_particles` だけ変更）、`../jobs/trysvgd_light/trysvgdlight_<task>_svgd-k<K>_s*.sh`。生成は scratchpad gen_k.py。
 - **速度（math、他ジョブと同居した GPU 3 で mirror2 light を 3 update、2026-11-10）**: 1 update（ロールアウト + PPO 更新）は K = 64 で 30〜37 s、K = 128 で 45〜48 s、K = 256 で 86〜103 s（同条件の K = 16 は 35〜49 s）。GPU ピークメモリ 0.3 / 0.4 / 0.7 GB。K = 256 でも K = 16 の約 2.5 倍で済む。K = 1024 は 1 update 840〜870 s（PPO 更新 670〜800 s）、ピーク 7.0 GB で、ここから粒子対の K² 項が支配的（mirror2 1 run 約 80 h、tagr 約 310 h）。
-- **状態**: ユーザー決定（2026-11-10 05:00）「tagr の K = 1024 以外投入 OK。全 GPU が空き次第、全 GPU を使って tagr K = 1024 を実行」。K = 64 / 256（40 本）と K = 1024 の mirror2 / tps / Car-Flag（15 本）を math の待ち行列へ（seed 10–12 が先、13–14 は最後尾）。tagr K = 1024（5 seed、1 run 約 310 h）は待ち行列と GPU が空になってから 1 GPU 1 本で 4 本同時、5 本目は空いた GPU で（run1102/tagr_k1024_watch.sh）。1 run は 1 GPU しか使えない（コードにマルチ GPU の仕組みはない）。
+- **状態**: ユーザー決定（2026-11-10 05:00）「tagr の K = 1024 以外投入 OK。全 GPU が空き次第、全 GPU を使って tagr K = 1024 を実行」。K = 64 / 256（40 本）と K = 1024 の mirror2 / tps / Car-Flag（15 本）を math の待ち行列へ（seed 10–12 が先、13–14 は最後尾）。tagr K = 1024（5 seed、1 run 約 310 h）は待ち行列と GPU が空になってから 1 GPU 1 本で 4 本同時、5 本目は空いた GPU で（run1102/tagr_k1024_watch.sh）。一様開始版 55 本も投入（ユーザー「256 / 1024 は後ろで OK。64 の 3 seed だけ優先に追加」）: K64 uniform の seed 10–12 は 11-10 ブロックの末尾、K64 s13–14・K256 全 seed・K1024（tagr 以外）全 seed は最後尾。1 run は 1 GPU しか使えない（コードにマルチ GPU の仕組みはない）。
 
 ## 結果の解説
 
