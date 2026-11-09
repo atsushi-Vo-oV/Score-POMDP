@@ -1,4 +1,4 @@
-# 実験一覧（2026-11-07 時点）
+# 実験一覧（2026-11-09 時点）
 
 ここでの「実験」は **1 つのまとまった比較**（1 つの問いに答える腕の組）を指す。ジョブをまとめて投入した単位ではない。
 同じ run（campaign）が複数の実験に現れることがある（例: leak 比較の対照腕は予測専用比較の対照でもある）。
@@ -19,19 +19,19 @@ tagr（鬼ごっこ、距離観測、1293）、tagre（楕円距離、環境 64�
 | 5 | t = 0 の尺度不一致を直せば良くなるか（prior / noanchor / flat） | [05-t0-scale.md](05-t0-scale.md) | mirror2 / tps / tagr | 完走 |
 | 6 | PF 基準線の観測適合度を非線形にすると（v1 / v2 / v3 / v3b） | [06-pf-observation-function.md](06-pf-observation-function.md) | mirror2 / tps / tagr | 完走 |
 | 7 | 凸な α-vector 型読み出しは TF 読み出しに勝つか | [07-alpha-readout.md](07-alpha-readout.md) | tagr（mirror2 / tps 待ち） | tagr 完走 |
-| 8 | 最適化器を TD3 にすると（PPO vs TD3） | [08-optimizer-td3.md](08-optimizer-td3.md) | mirror2 / tps | 一部完走、残り待ち |
-| 9 | 表現の次元を GRU に合わせると（K × D = 隠れ次元） | [09-representation-size.md](09-representation-size.md) | mirror2 / tagr | 走行中 |
-| 10 | 楕円距離観測（能動的センシング）で信念は効くか | [10-tagre-elliptic.md](10-tagre-elliptic.md) | tagre | 走行中（FLOPs 未一致） |
-| 11 | 画像観測（Minecraft）で動くか | [11-minecraft.md](11-minecraft.md) | MineRL | 走行中 |
-| 12 | 現在観測を方策に直結すると差は埋まるか（leak 2 × 3） | [12-obs-leak.md](12-obs-leak.md) | tagr / mirror2 | 投入済み（seed 10〜11 優先） |
-| 13 | 表現を予測だけで学び PPO から切ると（prediction_only） | [13-prediction-only.md](13-prediction-only.md) | tagr / mirror2 | 投入済み（seed 10〜11 優先） |
+| 8 | 最適化器を TD3 にすると（PPO vs TD3） | [08-optimizer-td3.md](08-optimizer-td3.md) | mirror2 / tps | 完走 |
+| 9 | 表現の次元を GRU に合わせると（K × D = 隠れ次元） | [09-representation-size.md](09-representation-size.md) | mirror2 / tagr | 完走 |
+| 10 | 楕円距離観測（能動的センシング）で信念は効くか | [10-tagre-elliptic.md](10-tagre-elliptic.md) | tagre | 2 seed 完走（FLOPs 未一致に注意） |
+| 11 | 画像観測（Minecraft）で動くか | [11-minecraft.md](11-minecraft.md) | MineRL | ほぼ完走 |
+| 12 | 現在観測を方策に直結すると差は埋まるか（leak 2 × 3） | [12-obs-leak.md](12-obs-leak.md) | tagr / mirror2 | seed 10〜11 完走、12〜14 待ち |
+| 13 | 表現を予測だけで学び PPO から切ると（prediction_only） | [13-prediction-only.md](13-prediction-only.md) | tagr / mirror2 | seed 10〜11 完走、12〜14 待ち |
 | 14 | 世界モデル（Dreamer）は同じ課題でどうか | [14-dreamer.md](14-dreamer.md) | tagr / mirror2 | 実装予定 |
 
 補助: [analyses.md](analyses.md) — 学習を伴わない検証解析（復号、記憶切断、段数診断、Codex 監査）の一覧。
 
 ## 共通の結果ファイル
 
-- 全 run の最新評価: [results_summary_1107.md](../results/reports/codex_why_2026-11-07/results_summary_1107.md)
+- 全 run の最新評価: [results_summary_1109.md](../results/reports/summary_2026-11-09/results_summary_1109.md)（旧版 [1107](../results/reports/codex_why_2026-11-07/results_summary_1107.md)）
 - 信念ビューア（粒子・復号・run 横断表）: https://claude.ai/artifact/9DeCqi4xsok7n1VCPY5Rf3
 - 中間報告 PDF: [2026-11-02](../results/reports/trysvgd_interim_20261102.pdf)、[2026-11-05](../results/reports/trysvgd_interim_20261105.pdf)
 
