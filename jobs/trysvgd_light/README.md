@@ -48,14 +48,16 @@ The uniform start (campaigns `trysvgdlight-<task>-tf-svgd-uniform-init-v1`, conf
 maps the stored standard-normal noise through the normal CDF, so the PPO replay reproduces the same chain start
 from the same stored noise; the initial (anchored) rows are unchanged, as in the other three arms.
 
-## Particle count (2026-11-10): tf-svgd-k64 / tf-svgd-k256
+## Particle count (2026-11-10): tf-svgd-k64 / tf-svgd-k256 / tf-svgd-k1024
 
-Plain light TF-SVGD with `model.num_particles` 16 -> 64 / 256 and nothing else changed (latent dimension stays the
-state dimension; compute is not matched, the transition pairs and the attention grow with K^2).  Configs
-`config/trysvgdlight_<task>_tf-svgd-k{64,256}.json`, campaigns `trysvgdlight-<task>-tf-svgd-k{64,256}-v1`, jobs
-`trysvgdlight_<task>_svgd-k{64,256}_s{10..14}.sh` for mirror2 (333), tps (213), tagr (1293) and carflag (333).
-Measured on math (shared GPU, mirror2): one update 30-37 s at K = 64, 45-48 s at K = 128, 86-103 s at K = 256
-(K = 16 under the same load: 35-49 s); peak GPU memory 0.3 / 0.4 / 0.7 GB.  Experiment 15.
+Plain light TF-SVGD with `model.num_particles` 16 -> 64 / 256 / 1024 and nothing else changed (latent dimension
+stays the state dimension; compute is not matched, the transition pairs and the attention grow with K^2).  Configs
+`config/trysvgdlight_<task>_tf-svgd-k{64,256,1024}.json`, campaigns `trysvgdlight-<task>-tf-svgd-k{64,256,1024}-v1`,
+jobs `trysvgdlight_<task>_svgd-k{64,256,1024}_s{10..14}.sh` for mirror2 (333), tps (213), tagr (1293) and carflag (333).
+Measured on math (shared GPU, mirror2): one update 30-37 s at K = 64, 45-48 s at K = 128, 86-103 s at K = 256 and
+840-870 s at K = 1024 (K = 16 under the same load: 35-49 s); peak GPU memory 0.3 / 0.4 / 0.7 / 7.0 GB.  The tagr
+K = 1024 runs (about 310 h each) are started only once the math queue and all GPUs are idle, one run per GPU.
+Experiment 15.
 
 ### Car-Flag (2026-11-10): a fourth task for the chain-start comparison
 
