@@ -225,6 +225,12 @@ _MODEL_KEYS = frozenset(
         "smi_component_scale",
         "belief_latent_dim",
         "score_parameterization",
+        "score_curl_penalty",
+        "score_curl_samples",
+        "score_curl_estimator",
+        "score_curl_probes",
+        "score_curl_schedule",
+        "score_curl_monitor",
         "direct_score_bound",
         "initial_score_prior",
         "belief_activation_checkpoint",
@@ -401,6 +407,12 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         "belief_latent_dim": None,
         # The score was always the autograd gradient of the learned scalar potential.
         "score_parameterization": "energy",
+        "score_curl_penalty": 0.0,
+        "score_curl_samples": 8,
+        "score_curl_estimator": "auto",
+        "score_curl_probes": 4,
+        "score_curl_schedule": "constant",
+        "score_curl_monitor": False,
         "direct_score_bound": 10.0,
         # Weight of the N(0, I) prior term in the t = 0 score (g(o, x) - p x; energy: - p |x|^2 / 2).
         # Every earlier run used 1.0; 0.0 removes the restoring term.  direct_score_bound null
@@ -936,6 +948,19 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
     _positive_number(section["smi_component_scale"], "model.smi_component_scale")
     if section["score_parameterization"] not in {"energy", "direct", "direct_joint", "direct_flat"}:
         raise ConfigError("model.score_parameterization must be energy, direct, direct_joint or direct_flat")
+    curl_penalty = section["score_curl_penalty"]
+    if (isinstance(curl_penalty, bool) or not isinstance(curl_penalty, (int, float))
+            or not math.isfinite(curl_penalty) or curl_penalty < 0):
+        raise ConfigError("model.score_curl_penalty must be a finite non-negative number")
+    for key in ("score_curl_samples", "score_curl_probes"):
+        _integer(section[key], f"model.{key}")
+    if section["score_curl_estimator"] not in {"auto", "exact", "hutchinson"}:
+        raise ConfigError("model.score_curl_estimator must be auto, exact or hutchinson")
+    if section["score_curl_schedule"] not in {"constant", "ramp"}:
+        raise ConfigError("model.score_curl_schedule must be constant or ramp")
+    _boolean(section["score_curl_monitor"], "model.score_curl_monitor")
+    if (curl_penalty > 0 or section["score_curl_monitor"]) and section["score_parameterization"] == "energy":
+        raise ConfigError("score curl penalty/monitor requires a direct score parameterization")
     bound = section["direct_score_bound"]
     if isinstance(bound, str):
         if bound != "log":
@@ -1403,6 +1428,8 @@ def validate_config(config: Mapping[str, Any]) -> None:
     _validate_environment(root["environment"], experiment["tasks"])
     model = _validate_model(root["model"])
     ppo = _validate_ppo(root["ppo"])
+    if (model["score_curl_penalty"] > 0 or model["score_curl_monitor"]) and ppo["algorithm"] == "td3":
+        raise ConfigError("score curl penalty/monitor currently requires PPO, not TD3")
     if (ppo["self_imitation"]["enabled"] or ppo["critic_warmup_updates"]) and model["critic_kind"] != "state":
         raise ConfigError("self-imitation and critic warmup currently require model.critic_kind=state")
     if ppo["algorithm"] == "td3" and any(

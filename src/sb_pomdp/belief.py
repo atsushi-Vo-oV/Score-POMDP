@@ -1076,6 +1076,7 @@ class EnergyBelief(nn.Module):
         temporal_gradient_mode: TemporalGradientMode = "full",
         potential_branch: PotentialBranch | None = None,
         need_scores: bool = True,
+        stop_before_step: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Replay one reparameterized ULA belief update from explicit noise.
 
@@ -1122,6 +1123,9 @@ class EnergyBelief(nn.Module):
                 raise ValueError(f"{name} must share observation dtype and device")
 
         num_steps = int(langevin_noise.shape[1])
+        if stop_before_step is not None:
+            if track_grad or not 0 <= stop_before_step < num_steps:
+                raise ValueError("stop_before_step requires detached replay and a stage in 0..L-1")
         steps = _langevin_step_sizes(num_steps, step_size)
         incoming_particles = (
             previous_particles.detach()
@@ -1236,6 +1240,10 @@ class EnergyBelief(nn.Module):
                       increments, tuple(steps), step_alphas, step_temperatures, step_betas,
                       potential_branch, track_grad, need_scores)
         with torch.set_grad_enabled(track_grad):
+            if stop_before_step is not None:
+                # Auxiliary curl replay never enters compilation/CUDA Graph capture.
+                # Keep the full schedule when replaying a prefix of the transport.
+                return self._transport_chain(*chain_args, stop_before_step=stop_before_step)
             if self.belief_compile == "inductor" and not self._compile_unavailable:
                 def tensor_signature(value: torch.Tensor | None) -> tuple | None:
                     if value is None:
@@ -1333,6 +1341,7 @@ class EnergyBelief(nn.Module):
         increments: torch.Tensor, steps: tuple[float, ...], step_alphas: torch.Tensor | None,
         step_temperatures: torch.Tensor | None, step_betas: torch.Tensor | None,
         potential_branch: PotentialBranch, track_grad: bool, need_scores: bool,
+        *, stop_before_step: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         log_scales = (
             torch.full_like(particles, math.log(self.smi_component_scale))
@@ -1340,6 +1349,8 @@ class EnergyBelief(nn.Module):
             else None
         )
         for step_index, alpha in enumerate(steps):
+            if step_index == stop_before_step:
+                return particles.detach(), None
             alpha_value = alpha if step_alphas is None else step_alphas[step_index]
             if self.particle_sampler != "ula":
                 particles, log_scales = self._stein_step(

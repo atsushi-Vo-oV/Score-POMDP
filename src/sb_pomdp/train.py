@@ -40,6 +40,7 @@ from .networks import AlphaPoolBeliefEncoder, NetworkKinds, use_network_kinds
 from .policies import ScoreBeliefActorCritic
 from .ppo import control_conditions, encode_conditions, update_ppo, value_from_conditions
 from .prediction_schedule import PredictionSchedule, random_actions
+from .score_curl import curl_coefficient, curl_enabled, curl_metric_fields
 from .self_imitation import SIL_METRIC_FIELDS, SelfImitationBuffer, sil_config, update_self_imitation
 from .value_transform import ValueTransform
 
@@ -1848,7 +1849,8 @@ def train_single(
     model_config = resolved["model"]
     ppo_config = resolved["ppo"]
     imitation_config = sil_config(ppo_config)
-    metric_fields = METRIC_FIELDS + (SIL_METRIC_FIELDS if imitation_config["enabled"] else ())
+    metric_fields = (METRIC_FIELDS + (SIL_METRIC_FIELDS if imitation_config["enabled"] else ())
+                     + curl_metric_fields(model_config))
     device = resolve_device(experiment_config["device"])
     seed_everything(seed, bool(experiment_config["deterministic"]))
     configure_logging(artifacts.path / "run.log", verbose=verbose)
@@ -2449,6 +2451,15 @@ def train_single(
             total_updates=total_updates,
             device=device,
         )
+        curl_kwargs = {}
+        if curl_enabled(model_config):
+            curl_kwargs = {
+                "score_curl_coef": curl_coefficient(
+                    model_config, ppo_updates=prediction_schedule.ppo_updates_done(update),
+                    total_ppo_updates=prediction_schedule.ppo_updates,
+                ),
+                "score_curl_seed": seed, "score_curl_update": update,
+            }
         ppo_metrics = update_ppo(
             model,
             optimizer,
@@ -2456,6 +2467,7 @@ def train_single(
             model_config,
             ppo_config,
             objective=phase if phase in {"ppo", "critic"} else "prediction",
+            **curl_kwargs,
         )
         imitation_metrics = None
         if imitation is not None:
@@ -2556,6 +2568,8 @@ def train_single(
         }
         if imitation_metrics is not None:
             row.update(imitation_metrics)
+        for field in curl_metric_fields(model_config):
+            row[field] = getattr(ppo_metrics, field)
         metric_rows.append(row)
         artifacts.append_metrics(row, metric_fields)
         if update % int(experiment_config["log_interval_updates"]) == 0:

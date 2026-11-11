@@ -27,6 +27,7 @@ tagr（鬼ごっこ、距離観測、1293）、tagre（楕円距離、環境 64�
 | 18 | 学習量を伸ばすと抜けるか（Car-Flag の PPO 2000 update） | [18-training-budget.md](18-training-budget.md) | Car-Flag | 投入済み（2026-11-11） |
 | 19 | スコア網・方策 / 価値ヘッドを KAN にすると | [19-kan.md](19-kan.md) | mirror2 / tagr | 投入済み（2026-11-12） |
 | 20 | BC 初期化 actor から PPO を再開すると保てるか / self-imitation（SIL） | [20-bc-resume-sil.md](20-bc-resume-sil.md) | tagr / Car-Flag | BC 再開 6 本投入（2026-11-12）、SIL は準備済み |
+| 21 | light の curl を一定 / 増加罰則で抑えると（素の light・GRU と比較） | [21-curl-penalty.md](21-curl-penalty.md) | mirror2 / tagr | 実装・CPU 検証・設定 10 個・ジョブ 50 本を準備、未投入（2026-11-12） |
 | 10 | 楕円距離観測（能動的センシング）で信念は効くか | [10-tagre-elliptic.md](10-tagre-elliptic.md) | tagre | 2 seed 完走（FLOPs 未一致に注意） |
 | 11 | 画像観測（Minecraft）で動くか | [11-minecraft.md](11-minecraft.md) | MineRL | ほぼ完走 |
 | 12 | 現在観測を方策に直結すると差は埋まるか（leak 2 × 3） | [12-obs-leak.md](12-obs-leak.md) | tagr / mirror2 | seed 10〜11 完走、12〜14 待ち |

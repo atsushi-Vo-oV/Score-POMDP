@@ -13,8 +13,14 @@ def source_digest():
     return digest.hexdigest()
 
 
+def reject_score_curl(model):
+    if model.get("score_curl_penalty", 0.0) > 0 or model.get("score_curl_monitor", False):
+        raise ConfigError("seedbatch does not support score_curl_penalty or score_curl_monitor")
+
+
 def validate(config):
     model, ppo = config["model"], config["ppo"]
+    reject_score_curl(model)
     required = {
         "score_parameterization": {"direct"},
         "particle_sampler": {"svgd", "ula"},

@@ -21,6 +21,7 @@ from ..ppo import (
 )
 from ..value_transform import ValueTransform
 from .attention import use_batched_attention
+from .validation import reject_score_curl
 
 
 @contextmanager
@@ -184,6 +185,7 @@ def replay_inputs(rollouts, selections, normalized_advantages):
 
 class SeedBatchBackend:
     def __init__(self, models, optimizers, model_config, ppo_config):
+        reject_score_curl(model_config)
         self.models, self.optimizers = models, optimizers
         self.model_config, self.ppo_config = model_config, ppo_config
         wrappers = [FunctionalModel(m, model_config, ppo_config) for m in models]

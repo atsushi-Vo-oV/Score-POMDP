@@ -13,6 +13,7 @@ from torch.utils.checkpoint import checkpoint
 from .belief import EnergyBelief, PotentialBranch
 from .buffer import RolloutBatch
 from .policies import ScoreBeliefActorCritic
+from .score_curl import CurlReplaySamples, curl_enabled, curl_generator
 from .value_transform import ValueTransform
 
 LOGGER = logging.getLogger("sb_pomdp")
@@ -50,6 +51,9 @@ class PPOMetrics:
     initial_energy_gradient_norm: float
     observation_energy_gradient_norm: float
     transition_energy_gradient_norm: float
+    score_curl_loss: float = 0.0
+    score_curl_ratio: float = 0.0
+    score_curl_coef: float = 0.0
 
 
 def _module_gradient_norm(
@@ -338,6 +342,7 @@ def replay_belief_sequence(
     rollout: RolloutBatch,
     environment_indices: torch.Tensor,
     model_config: dict,
+    *, curl_samples: CurlReplaySamples | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Replay one rollout-long environment group with saved ULA randomness.
 
@@ -414,6 +419,17 @@ def replay_belief_sequence(
                 continue
             active_indices = environment_indices.new_tensor(active)
             active_prefixes = [selected_prefixes[i] for i in active]
+            if curl_samples is not None:
+                curl_samples.capture(
+                    [selected_environment_indices[i] for i in active],
+                    [prefix_index - prefix.length for prefix in active_prefixes],
+                    torch.stack([prefix.observations[prefix_index] for prefix in active_prefixes]),
+                    previous_particles.index_select(0, active_indices),
+                    torch.stack([prefix.previous_actions[prefix_index] for prefix in active_prefixes]),
+                    torch.stack([prefix.initial[prefix_index] for prefix in active_prefixes]),
+                    torch.stack([prefix.ula_initial_noise[prefix_index] for prefix in active_prefixes]),
+                    torch.stack([prefix.ula_step_noises[prefix_index] for prefix in active_prefixes]),
+                )
             updated, _ = _replay_belief_step(
                 model,
                 torch.stack([prefix.observations[prefix_index] for prefix in active_prefixes]),
@@ -440,6 +456,12 @@ def replay_belief_sequence(
                 reset,
                 torch.zeros_like(previous_particles),
                 previous_particles,
+            )
+        if curl_samples is not None:
+            curl_samples.capture(
+                selected_environment_indices, [time_index] * len(selected_environment_indices),
+                observations[time_index], previous_particles, previous_actions[time_index],
+                episode_starts[time_index], initial_noises[time_index], step_noises[time_index],
             )
         particles, scores = _replay_belief_step(
             model,
@@ -712,6 +734,9 @@ def update_ppo(
     *,
     generator: torch.Generator | None = None,
     objective: str = "ppo",
+    score_curl_coef: float | None = None,
+    score_curl_seed: int = 0,
+    score_curl_update: int = 0,
 ) -> PPOMetrics:
     """Update all model components through ULA and the recurrent belief.
 
@@ -730,6 +755,21 @@ def update_ppo(
         raise ValueError("objective must be ppo, prediction or critic")
     if objective == "prediction" and getattr(model, "prediction_predictor", None) is None:
         raise ValueError("the prediction objective needs model.prediction_predictor")
+    use_curl = curl_enabled(model_config)
+    if use_curl and (
+        not isinstance(model.belief, EnergyBelief)
+        or model.belief.score_parameterization == "energy"
+    ):
+        raise ValueError("score curl requires a direct score belief (not energy or PF)")
+    if use_curl and score_curl_coef is None and model_config.get("score_curl_schedule") == "ramp":
+        raise ValueError("ramp curl requires score_curl_coef from the PPO progress schedule")
+    curl_coef = (
+        float(model_config.get("score_curl_penalty", 0.0))
+        if score_curl_coef is None else float(score_curl_coef)
+    )
+    if objective == "critic":
+        curl_coef = 0.0
+    curl_rng = curl_generator(score_curl_seed, score_curl_update) if use_curl else None
     rollout_steps, num_environments = rollout.rollout_shape
     configured_minibatch_size = int(ppo_config["minibatch_size"])
     sequence_microbatch_size = int(
@@ -780,6 +820,8 @@ def update_ppo(
         "transition_energy_gradient_norm": 0.0,
     }
     batches = 0
+    if use_curl:
+        totals.update(score_curl_loss=0.0, score_curl_ratio=0.0, score_curl_coef=0.0)
     skipped_minibatches = 0
 
     for _ in range(int(ppo_config["epochs"])):
@@ -799,6 +841,10 @@ def update_ppo(
                 "clip_fraction": 0.0,
             }
             optimizer.zero_grad(set_to_none=True)
+            curl_samples = (
+                CurlReplaySamples(rollout, minibatch_indices, model_config, curl_rng)
+                if use_curl else None
+            )
 
             # Environment trajectories are independent.  Splitting only this
             # dimension lowers peak memory without truncating time or changing
@@ -808,11 +854,13 @@ def update_ppo(
                     micro_start : micro_start + environments_per_microbatch
                 ]
                 microbatch_weight = int(environment_indices.numel()) / minibatch_environments
+                replay_kwargs = {} if curl_samples is None else {"curl_samples": curl_samples}
                 particles, scores = replay_belief_sequence(
                     model,
                     rollout,
                     environment_indices,
                     model_config,
+                    **replay_kwargs,
                 )
                 condition, value_condition = encode_conditions(
                     model,
@@ -949,6 +997,16 @@ def update_ppo(
                     total_loss,
                     microbatch_values,
                 )
+
+            if curl_samples is not None:
+                curl_loss, curl_ratio = curl_samples.evaluate(model.belief, create_graph=curl_coef > 0)
+                if curl_coef > 0 and curl_loss.requires_grad:
+                    (curl_coef * curl_loss).backward()
+                minibatch_metrics.update(
+                    score_curl_loss=float(curl_loss.detach()),
+                    score_curl_ratio=float(curl_ratio), score_curl_coef=curl_coef,
+                )
+                del curl_loss, curl_ratio, curl_samples
 
             energy_gradient_norms = {
                 "initial_energy_gradient_norm": _module_gradient_norm(
