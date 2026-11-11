@@ -21,7 +21,7 @@ from typing import Any, Literal
 import numpy as np
 import torch
 
-Phase = Literal["pretrain", "predict", "ppo"]
+Phase = Literal["pretrain", "predict", "critic", "ppo"]
 
 
 @dataclass(frozen=True)
@@ -30,15 +30,17 @@ class PredictionSchedule:
     interval_updates: int
     phase_updates: int
     ppo_updates: int
+    critic_warmup_updates: int = 0
 
     @classmethod
-    def from_config(cls, model_config: Mapping[str, Any], *, rollout_batch_size: int, ppo_updates: int) -> PredictionSchedule:
+    def from_config(cls, model_config: Mapping[str, Any], *, rollout_batch_size: int, ppo_updates: int, critic_warmup_updates: int = 0) -> PredictionSchedule:
         pretrain_steps = int(model_config.get("prediction_pretrain_steps", 0))
         return cls(
             pretrain_updates=math.ceil(pretrain_steps / rollout_batch_size) if pretrain_steps > 0 else 0,
             interval_updates=int(model_config.get("prediction_interval_updates", 0)),
             phase_updates=int(model_config.get("prediction_phase_updates", 0)),
             ppo_updates=int(ppo_updates),
+            critic_warmup_updates=int(critic_warmup_updates),
         )
 
     @property
@@ -55,7 +57,7 @@ class PredictionSchedule:
 
     @property
     def total_updates(self) -> int:
-        return self.pretrain_updates + self.ppo_updates + self.interleaved_phases * self.phase_updates
+        return self.pretrain_updates + self.critic_warmup_updates + self.ppo_updates + self.interleaved_phases * self.phase_updates
 
     def phase(self, update: int) -> Phase:
         """Phase of the 1-based ``update``."""
@@ -65,6 +67,9 @@ class PredictionSchedule:
         index = update - 1 - self.pretrain_updates
         if index < 0:
             return "pretrain"
+        if index < self.critic_warmup_updates:
+            return "critic"
+        index -= self.critic_warmup_updates
         if self.interleaved_phases == 0:
             return "ppo"
         block = self.interval_updates + self.phase_updates

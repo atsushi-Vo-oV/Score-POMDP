@@ -309,6 +309,7 @@ def _configured_updates(config: ExperimentConfig) -> int:
         config["model"],
         rollout_batch_size=rollout_batch_size,
         ppo_updates=math.ceil(int(ppo_config["total_steps"]) / rollout_batch_size),
+        critic_warmup_updates=int(ppo_config.get("critic_warmup_updates", 0)),
     ).total_updates
 
 

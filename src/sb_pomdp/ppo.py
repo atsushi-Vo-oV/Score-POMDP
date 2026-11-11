@@ -726,8 +726,8 @@ def update_ppo(
     time steps would sever the recurrent gradient.
     """
 
-    if objective not in {"ppo", "prediction"}:
-        raise ValueError("objective must be ppo or prediction")
+    if objective not in {"ppo", "prediction", "critic"}:
+        raise ValueError("objective must be ppo, prediction or critic")
     if objective == "prediction" and getattr(model, "prediction_predictor", None) is None:
         raise ValueError("the prediction objective needs model.prediction_predictor")
     rollout_steps, num_environments = rollout.rollout_shape
@@ -827,6 +827,18 @@ def update_ppo(
                     value_condition,
                     _time_environment_flatten(rollout.observations[:, environment_indices]),
                 )
+                if objective == "critic":
+                    # Warm-up trains ONLY V: no actor, encoder, belief or auxiliary
+                    # gradients (nor Adam/AdamW steps on their parameters).
+                    if getattr(model, "action_value_head", None) is not None:
+                        raise ValueError("critic warmup requires a state-value head")
+                    new_values = model.value(value_input.detach())
+                    returns = _time_environment_flatten(rollout.returns[:, environment_indices])
+                    value_loss = 0.5 * (new_values - value_transform.to_target(returns)).square().mean()
+                    (float(ppo_config["value_coef"]) * value_loss * microbatch_weight).backward()
+                    minibatch_metrics["value_loss"] += float(value_loss.detach()) * microbatch_weight
+                    del particles, scores, condition, value_condition, new_values, returns, value_loss
+                    continue
                 prediction_only = (
                     str(model_config.get("belief_training", "joint")) == "prediction_only"
                 )

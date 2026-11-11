@@ -35,10 +35,12 @@ from .config import (
     resume_comparable_config,
 )
 from .envs import ActionSpec, make_env
+from .initialization import initialize_model
 from .networks import AlphaPoolBeliefEncoder, NetworkKinds, use_network_kinds
 from .policies import ScoreBeliefActorCritic
 from .ppo import control_conditions, encode_conditions, update_ppo, value_from_conditions
 from .prediction_schedule import PredictionSchedule, random_actions
+from .self_imitation import SIL_METRIC_FIELDS, SelfImitationBuffer, sil_config, update_self_imitation
 from .value_transform import ValueTransform
 
 LOGGER = logging.getLogger("sb_pomdp")
@@ -778,16 +780,16 @@ def build_optimizer(
         raise ValueError("weight_decay must be non-negative")
     schedule_names = set(langevin_schedule_parameter_names(model))
     if weight_decay == 0.0 and (multiplier == 1.0 or not schedule_names):
-        return torch.optim.Adam(model.parameters(), lr=learning_rate, eps=1e-5)
+        return torch.optim.Adam((p for p in model.parameters() if p.requires_grad), lr=learning_rate, eps=1e-5)
     main_parameters = [
         parameter
         for name, parameter in model.named_parameters()
-        if name not in schedule_names
+        if name not in schedule_names and parameter.requires_grad
     ]
     schedule_parameters = [
         parameter
         for name, parameter in model.named_parameters()
-        if name in schedule_names
+        if name in schedule_names and parameter.requires_grad
     ]
     groups: list[dict[str, Any]] = [{"params": main_parameters, "weight_decay": weight_decay}]
     if schedule_parameters:
@@ -811,6 +813,7 @@ def _policy_from_particles(
     deterministic: bool,
     generator: torch.Generator | None = None,
     observation: torch.Tensor | None = None,
+    condition_sink: list | None = None,
 ) -> tuple[
     torch.Tensor,
     torch.Tensor,
@@ -823,6 +826,8 @@ def _policy_from_particles(
 
     condition, value_condition = encode_conditions(model, particles, scores)
     condition, value_condition = control_conditions(model, condition, value_condition, observation)
+    if condition_sink is not None:
+        condition_sink.append((condition.detach(), value_condition.detach()))
     sample = model.sample_policy(
         condition,
         deterministic=deterministic,
@@ -1290,6 +1295,7 @@ def _restore_trainer_state(
     rollout_batch_size: int,
     model_config: dict[str, Any],
     device: torch.device,
+    metric_fields: tuple[str, ...] = METRIC_FIELDS,
 ) -> tuple[
     BeliefContext,
     list[BeliefReplayHistory],
@@ -1417,7 +1423,7 @@ def _restore_trainer_state(
         raise ValueError("checkpoint metric_rows count does not match its update")
     metric_rows: list[dict[str, Any]] = []
     for row_index, raw_row in enumerate(raw_metric_rows, start=1):
-        if not isinstance(raw_row, Mapping) or set(raw_row) != set(METRIC_FIELDS):
+        if not isinstance(raw_row, Mapping) or set(raw_row) != set(metric_fields):
             raise ValueError(f"checkpoint metric row {row_index} has invalid fields")
         row = dict(raw_row)
         if row["update"] != row_index or row["global_step"] != row_index * rollout_batch_size:
@@ -1841,6 +1847,8 @@ def train_single(
     environment_config = {"name": task, **config.environment_for_task(task)}
     model_config = resolved["model"]
     ppo_config = resolved["ppo"]
+    imitation_config = sil_config(ppo_config)
+    metric_fields = METRIC_FIELDS + (SIL_METRIC_FIELDS if imitation_config["enabled"] else ())
     device = resolve_device(experiment_config["device"])
     seed_everything(seed, bool(experiment_config["deterministic"]))
     configure_logging(artifacts.path / "run.log", verbose=verbose)
@@ -1850,6 +1858,7 @@ def train_single(
         model_config,
         rollout_batch_size=rollout_batch_size,
         ppo_updates=math.ceil(int(ppo_config["total_steps"]) / rollout_batch_size),
+        critic_warmup_updates=int(ppo_config.get("critic_warmup_updates", 0)),
     )
     configured_updates = prediction_schedule.total_updates
     bootstrap_on_truncation = bool(ppo_config["bootstrap_on_truncation"])
@@ -1905,7 +1914,16 @@ def train_single(
     batch = SyncEnvironmentBatch(environments)
     first_environment = environments[0]
     model = model_for_environment(first_environment, model_config, device)
+    initialize_model(model, model_config, resume=checkpoint is not None)
     optimizer = build_optimizer(model, ppo_config)
+    imitation = (
+        SelfImitationBuffer(int(imitation_config["buffer_size"]), batch.size, float(ppo_config["gamma"]))
+        if imitation_config["enabled"] else None
+    )
+    if imitation is not None and checkpoint is not None:
+        if "self_imitation" not in checkpoint:
+            raise ValueError("enabled self-imitation requires replay state in the resume checkpoint")
+        imitation.load_state_dict(checkpoint["self_imitation"])
     parameter_count = sum(parameter.numel() for parameter in model.parameters())
     LOGGER.info("Model parameters: %d", parameter_count)
 
@@ -1964,6 +1982,7 @@ def train_single(
                 rollout_batch_size=rollout_batch_size,
                 model_config=model_config,
                 device=device,
+                metric_fields=metric_fields,
             )
         except (TypeError, ValueError) as exc:
             # Rejected state (non-finite beliefs above all) stays fail-fast, but
@@ -1986,7 +2005,7 @@ def train_single(
             global_step=start_update * rollout_batch_size,
         )
         if not artifacts.metrics_path.exists() or artifacts.metrics_path.stat().st_size == 0:
-            artifacts.csv_appender(METRIC_FIELDS).append_many(metric_rows)
+            artifacts.csv_appender(metric_fields).append_many(metric_rows)
     algorithm = str(ppo_config.get("algorithm", "ppo"))
     p3o_mode = algorithm == "p3o_wml"
     p3o_eta = float(ppo_config.get("p3o_eta", 1.0))
@@ -2025,7 +2044,7 @@ def train_single(
             latest_evaluation=latest_evaluation,
             wall_time_seconds=wall_time_seconds,
         )
-        return _checkpoint_payload(
+        payload = _checkpoint_payload(
             model,
             optimizer,
             task=task,
@@ -2036,6 +2055,9 @@ def train_single(
             trainer_state=trainer_state,
             method=method,
         )
+        if imitation is not None:
+            payload["self_imitation"] = imitation.state_dict()
+        return payload
 
     for update in range(start_update + 1, total_updates + 1):
         update_started = time.perf_counter()
@@ -2094,6 +2116,7 @@ def train_single(
         model.eval()
 
         for rollout_index in range(int(ppo_config["rollout_steps"])):
+            condition_sink = [] if imitation is not None and phase != "pretrain" else None
             # Diagnostics describe the belief sampled for the current input,
             # before ``_next_context`` advances/reset the vector environments.
             belief_initial = context.initial.detach()
@@ -2108,7 +2131,8 @@ def train_single(
                 pre_tanh_action,
                 old_value,
             ) = _policy_from_particles(
-                model, particles, scores, deterministic=False, observation=context.observation
+                model, particles, scores, deterministic=False, observation=context.observation,
+                **({"condition_sink": condition_sink} if condition_sink is not None else {}),
             )
             if phase == "pretrain":
                 # The pretraining block explores with uniformly random actions; the policy
@@ -2160,6 +2184,12 @@ def train_single(
                 truncation_bootstrap_sum += float(truncation_values.sum().cpu())
                 truncation_bootstrap_count += len(truncated_step_indices(step_infos))
 
+            if condition_sink is not None:
+                imitation.observe(
+                    *condition_sink[0], action, reward_tensor, done_tensor,
+                    chains=diffusion_chain, pre_tanh=pre_tanh_action,
+                    bootstrap=truncation_values,
+                )
             builder.append(
                 observations=context.observation,
                 previous_particles=context.previous_particles,
@@ -2425,9 +2455,16 @@ def train_single(
             rollout,
             model_config,
             ppo_config,
-            objective="ppo" if phase == "ppo" else "prediction",
+            objective=phase if phase in {"ppo", "critic"} else "prediction",
         )
-        if phase != "ppo":
+        imitation_metrics = None
+        if imitation is not None:
+            imitation_metrics = (
+                update_self_imitation(model, optimizer, imitation, ppo_config)
+                if phase == "ppo" else {name: 0.0 for name in SIL_METRIC_FIELDS}
+            )
+            imitation_metrics["sil_buffer_size"] = float(imitation.size)
+        if phase not in {"ppo", "critic"}:
             LOGGER.info(
                 "prediction phase=%s update=%d next_observation_nll=%.4f",
                 phase,
@@ -2517,8 +2554,10 @@ def train_single(
             ),
             "steps_per_second": rollout_batch_size / duration,
         }
+        if imitation_metrics is not None:
+            row.update(imitation_metrics)
         metric_rows.append(row)
-        artifacts.append_metrics(row, METRIC_FIELDS)
+        artifacts.append_metrics(row, metric_fields)
         if update % int(experiment_config["log_interval_updates"]) == 0:
             LOGGER.info(
                 "update=%d/%d step=%d policy=%.4f value=%.4f return=%s fps=%.1f",
@@ -2616,7 +2655,7 @@ def train_single(
                 save_checkpoint(payload, artifacts.checkpoint_path(step=global_step))
             save_checkpoint(payload, artifacts.checkpoint_path(tag="latest"))
 
-    numeric_fields = [field for field in METRIC_FIELDS if field not in {"update", "global_step"}]
+    numeric_fields = [field for field in metric_fields if field not in {"update", "global_step"}]
     arrays: dict[str, np.ndarray] = {
         "update": np.asarray([row["update"] for row in metric_rows], dtype=np.int64),
         "global_step": np.asarray([row["global_step"] for row in metric_rows], dtype=np.int64),

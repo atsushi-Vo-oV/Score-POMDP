@@ -49,13 +49,20 @@ if (( ${#CAMPAIGN_ID} > 128 )) || \
   exit 2
 fi
 SHARD_TAG=$(printf '%03d' "$((10#$SHARD_INDEX))")
+# Single-seed initialization configs still need distinct campaign shard roots.
+# Default unchanged: the shard index is also the configuration selection index.
+BULK_INDEX="${SB_POMDP_BULK_INDEX:-$SHARD_INDEX}"
+if [[ ! "$BULK_INDEX" =~ ^[1-9][0-9]{0,2}$ ]] || (( 10#$BULK_INDEX > EXPECTED_PRODUCTION_SHARDS )); then
+  echo "SB_POMDP_BULK_INDEX must be in 1-${EXPECTED_PRODUCTION_SHARDS}." >&2
+  exit 2
+fi
 SEGMENT_UPDATES="${SB_POMDP_SEGMENT_UPDATES:-}"
 
 # One independent gradient-mode/method/task/seed shard per normal job.
 # Independent result roots avoid concurrent writes to one manifest or CSV.
 COMMON_ARGUMENTS=(
   --config "$CONFIG_PATH"
-  --bulk-index "$SHARD_INDEX"
+  --bulk-index "$BULK_INDEX"
   --campaign-id "$CAMPAIGN_ID"
   --override "experiment.output_dir=results/campaigns/$CAMPAIGN_ID"
   --label "genkai-${CAMPAIGN_ID}-shard${SHARD_TAG}"

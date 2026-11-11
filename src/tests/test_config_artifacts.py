@@ -26,6 +26,13 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # the post-campaign keys the normalizer fills in, at the values that reproduce the
 # campaign's behaviour exactly.
 _LEGACY_PPO_DEFAULTS: dict[str, object] = {
+    "critic_warmup_updates": 0,
+    "self_imitation": {
+        "enabled": False, "buffer_size": 100_000, "batch_size": 512,
+        "updates_per_ppo": 4, "policy_coef": 0.1, "value_coef": 0.01,
+        "priority_exponent": 0.6, "min_advantage": 0.0,
+        "weighting": "relu", "temperature": 1.0, "max_weight": 20.0,
+    },
     "bootstrap_on_truncation": False,
     "value_target_transform": "none",
     "langevin_schedule_lr_multiplier": 1.0,
@@ -47,6 +54,10 @@ _LEGACY_PPO_DEFAULTS: dict[str, object] = {
     "td3_critic_learning_rate": 0.0003,
 }
 _LEGACY_MODEL_DEFAULTS: dict[str, object] = {
+    "init_from_checkpoint": None,
+    "actor_init_path": None,
+    "freeze_modules": [],
+    "reset_value_head": False,
     "langevin_temperature": 1.0,
     "langevin_temperature_learnable": False,
     "langevin_warm_start": False,

@@ -493,8 +493,11 @@ class FeedForwardBaselineActorCritic(nn.Module):
         *,
         deterministic: bool,
         generator: torch.Generator | None = None,
+        condition_sink: list | None = None,
     ) -> tuple[PolicySample, torch.Tensor]:
         features = self.encode(inputs)
+        if condition_sink is not None:
+            condition_sink.append(features.detach())
         return (
             self.heads.sample_policy(
                 features,
@@ -740,9 +743,12 @@ class GRUActorCritic(nn.Module):
         *,
         deterministic: bool,
         generator: torch.Generator | None = None,
+        condition_sink: list | None = None,
     ) -> tuple[PolicySample, torch.Tensor, torch.Tensor]:
         features, next_hidden = self.step(observation, hidden, episode_start)
         control = self.control_features(features, observation)
+        if condition_sink is not None:
+            condition_sink.append(control.detach())
         sample = self.heads.sample_policy(
             control,
             deterministic=deterministic,
@@ -1265,9 +1271,12 @@ class ParticleFilterActorCritic(nn.Module):
         *,
         deterministic: bool,
         generator: torch.Generator | None = None,
+        condition_sink: list | None = None,
     ) -> tuple[PolicySample, torch.Tensor, torch.Tensor]:
         features, next_hidden = self.step(observation, hidden, episode_start)
         control = self.control_features(features, observation)
+        if condition_sink is not None:
+            condition_sink.append(control.detach())
         sample = self.heads.sample_policy(
             control,
             deterministic=deterministic,

@@ -207,6 +207,10 @@ COMPARISON_METHODS = frozenset(
 
 _MODEL_KEYS = frozenset(
     {
+        "init_from_checkpoint",
+        "actor_init_path",
+        "freeze_modules",
+        "reset_value_head",
         "num_particles",
         "langevin_steps",
         "langevin_step_size",
@@ -286,6 +290,8 @@ _MODEL_KEYS = frozenset(
 
 _PPO_KEYS = frozenset(
     {
+        "critic_warmup_updates",
+        "self_imitation",
         "total_steps",
         "num_envs",
         "rollout_steps",
@@ -328,8 +334,25 @@ _PPO_KEYS = frozenset(
 # key existed is *equal* to a current one that leaves the key alone.  Extend
 # this table - or ``_LIGHT_DARK_LEGACY_TASK_DEFAULTS`` for per-task keys, and
 # nothing else - when a new key has to stay comparable with the campaign.
+SELF_IMITATION_DEFAULTS: dict[str, JSONValue] = {
+    "enabled": False,
+    "buffer_size": 100_000,
+    "batch_size": 512,
+    "updates_per_ppo": 4,
+    "policy_coef": 0.1,
+    "value_coef": 0.01,
+    "priority_exponent": 0.6,
+    "min_advantage": 0.0,
+    "weighting": "relu",
+    # Multiplier of the replay advantage standard deviation (not a raw temperature).
+    "temperature": 1.0,
+    "max_weight": 20.0,
+}
+
 _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
     "ppo": {
+        "critic_warmup_updates": 0,
+        "self_imitation": SELF_IMITATION_DEFAULTS,
         "bootstrap_on_truncation": False,
         "value_target_transform": "none",
         # The learned Langevin schedules shared the policy learning rate.
@@ -359,6 +382,10 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
     # Langevin tempering and warm starts arrived after the first campaigns; at
     # these defaults the belief update is bit-identical to the original ULA.
     "model": {
+        "init_from_checkpoint": None,
+        "actor_init_path": None,
+        "freeze_modules": [],
+        "reset_value_head": False,
         "langevin_temperature": 1.0,
         "langevin_temperature_learnable": False,
         "langevin_warm_start": False,
@@ -788,6 +815,17 @@ def _validate_environment(value: Any, requested_tasks: Sequence[str]) -> Mapping
 
 def _validate_model(value: Any) -> Mapping[str, Any]:
     section = _closed_keys(value, "model", _MODEL_KEYS)
+    for key in ("init_from_checkpoint", "actor_init_path"):
+        if section[key] is not None:
+            _nonempty_string(section[key], f"model.{key}")
+    _boolean(section["reset_value_head"], "model.reset_value_head")
+    prefixes = section["freeze_modules"]
+    if not isinstance(prefixes, list) or any(
+        not isinstance(prefix, str) or not prefix.strip() for prefix in prefixes
+    ):
+        raise ConfigError("model.freeze_modules must be a list of nonempty parameter prefixes")
+    if len(set(prefixes)) != len(prefixes):
+        raise ConfigError("model.freeze_modules must not contain duplicate prefixes")
     for key in (
         "num_particles",
         "langevin_steps",
@@ -1029,6 +1067,19 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
 
 def _validate_ppo(value: Any) -> Mapping[str, Any]:
     section = _closed_keys(value, "ppo", _PPO_KEYS)
+    _integer(section["critic_warmup_updates"], "ppo.critic_warmup_updates", minimum=0)
+    sil = _closed_keys(section["self_imitation"], "ppo.self_imitation", frozenset(SELF_IMITATION_DEFAULTS))
+    _boolean(sil["enabled"], "ppo.self_imitation.enabled")
+    for key in ("buffer_size", "batch_size", "updates_per_ppo"):
+        _integer(sil[key], f"ppo.self_imitation.{key}")
+    for key in ("policy_coef", "value_coef", "priority_exponent", "min_advantage"):
+        _number(sil[key], f"ppo.self_imitation.{key}", minimum=0.0)
+    for key in ("temperature", "max_weight"):
+        _positive_number(sil[key], f"ppo.self_imitation.{key}")
+    if _nonempty_string(sil["weighting"], "ppo.self_imitation.weighting") not in {"relu", "exp"}:
+        raise ConfigError("ppo.self_imitation.weighting must be relu or exp")
+    if (sil["enabled"] or section["critic_warmup_updates"]) and section["algorithm"] != "ppo":
+        raise ConfigError("self-imitation and critic warmup require ppo.algorithm=ppo")
     for key in (
         "total_steps",
         "num_envs",
@@ -1324,6 +1375,10 @@ def normalize_legacy_resolved_config(config: Mapping[str, Any]) -> dict[str, Any
             continue
         for key, default in defaults.items():
             values.setdefault(key, deepcopy(default))
+    sil = result.get("ppo", {}).get("self_imitation") if isinstance(result.get("ppo"), dict) else None
+    if isinstance(sil, dict):
+        for key, default in SELF_IMITATION_DEFAULTS.items():
+            sil.setdefault(key, deepcopy(default))
     _fill_light_dark_task_defaults(result)
     _fill_mountain_hike_task_defaults(result)
     _fill_pendulum_task_defaults(result)
@@ -1347,7 +1402,13 @@ def validate_config(config: Mapping[str, Any]) -> None:
     experiment = _validate_experiment(root["experiment"])
     _validate_environment(root["environment"], experiment["tasks"])
     model = _validate_model(root["model"])
-    _validate_ppo(root["ppo"])
+    ppo = _validate_ppo(root["ppo"])
+    if (ppo["self_imitation"]["enabled"] or ppo["critic_warmup_updates"]) and model["critic_kind"] != "state":
+        raise ConfigError("self-imitation and critic warmup currently require model.critic_kind=state")
+    if ppo["algorithm"] == "td3" and any(
+        model[key] for key in ("init_from_checkpoint", "actor_init_path", "freeze_modules", "reset_value_head")
+    ):
+        raise ConfigError("model initialization/freezing options currently require PPO")
     _validate_comparison(
         root["comparison"],
         model_gradient_mode=str(model["belief_gradient_mode"]),

@@ -32,6 +32,7 @@ from .baselines import (
 from .buffer import generalised_advantage_estimate
 from .config import ExperimentConfig
 from .envs import make_env
+from .initialization import critic_only, initialize_model
 from .networks import (
     ConditionMixturePredictor,
     NetworkKinds,
@@ -46,6 +47,7 @@ from .ppo import (
     diffusion_advantage_weights,
 )
 from .prediction_schedule import PredictionSchedule, random_actions
+from .self_imitation import SIL_METRIC_FIELDS, SelfImitationBuffer, sil_config, update_self_imitation
 from .train import (
     EPISODE_FIELDS,
     EVALUATION_FIELDS,
@@ -1181,6 +1183,7 @@ def _restore_baseline_trainer_state(
     rollout_batch_size: int,
     recurrent_input_dim: int | None,
     device: torch.device,
+    metric_fields: tuple[str, ...] = METRIC_FIELDS,
 ) -> tuple[
     np.ndarray,
     torch.Tensor,
@@ -1329,7 +1332,7 @@ def _restore_baseline_trainer_state(
         raise ValueError("checkpoint metric_rows count does not match its update")
     metric_rows: list[dict[str, Any]] = []
     for row_index, raw_row in enumerate(raw_metric_rows, start=1):
-        if not isinstance(raw_row, Mapping) or set(raw_row) != set(METRIC_FIELDS):
+        if not isinstance(raw_row, Mapping) or set(raw_row) != set(metric_fields):
             raise ValueError(f"checkpoint metric row {row_index} has invalid fields")
         row = dict(raw_row)
         if row["update"] != row_index or row["global_step"] != row_index * rollout_batch_size:
@@ -1461,6 +1464,8 @@ def train_baseline_single(
     environment_config = {"name": task, **config.environment_for_task(task)}
     model_config = resolved["model"]
     ppo_config = resolved["ppo"]
+    imitation_config = sil_config(ppo_config)
+    metric_fields = METRIC_FIELDS + (SIL_METRIC_FIELDS if imitation_config["enabled"] else ())
     comparison_config = resolved["comparison"]
     device = resolve_device(experiment_config["device"])
     seed_everything(seed, bool(experiment_config["deterministic"]))
@@ -1471,6 +1476,7 @@ def train_baseline_single(
         model_config,
         rollout_batch_size=rollout_batch_size,
         ppo_updates=math.ceil(int(ppo_config["total_steps"]) / rollout_batch_size),
+        critic_warmup_updates=int(ppo_config.get("critic_warmup_updates", 0)),
     )
     configured_updates = prediction_schedule.total_updates
     bootstrap_on_truncation = bool(ppo_config["bootstrap_on_truncation"])
@@ -1537,9 +1543,18 @@ def train_baseline_single(
         comparison_config,
         device,
     )
+    initialize_model(model, model_config, resume=checkpoint is not None)
     optimizer = torch.optim.Adam(
-        model.parameters(), lr=float(ppo_config["learning_rate"]), eps=1e-5
+        (p for p in model.parameters() if p.requires_grad), lr=float(ppo_config["learning_rate"]), eps=1e-5
     )
+    imitation = (
+        SelfImitationBuffer(int(imitation_config["buffer_size"]), batch.size, float(ppo_config["gamma"]))
+        if imitation_config["enabled"] else None
+    )
+    if imitation is not None and checkpoint is not None:
+        if "self_imitation" not in checkpoint:
+            raise ValueError("enabled self-imitation requires replay state in the resume checkpoint")
+        imitation.load_state_dict(checkpoint["self_imitation"])
     parameter_count = sum(parameter.numel() for parameter in model.parameters())
     LOGGER.info("Model parameters: %d", parameter_count)
 
@@ -1599,6 +1614,7 @@ def train_baseline_single(
                 model.observation_dim if isinstance(model, RECURRENT_BASELINE_TYPES) else None
             ),
             device=device,
+            metric_fields=metric_fields,
         )
         if isinstance(model, RECURRENT_BASELINE_TYPES):
             # The committed segment ended with a reconditioned hidden state, so
@@ -1632,7 +1648,7 @@ def train_baseline_single(
             global_step=start_update * rollout_batch_size,
         )
         if not artifacts.metrics_path.exists() or artifacts.metrics_path.stat().st_size == 0:
-            artifacts.csv_appender(METRIC_FIELDS).append_many(metric_rows)
+            artifacts.csv_appender(metric_fields).append_many(metric_rows)
     segment_started = time.perf_counter()
 
     def current_checkpoint_payload(update: int, global_step: int) -> dict[str, Any]:
@@ -1652,7 +1668,7 @@ def train_baseline_single(
             latest_evaluation=latest_evaluation,
             wall_time_seconds=wall_time_seconds,
         )
-        return _checkpoint_payload(
+        payload = _checkpoint_payload(
             model,  # type: ignore[arg-type]
             optimizer,
             task=task,
@@ -1664,6 +1680,9 @@ def train_baseline_single(
             method=method,
             format_version=BASELINE_CHECKPOINT_FORMAT_VERSION,
         )
+        if imitation is not None:
+            payload["self_imitation"] = imitation.state_dict()
+        return payload
 
     for update in range(start_update + 1, total_updates + 1):
         update_started = time.perf_counter()
@@ -1705,6 +1724,7 @@ def train_baseline_single(
             )
 
         for rollout_index in range(int(ppo_config["rollout_steps"])):
+            condition_sink = [] if imitation is not None and phase != "pretrain" else None
             inputs = _current_inputs(method, observation, batch, previous_action, device, model=model)
             input_steps.append(inputs.detach())
             episode_start_steps.append(episode_starts.detach())
@@ -1716,9 +1736,13 @@ def train_baseline_single(
                         hidden,
                         episode_starts,
                         deterministic=False,
+                        **({"condition_sink": condition_sink} if condition_sink is not None else {}),
                     )
                 else:
-                    sample, old_value = model.act(inputs, deterministic=False)
+                    sample, old_value = model.act(
+                        inputs, deterministic=False,
+                        **({"condition_sink": condition_sink} if condition_sink is not None else {}),
+                    )
             if phase == "pretrain":
                 # Uniformly random exploration; the stored policy outputs are not read by the
                 # prediction objective.
@@ -1757,6 +1781,13 @@ def train_baseline_single(
                     )
                 )
                 truncation_bootstrap_count += len(truncated_step_indices(step_infos))
+            if condition_sink is not None:
+                imitation.observe(
+                    condition_sink[0], condition_sink[0], sample.action,
+                    torch.as_tensor(reward, dtype=torch.float32, device=device), done_tensor,
+                    chains=sample.diffusion_chain, pre_tanh=sample.pre_tanh_action,
+                    bootstrap=truncation_value_steps[-1] if bootstrap_on_truncation else None,
+                )
             action_steps.append(sample.action.detach())
             log_prob_steps.append(sample.log_prob.detach())
             value_steps.append(value_transform.to_raw(old_value.detach()))
@@ -1865,17 +1896,18 @@ def train_baseline_single(
         model.train()
         if isinstance(model, RECURRENT_BASELINE_TYPES):
             temporal_gradient_mode: TemporalGradientMode = model_config["belief_gradient_mode"]
-            if phase == "ppo":
-                ppo_metrics = _update_recurrent(
-                    model,
-                    optimizer,
-                    rollout,
-                    model_config,
-                    ppo_config,
-                    temporal_gradient_mode=temporal_gradient_mode,
-                    observation_dim=first_environment.observation_dim,
-                    action_feature_dim=first_environment.action_spec.feature_dim,
-                )
+            if phase in {"ppo", "critic"}:
+                with critic_only(model, phase == "critic"):
+                    ppo_metrics = _update_recurrent(
+                        model,
+                        optimizer,
+                        rollout,
+                        model_config,
+                        ppo_config,
+                        temporal_gradient_mode=temporal_gradient_mode,
+                        observation_dim=first_environment.observation_dim,
+                        action_feature_dim=first_environment.action_spec.feature_dim,
+                    )
             else:
                 ppo_metrics = _update_recurrent_prediction(
                     model,
@@ -1907,7 +1939,16 @@ def train_baseline_single(
                 start_template=episode_starts,
             )
         else:
-            ppo_metrics = _update_feedforward(model, optimizer, rollout, ppo_config)
+            with critic_only(model, phase == "critic"):
+                ppo_metrics = _update_feedforward(model, optimizer, rollout, ppo_config)
+
+        imitation_metrics = None
+        if imitation is not None:
+            imitation_metrics = (
+                update_self_imitation(model, optimizer, imitation, ppo_config)
+                if phase == "ppo" else {name: 0.0 for name in SIL_METRIC_FIELDS}
+            )
+            imitation_metrics["sil_buffer_size"] = float(imitation.size)
 
         global_step = update * rollout_batch_size
         duration = max(time.perf_counter() - update_started, 1e-9)
@@ -1953,8 +1994,10 @@ def train_baseline_single(
             ),
             "steps_per_second": rollout_batch_size / duration,
         }
+        if imitation_metrics is not None:
+            row.update(imitation_metrics)
         metric_rows.append(row)
-        artifacts.append_metrics(row, METRIC_FIELDS)
+        artifacts.append_metrics(row, metric_fields)
         if update % int(experiment_config["log_interval_updates"]) == 0:
             LOGGER.info(
                 "method=%s update=%d/%d step=%d policy=%.4f value=%.4f return=%s fps=%.1f",
@@ -2043,7 +2086,7 @@ def train_baseline_single(
                 save_checkpoint(payload, artifacts.checkpoint_path(step=global_step))
             save_checkpoint(payload, artifacts.checkpoint_path(tag="latest"))
 
-    numeric_fields = [field for field in METRIC_FIELDS if field not in {"update", "global_step"}]
+    numeric_fields = [field for field in metric_fields if field not in {"update", "global_step"}]
     arrays: dict[str, np.ndarray] = {
         "update": np.asarray([row["update"] for row in metric_rows], dtype=np.int64),
         "global_step": np.asarray([row["global_step"] for row in metric_rows], dtype=np.int64),
