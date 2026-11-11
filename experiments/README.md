@@ -25,6 +25,8 @@ tagr（鬼ごっこ、距離観測、1293）、tagre（楕円距離、環境 64�
 | 16 | 粒子の潜在次元をそろえると（PF 2 次元、light 16 次元） | [16-latent-dimension.md](16-latent-dimension.md) | mirror2 / Car-Flag | 投入済み（2026-11-10） |
 | 17 | スコアの有界化と t = 0 の −x は要るか（nobound / logbound） | [17-unbounded-score.md](17-unbounded-score.md) | mirror2 / tagr / Car-Flag | nobound 投入（2026-11-10、seed 10–12 完走: 発散せず素と同帯）、logbound は不要 |
 | 18 | 学習量を伸ばすと抜けるか（Car-Flag の PPO 2000 update） | [18-training-budget.md](18-training-budget.md) | Car-Flag | 投入済み（2026-11-11） |
+| 19 | スコア網・方策 / 価値ヘッドを KAN にすると | [19-kan.md](19-kan.md) | mirror2 / tagr | 投入済み（2026-11-12） |
+| 20 | BC 初期化 actor から PPO を再開すると保てるか / self-imitation（SIL） | [20-bc-resume-sil.md](20-bc-resume-sil.md) | tagr / Car-Flag | BC 再開 6 本投入（2026-11-12）、SIL は準備済み |
 | 10 | 楕円距離観測（能動的センシング）で信念は効くか | [10-tagre-elliptic.md](10-tagre-elliptic.md) | tagre | 2 seed 完走（FLOPs 未一致に注意） |
 | 11 | 画像観測（Minecraft）で動くか | [11-minecraft.md](11-minecraft.md) | MineRL | ほぼ完走 |
 | 12 | 現在観測を方策に直結すると差は埋まるか（leak 2 × 3） | [12-obs-leak.md](12-obs-leak.md) | tagr / mirror2 | seed 10〜11 完走、12〜14 待ち |
