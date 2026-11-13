@@ -1,0 +1,45 @@
+{
+  "trials": 48,
+  "steps": 30000,
+  "leader_sgd": {
+    "eta": 0.001,
+    "pull_per_step": 0.01
+  },
+  "methods": [
+    {
+      "mode": "ULA",
+      "ever_success_trials": 25,
+      "current_success_trials": 0,
+      "median_current_best": 0.5687226065939219,
+      "median_rms_spread": 4.165268654407665
+    },
+    {
+      "mode": "PSO",
+      "ever_success_trials": 48,
+      "current_success_trials": 48,
+      "median_current_best": 0.0,
+      "median_rms_spread": 2.2227587494850775e-162
+    },
+    {
+      "mode": "SVGD",
+      "ever_success_trials": 18,
+      "current_success_trials": 18,
+      "median_current_best": 0.3924654605704336,
+      "median_rms_spread": 4.138124620716642
+    },
+    {
+      "mode": "CBO",
+      "ever_success_trials": 48,
+      "current_success_trials": 19,
+      "median_current_best": 0.018619074170992844,
+      "median_rms_spread": 2.973054214301105e-17
+    },
+    {
+      "mode": "LeaderSGD",
+      "ever_success_trials": 27,
+      "current_success_trials": 27,
+      "median_current_best": 0.0,
+      "median_rms_spread": 2.8103884618981625
+    }
+  ]
+}
