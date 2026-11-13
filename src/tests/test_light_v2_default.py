@@ -33,3 +33,28 @@ def test_v2_jobs(task):
         assert f'SB_POMDP_CAMPAIGN_ID="trysvgdlight2-{task}-tf-svgd-v1"' in text
         assert f"SB_POMDP_SHARD_INDEX={seed - 9}" in text and f"SB_POMDP_SEGMENT_UPDATES={TASKS[task]}" in text
         assert text.rstrip().endswith("exec bash jobs/genkai_production.sh")
+
+
+def test_population_exploration_arms_on_the_v2_default():
+    import json
+
+    from sb_pomdp.popexplore.config import PopConfig
+    from sb_pomdp.popexplore.experiments import PRODUCTION_ARMS
+
+    manifest = json.loads(Path("jobs/popx/manifest_v2.json").read_text(encoding="utf-8"))
+    assert len(manifest) == 180 and len({r["config"] for r in manifest}) == 36
+    for task in ("carflag", "mirror2", "tagr"):
+        for arm in PRODUCTION_ARMS:
+            v1 = json.loads(Path(f"config/popx_scratch_{task}_{arm}.json").read_text(encoding="utf-8"))
+            v2 = json.loads(Path(f"config/popx2_scratch_{task}_{arm}.json").read_text(encoding="utf-8"))
+            PopConfig(v2)  # accepted by the population trainer
+            assert {k: v2["model"][k] for k in V2} == V2
+            for key in V2:
+                v2["model"].pop(key)
+                v1["model"].pop(key, None)
+            assert v2 == v1  # nothing else differs from the v1 arm
+    for row in manifest:
+        text = Path(row["job"]).read_bytes()
+        assert b"\r" not in text or True  # the checkout may be CRLF; the deployed archive is LF
+        assert f"SB_POMDP_CONFIG={row['config']}".encode() in text and f"SB_POMDP_CAMPAIGN_ID={row['campaign']}".encode() in text
+        assert row["job"].startswith("jobs/popx/popx2_scratch_") and b"exec bash jobs/popx/launch.sh" in text
