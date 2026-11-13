@@ -10,6 +10,32 @@
 - 実装報告と「報酬依存係数の方策勾配」の整理（RWR / AWR / MPO / SIL / 優先再生 / hindsight）: [SIL_REPORT.md](../results/reports/sil_2026-11-11/SIL_REPORT.md)
 - 背景の検証: [STALL_REPORT.md](../results/reports/codex_stall_2026-11-10/STALL_REPORT.md)、[STALL_FOLLOWUP.md](../results/reports/codex_stall_2026-11-10/STALL_FOLLOWUP.md)
 
+### 2026-11-13 の結果（seed 10〜12、mean_chain 評価 10 話。検証は [LOCAL_REPORT.md](../results/reports/codex_local_2026-11-13/LOCAL_REPORT.md)）
+
+**BC（Behavior Cloning）再開（tagr、信念と encoder を凍結、PPO 100 update、seed 10 / 11）**
+
+| 開始 actor | 10 話評価の最終 | 共通 256 話評価（Codex） |
+|---|---|---|
+| 元の actor | 2.6 / 2.2 | 開始 3.5 / 3.4 → PPO 後も改善なし |
+| BC actor | 7.5 / 6.4 | BC 直後 4.2 / 4.2 → PPO 後 5.2 / 4.7（差 +1.05 / +0.54、信頼区間は正） |
+| BC actor + 価値ヘッド初期化 | 6.9 / 5.0 | — |
+
+10 話評価の「5 → 7」は過大で、256 話では 4.2 → 5 前後。BC 系には critic warm-up 10 update が余分に入っている（交絡）。
+
+**SIL（Self-Imitation Learning、既定値 policy_coef 0.1、4 回 / PPO update）**
+
+| 課題 | 素 | SIL（relu 重み） | SIL（指数重み） | GAE λ 0.99 | GRU + SIL |
+|---|---|---|---|---|---|
+| Car-Flag（333 update） | −0.4 | −0.4 | −0.7 | −0.4 | — |
+| mirror2 | −369 | −1278（3 seed とも悪化） | −700（1 seed 崩壊） | −560（1 seed 崩壊） | −1661 |
+| tagr（675 update 時点） | 2.4 | 2.3 | 2.3 | 2.5 | — |
+
+- mirror2 の悪化は手法の評価になっていない。relu 重み (R − V)₊ が無正規化で、係数込みの勾配が PPO の 54 倍になっていた（正規化すると 0.15 倍）。R と V の尺度の不整合（バグ）は無い。修正案は `results/reports/codex_local_2026-11-13/sil_fix.patch`（未適用）。
+- tagr で SIL が選ぶのは「長く生き延びた軌跡の前半」で、BC 方向との余弦は 0.003。模倣しても方策は良い方向に動かない。
+- Car-Flag は訓練中に緑旗へ 538〜793 回 / run 到達している（片側に賭けた偶然を含む）。「成功を一度も経験していない」は誤り。
+
 ## 結論メモ
 
-- （走行中）
+- 同じ凍結表現・同じ PPO でも、actor の初期値で結果が変わる。BC actor は PPO で保たれ、さらに伸びる。元の actor は伸びない。
+- 元 → BC の重みの直線上は谷ではなく台地。BC の行動は 1 step だけ取っても得にならず、5 step で +0.30、20 step で +0.86、最後まで続けて +2.05。単発の探索では拾えず、時間的に一貫した行動の変化が要る → [22-population-exploration.md](22-population-exploration.md)。
+- SIL は 3 課題とも改善なし。mirror2 の悪化は重みの無正規化が原因で、正規化版の再実験は未実施。
