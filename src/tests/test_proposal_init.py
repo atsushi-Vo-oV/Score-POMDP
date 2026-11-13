@@ -177,3 +177,59 @@ def test_config_validation(tmp_path):
     uniform = load_config("config/trysvgdlight_mirror2_tf-svgd-uniform-init.json").to_dict()["model"]
     assert uniform["langevin_proposal"] == "uniform"
     assert abs(uniform["langevin_uniform_half_width"] - 3.0 ** 0.5) < 1e-12
+
+
+def test_uniform_initial_noise_changes_only_the_initial_rows():
+    """model.langevin_initial_noise=uniform: t = 0 starts at anchor(U(-w, w)); recursive rows are untouched."""
+    for kwargs in ({}, {"langevin_warm_start": True}):
+        plain = _belief("noise", **kwargs)
+        flat = _belief("noise", langevin_initial_noise="uniform", langevin_uniform_half_width=2.0, **kwargs)
+        flat.load_state_dict(plain.state_dict())
+        inputs = _inputs((True, False, False))
+        inputs["initial_noise"] = torch.randn(3, 4, 2, generator=torch.Generator().manual_seed(3)) * 4.0
+        start_plain, start_flat = _chain_start(plain, inputs), _chain_start(flat, inputs)
+        assert torch.equal(start_plain[1:], start_flat[1:])  # recursive rows: noise or the previous particles
+        if kwargs:
+            assert torch.equal(start_flat[1:], inputs["previous_particles"][1:])  # warm start, not a point mass
+        anchor_mean, anchor_log_scale = plain.observation_anchor(inputs["observation"][:1]).chunk(2, dim=-1)
+        base = (2.0 * torch.special.ndtr(inputs["initial_noise"][:1]) - 1.0) * 2.0
+        expected = anchor_mean[:, None, :] + anchor_log_scale.clamp(-4.0, 2.0).exp()[:, None, :] * base
+        assert torch.allclose(start_flat[:1], expected.detach(), atol=1e-6)
+        assert not torch.allclose(start_flat[:1], start_plain[:1])
+        assert sorted(n for n, _ in flat.named_parameters()) == sorted(n for n, _ in plain.named_parameters())
+
+
+def test_uniform_initial_noise_without_anchor_is_the_plain_box_and_default_is_unchanged():
+    flat = _belief("noise", anchor=False, langevin_initial_noise="uniform")
+    inputs = _inputs((True,) * 64)
+    inputs["initial_noise"] = torch.randn(64, 4, 2, generator=torch.Generator().manual_seed(1))
+    start = _chain_start(flat, inputs)
+    assert start.abs().max() <= 3.0 ** 0.5 + 1e-6 and abs(start.var().item() - 1.0) < 0.1
+    a, b = _belief("noise"), _belief("noise", langevin_initial_noise="normal")
+    inputs = _inputs((True, False))
+    out_a = a.particles_from_noise(**inputs, step_size=0.2, track_grad=False)
+    out_b = b.particles_from_noise(**inputs, step_size=0.2, track_grad=False)
+    assert torch.equal(out_a[0], out_b[0])
+    with pytest.raises(ValueError):
+        _belief("noise", langevin_initial_noise="delta")
+
+
+def test_uniform_initial_noise_config():
+    base = load_config("config/trysvgdlight_mirror2_tf-svgd-prev-init.json")
+    assert base.to_dict()["model"]["langevin_initial_noise"] == "normal"
+    with pytest.raises(ConfigError):
+        base.with_overrides({"model.langevin_initial_noise": "delta"})
+    with pytest.raises(ConfigError):
+        load_config("config/trysvgdlight_mirror2_tf-svgd-prior.json").with_overrides({"model.langevin_initial_noise": "uniform"})
+    for task in ("mirror2", "tps", "tagr", "carflag"):
+        prev = load_config(f"config/trysvgdlight_{task}_tf-svgd-prev-init.json").to_dict()
+        u0 = load_config(f"config/trysvgdlight_{task}_tf-svgd-prev-init-u0.json").to_dict()
+        assert u0["model"]["langevin_initial_noise"] == "uniform" and u0["model"]["langevin_warm_start"] is True
+        u0["model"]["langevin_initial_noise"] = "normal"
+        assert u0 == prev  # the only difference from the prev-init arm
+    for task in ("mirror2", "tps", "tagr", "carflag"):
+        flat = load_config(f"config/trysvgdlight_{task}_tf-svgd-uniform-init.json").to_dict()
+        u0 = load_config(f"config/trysvgdlight_{task}_tf-svgd-uniform-init-u0.json").to_dict()
+        assert u0["model"]["langevin_initial_noise"] == "uniform" and u0["model"]["langevin_proposal"] == "uniform"
+        u0["model"]["langevin_initial_noise"] = "normal"
+        assert u0 == flat  # the only difference from the uniform arm

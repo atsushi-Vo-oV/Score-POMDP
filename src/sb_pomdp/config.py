@@ -273,6 +273,7 @@ _MODEL_KEYS = frozenset(
         "langevin_observation_anchor",
         "langevin_proposal",
         "langevin_uniform_half_width",
+        "langevin_initial_noise",
         "proposal_hidden",
         "initial_belief",
         "encoder_use_scores",
@@ -458,6 +459,9 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         # standard-normal start).  Earlier runs all used "noise".
         "langevin_proposal": "noise",
         "langevin_uniform_half_width": 3.0 ** 0.5,
+        # Base noise of the t = 0 chain start (before the observation anchor): "normal" (N(0, I),
+        # every earlier run) or "uniform" (U(-w, w) per coordinate, w = langevin_uniform_half_width).
+        "langevin_initial_noise": "normal",
         "proposal_hidden": [64],
         # Every earlier run scored t = 0 with its own initial network ("branch"); "prior" scores
         # it with the recursive networks over K learned prior particles and a zero action.
@@ -901,6 +905,14 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
             "model.langevin_proposal affine/network/uniform cannot be combined with model.langevin_warm_start"
         )
     _positive_number(section["langevin_uniform_half_width"], "model.langevin_uniform_half_width")
+    initial_noise = _nonempty_string(section["langevin_initial_noise"], "model.langevin_initial_noise")
+    if initial_noise not in {"normal", "uniform"}:
+        raise ConfigError("model.langevin_initial_noise must be normal or uniform")
+    if initial_noise != "normal" and section["initial_belief"] == "prior":
+        raise ConfigError(
+            "model.langevin_initial_noise has no effect with model.initial_belief=prior "
+            "(the t = 0 rows are scored as recursive rows)"
+        )
     initial_belief = _nonempty_string(section["initial_belief"], "model.initial_belief")
     if initial_belief not in {"branch", "prior"}:
         raise ConfigError("model.initial_belief must be branch or prior")

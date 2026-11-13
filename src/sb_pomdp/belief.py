@@ -314,6 +314,7 @@ class EnergyBelief(nn.Module):
         proposal_hidden: Sequence[int] = (64,),
         langevin_proposal: str = "noise",
         langevin_uniform_half_width: float = 3.0 ** 0.5,
+        langevin_initial_noise: str = "normal",
         num_particles: int | None = None,
         particle_sampler: str = "ula",
         smi_component_scale: float = 0.1,
@@ -542,6 +543,13 @@ class EnergyBelief(nn.Module):
         if float(langevin_uniform_half_width) <= 0.0:
             raise ValueError("langevin_uniform_half_width must be positive")
         self.langevin_uniform_half_width = float(langevin_uniform_half_width)
+        # Base noise of the t = 0 rows (before the observation anchor): "normal" = N(0, I) as in
+        # every earlier run, "uniform" = U(-w, w) per coordinate with the same half width w.  It is
+        # independent of langevin_proposal (which only shapes the recursive rows when the anchor
+        # is on) and of the warm start (whose t = 0 rows still begin at noise).
+        if langevin_initial_noise not in {"normal", "uniform"}:
+            raise ValueError("langevin_initial_noise must be normal or uniform")
+        self.langevin_initial_noise = str(langevin_initial_noise)
         self.proposal_mean: nn.Parameter | None = None
         self.proposal_log_scale: nn.Parameter | None = None
         self.proposal_network: nn.Module | None = None
@@ -1155,6 +1163,11 @@ class EnergyBelief(nn.Module):
         elif potential_branch not in {"initial", "recursive", "mixed"}:
             raise ValueError("potential_branch must be initial, recursive, or mixed")
 
+        if self.langevin_initial_noise == "uniform":
+            # Phi(xi) is exactly U(0, 1) for standard-normal xi: the stored noise keeps its role,
+            # so the PPO replay reproduces the same chain start.
+            flat = (2.0 * torch.special.ndtr(particles) - 1.0) * self.langevin_uniform_half_width
+            particles = torch.where(initial.view(-1, 1, 1), flat, particles)
         if self.observation_anchor is not None:
             anchor = self.observation_anchor(observation)
             anchor_mean, anchor_log_scale = anchor.chunk(2, dim=-1)

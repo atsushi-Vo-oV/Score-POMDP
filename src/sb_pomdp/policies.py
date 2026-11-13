@@ -463,6 +463,7 @@ class ScoreBeliefActorCritic(nn.Module):
             langevin_uniform_half_width=float(
                 model_config.get("langevin_uniform_half_width", 3.0 ** 0.5)
             ),
+            langevin_initial_noise=str(model_config.get("langevin_initial_noise", "normal")),
             num_particles=(
                 None if model_config.get("num_particles") is None else int(model_config["num_particles"])
             ),
