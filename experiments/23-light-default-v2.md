@@ -9,7 +9,7 @@
 - **課題**: mirror2（333 update）/ tps（213）/ tagr（1293）/ Car-Flag（333）× seed 10–14 = 20 本。
 - **設定とジョブ**: `../config/trysvgdlight2_<task>_tf-svgd.json`、`../jobs/trysvgd_light2/trysvgdlight2_<task>_svgd_s{10..14}.sh`、説明 [jobs/trysvgd_light2/README.md](../jobs/trysvgd_light2/README.md)、テスト `src/tests/test_light_v2_default.py`。コードの既定値（`config.py`）は変えていない（過去の run の再現性のため）。以後の新しい比較は、指定がない限り `trysvgdlight2_<task>_tf-svgd.json` を素にして作る（接頭辞 `trysvgdlight2-`）。
 - **事前に分かっていること**: 3 点のうち、一様開始と非有界は単独では v1 と同じ帯だった。アンカーなしは単独で mirror2 を悪化させた（noanchor −784、5 seed 中 2 崩壊。v1 −368）。tps は少し悪化（−308 対 −287）、tagr は少し上（中央値 3.37 対 2.44）。3 点の組み合わせは未検証。
-- **状態**: 2026-11-14、設定 4 個・ジョブ 20 本・テストを準備、CPU の短い試走（4 update、mirror2 / tagr / Car-Flag）で損失が有限であることを確認。未投入。
+- **状態**: 2026-11-14、設定 4 個・ジョブ 20 本・テストを準備、CPU の短い試走（4 update、mirror2 / tagr / Car-Flag）で損失が有限であることを確認。同日 04:20 に math へ 20 本を投入（木 v29、ユーザー「v2の投入OK」）: seed 10–12 の 12 本は待ちの先頭（tps → mirror2 → Car-Flag → tagr）、seed 13–14 の 8 本は最後尾。math 側の投入は `run1102/add_v2.py`。結果待ち。
 
 ## 結果の解説
 
