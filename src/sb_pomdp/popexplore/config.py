@@ -105,7 +105,11 @@ class PopConfig:
         self._requested_belief_training = raw.get("model", {}).get("belief_training", "joint")
         if p["freeze_belief"]:
             m = raw.setdefault("model", {})
-            prefixes = {"belief.", "encoder."}
+            prefixes = ({"observation_encoder.", "gru.", "condition_projection."}
+                        if raw.get("comparison", {}).get("methods") == ["gru"]
+                        else {"belief.", "encoder."})
+            if raw.get("comparison", {}).get("gru_hidden_dim") == m.get("d_model"):
+                prefixes.discard("condition_projection.")  # identity has no parameters
             if m.get("prediction_pretrain_steps", 0) or (m.get("prediction_interval_updates", 0) and m.get("prediction_phase_updates", 0)):
                 prefixes.add("prediction_predictor.")
             m["freeze_modules"] = sorted(set(m.get("freeze_modules", [])) | prefixes)
@@ -116,18 +120,26 @@ class PopConfig:
     def validate(self):
         r = self.base.to_dict()
         m, p = r["model"], r["ppo"]
-        required = {"score_parameterization": "direct", "particle_sampler": "svgd",
-                    "continuous_policy_kind": "diffusion", "encoder_kind": "transformer",
-                    "prediction_head": "condition", "critic_kind": "state", "belief_compile": "off"}
+        methods = r["comparison"]["methods"]
+        if methods not in (["score_transformer"], ["gru"]):
+            raise ConfigError("popexplore requires comparison.methods=[score_transformer] or [gru]")
+        self.method = methods[0]
+        gru = self.method == "gru"
+        required = {"continuous_policy_kind": "diffusion", "prediction_head": "condition",
+                    "critic_kind": "state"}
+        if not gru:
+            required.update(score_parameterization="direct", particle_sampler="svgd",
+                            encoder_kind="transformer", belief_compile="off")
         for key, value in required.items():
             if m.get(key) != value:
                 raise ConfigError(f"popexplore requires model.{key}={value}")
         # score_implementation=analytic and belief_cuda_graphs are execution-only switches inside
         # the shared belief module (not vmapped here), so they are allowed as in the main trainer.
-        for key in ("belief_activation_checkpoint", "policy_observation_input", "score_curl_monitor"):
+        for key in (("policy_observation_input", "score_curl_monitor") if gru else
+                    ("belief_activation_checkpoint", "policy_observation_input", "score_curl_monitor")):
             if m.get(key):
                 raise ConfigError(f"popexplore does not support model.{key}")
-        if m.get("dropout", 0) != 0:
+        if not gru and m.get("dropout", 0) != 0:
             raise ConfigError("popexplore requires dropout=0")
         if m.get("value_encoder") != "shared":
             raise ConfigError("popexplore requires model.value_encoder=shared")
@@ -136,10 +148,13 @@ class PopConfig:
                 raise ConfigError(f"popexplore does not support model.{key}")
         if p.get("algorithm") != "ppo" or p.get("self_imitation", {}).get("enabled", False):
             raise ConfigError("popexplore requires PPO without self-imitation")
+        if gru and (p.get("weight_decay", 0) or p.get("critic_warmup_updates", 0)):
+            raise ConfigError("popexplore GRU does not support weight_decay or critic_warmup_updates")
         if p["num_envs"] % self.pop["population_size"]:
             raise ConfigError("popexplore: num_envs must be a multiple of population_size")
+        actor_prefix = "heads.diffusion_policy" if gru else "diffusion_policy"
         if self.pop["population_size"] > 1 and any(
-                prefix.startswith("diffusion_policy") or "diffusion_policy".startswith(prefix)
+                prefix.startswith(actor_prefix) or actor_prefix.startswith(prefix)
                 for prefix in m.get("freeze_modules", [])):
             raise ConfigError("popexplore: freeze population actors with actor_ppo_fraction=0")
 

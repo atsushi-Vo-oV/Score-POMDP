@@ -12,6 +12,7 @@ from ..artifacts import CsvAppender
 from ..initialization import load_bc_actor
 from ..train import save_checkpoint, build_optimizer, source_sha256
 from ..ppo import update_ppo as ordinary_ppo
+from .representation import actor, set_actor, heads, is_gru
 from .actors import PopulationPolicy, OUBias, assignments
 # Single-actor diagnostics use the batched evaluator (one horizon, not one per episode).
 from .evaluation import evaluate_population, evaluate_batched as evaluate
@@ -42,6 +43,8 @@ MEMBER_FIELDS = ("update", "global_step", "mode", "actor", "evaluation_seed", "m
 def source_hash():
     h = hashlib.sha256()
     h.update(source_sha256().encode())
+    for name in ("train_baselines.py", "baselines.py"):
+        h.update((Path(__file__).parent.parent / name).read_bytes())
     seedbatch = Path(__file__).parent.parent / "seedbatch"
     for name in ("backend.py", "attention.py"):
         h.update((seedbatch / name).read_bytes())
@@ -62,13 +65,13 @@ class Controller:
         self.gate = AdoptionGate(self.fcfg, self.n) if self.f_enabled else None
         if self.f_enabled:
             # Separate external-only critic; no intrinsic targets ever reach it.
-            model.optimizer_value_head = copy.deepcopy(model.value_head)
+            model.optimizer_value_head = copy.deepcopy(heads(model).value_head)
         self.ids = assignments(resolved["ppo"]["num_envs"], self.n, device)
-        self.original = torch.cat([p.detach().flatten() for p in model.diffusion_policy.parameters()]).clone()
+        self.original = torch.cat([p.detach().flatten() for p in actor(model).parameters()]).clone()
         self.bank = None
         if self.n > 1:
-            self.bank = PopulationPolicy(model.diffusion_policy, self.n, len(self.ids), self.cfg["init_std"])
-            model.diffusion_policy = self.bank
+            self.bank = PopulationPolicy(actor(model), self.n, len(self.ids), self.cfg["init_std"])
+            set_actor(model, self.bank)
             if self.f_enabled:
                 vectors = self.bank.vectors().detach().clone()
                 vectors[0] = self.original
@@ -76,10 +79,11 @@ class Controller:
                 self.bank.start_episodes(torch.ones_like(self.ids, dtype=torch.bool))
         elif self.cfg["init_std"]:
             with torch.no_grad():
-                for p in model.diffusion_policy.parameters():
+                for p in actor(model).parameters():
                     p.add_(torch.randn_like(p) * self.cfg["init_std"])
         self.search = PopulationSearch(self.vectors()[self.first_explorer:], self.cfg)
-        self.actor_optimizer = ActorAdam(self.bank.weights, resolved["ppo"]) if self.bank is not None else None
+        self.actor_optimizer = (ActorAdam(self.bank.weights, resolved["ppo"], eps=1e-5 if is_gru(model) else 1e-8)
+                                if self.bank is not None else None)
         self.best_vector = self.vectors()[0].detach().clone()
         self.bc_direction = None
         path = self.cfg["bc_actor_path"]
@@ -88,10 +92,10 @@ class Controller:
             if len(candidates) == 1:
                 path = str(candidates[0])
         if path and not resume:
-            proto = copy.deepcopy(self.bank.prototype if self.bank else model.diffusion_policy)
+            proto = copy.deepcopy(self.bank.prototype if self.bank else actor(model))
             load_bc_actor(proto, path)
             self.bc_direction = torch.cat([p.detach().flatten() for p in proto.parameters()]) - self.original
-        self.ou = OUBias(len(self.ids), model.diffusion_policy.action_dim,
+        self.ou = OUBias(len(self.ids), actor(model).action_dim,
                          self.cfg["ou_std"], self.cfg["ou_tau"], device) if self.cfg["ou_std"] else None
         self.rnd = None
         if self.cfg["rnd_beta"]:
@@ -102,13 +106,13 @@ class Controller:
         self.active_actors = torch.zeros_like(self.actor_enabled)
         self.pending_returns = np.zeros(len(self.ids))
         self.pending_lengths = np.zeros(len(self.ids), dtype=int)
-        self.pending_sums = np.zeros((len(self.ids), model.diffusion_policy.action_dim))
+        self.pending_sums = np.zeros((len(self.ids), actor(model).action_dim))
         self.pending_squares = np.zeros_like(self.pending_sums)
 
     def vectors(self):
         if self.bank is not None:
             return self.bank.vectors().detach()
-        return torch.cat([p.detach().flatten() for p in self.model.diffusion_policy.parameters()])[None]
+        return torch.cat([p.detach().flatten() for p in actor(self.model).parameters()])[None]
 
     def exclude_actor_parameters(self, optimizer):
         if self.bank is not None:
@@ -127,7 +131,7 @@ class Controller:
 
     def suppress_disabled_singleton(self):
         if self.bank is None and not bool(self.actor_enabled[0]):
-            for p in self.model.diffusion_policy.parameters():
+            for p in actor(self.model).parameters():
                 p.grad = None
 
     def begin_update(self, update, phase):
@@ -157,13 +161,13 @@ class Controller:
         if self.ou is None or phase == "pretrain":
             return action
         bias = self.ou.step(initial, self.ids != 0 if self.f_enabled else None)
-        p = self.model.diffusion_policy
+        p = actor(self.model)
         # The stored diffusion chain is unchanged. Given exogenous bias b_t,
         # a_t = scale*tanh(z_t+b_t)+offset has a theta-independent Jacobian.
         return torch.tanh(chain[:, -1] + bias) * p.action_scale + p.action_bias
 
     def observe(self, action, reward, done, phase):
-        p = self.model.diffusion_policy
+        p = actor(self.model)
         normalized = ((action - p.action_bias) / p.action_scale).detach().cpu().numpy()
         self.pending_returns += reward
         self.pending_lengths += 1
@@ -194,7 +198,7 @@ class Controller:
 
     def values(self, condition, ids, ordinary=None):
         if ordinary is None:
-            ordinary = self.model.value(condition)
+            ordinary = heads(self.model).value(condition)
         if not self.f_enabled:
             return ordinary
         external = self.model.optimizer_value_head(condition).squeeze(-1)
@@ -285,11 +289,14 @@ class Controller:
         result._modules = self.model._modules.copy()
         kind = kind or self.cfg["inference_actor"]
         vector = self.vectors()[0] if kind == "optimizer" else self.best_vector if kind == "best" else self.mean_vector()
-        result.diffusion_policy = self.bank.export(vector)
+        if is_gru(result):
+            result.heads = copy.copy(self.model.heads)
+            result.heads._modules = self.model.heads._modules.copy()
+        set_actor(result, self.bank.export(vector))
         if self.f_enabled:
             result._modules.pop("optimizer_value_head")
             if kind == "optimizer":
-                result.value_head = self.model.optimizer_value_head
+                heads(result).value_head = self.model.optimizer_value_head
         return result
 
     def adopt(self, candidate):

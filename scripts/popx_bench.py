@@ -45,17 +45,19 @@ def benchmark(args):
                 changes.update({"ppo.num_envs":4, "ppo.rollout_steps":3, "ppo.epochs":1,
                                 "ppo.total_steps":(args.warmup+args.repeats)*12,
                                 "ppo.minibatch_size":12, "ppo.sequence_microbatch_size":6,
-                                "popexplore.population_size":2 if arm != "ppo" else 1,
+                                "popexplore.population_size":2 if arm not in {"ppo", "gru_ppo"} else 1,
                                 "popexplore.fitness_episodes":1, "popexplore.qd_capacity":4,
                                 "experiment.eval_episodes":1, f"environment.tasks.{env_task}.horizon":5,
                                 "model.num_particles":3, "model.langevin_steps":1, "model.energy_hidden":[4],
                                 "model.d_model":8, "model.num_heads":2, "model.transformer_ff_dim":8,
                                 "model.policy_hidden":[8], "model.diffusion_steps":2, "model.prediction_predictor_hidden":[8]})
+                if arm.startswith("gru_"):
+                    changes.update({"comparison.gru_encoder_hidden":[8], "comparison.gru_hidden_dim":6})
             cfg = cfg.with_overrides(changes)
             start = time.perf_counter()
             run_population(cfg, campaign_id=f"bench-{task}-{arm}", verbose=False)
             wall = time.perf_counter() - start
-            run = root / f"campaigns/bench-{task}-{arm}/shard001/full/score_transformer/{env_task}/seed_010"
+            run = root / f"campaigns/bench-{task}-{arm}/shard001/full/{cfg.method}/{env_task}/seed_010"
             with (run / "timing.csv").open(encoding="utf-8", newline="") as f:
                 timings = list(csv.DictReader(f))
             measured = [r for r in timings if r["phase"] == "ppo"][args.warmup:]
@@ -87,7 +89,7 @@ def main():
     p.add_argument("--repeats", type=int, default=3)
     p.add_argument("--cadence", choices=["stress","production"], default="stress")
     p.add_argument("--tasks", nargs="+", choices=["tagr","mirror2","carflag"], default=["tagr","mirror2"])
-    p.add_argument("--arms", nargs="+", choices=["full","no_f","no_a2","no_c","no_d","no_qd","cem","es","pbt","a2","d","ppo"], default=["ppo","cem","full"])
+    p.add_argument("--arms", nargs="+", choices=["full","no_f","no_a2","no_c","no_d","no_qd","cem","es","pbt","a2","d","ppo","gru_ppo","gru_full"], default=["ppo","cem","full"])
     p.add_argument("--cpu-small", action="store_true")
     p.add_argument("--fitness-from-rollout", action="store_true",
                    help="experimental behavior-return fitness; no extra fitness episodes, missing data skips selection")

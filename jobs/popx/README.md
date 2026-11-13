@@ -143,3 +143,43 @@ full/ppo/no_f、3課題、2対応seed、1pretrain+8PPO+3predict、縮小モデ�
 対応範囲はdirect/autograd score、SVGD、transformer(dropout0)、continuous diffusion、state/shared encoder、condition prediction。
 compile、activation checkpoint、SIL/curl、別value encoder等は従来どおり明示拒否です。
 analytic score と CUDA Graphs は共有beliefの内部だけで働く実行時の切替なので許可しています（`SB_POMDP_POPX_FAST=1`でlaunch.shがanalytic + graphsを指定、既定はautograd）。
+
+## GRU 比較（追加30本）
+
+`comparison.methods=["gru"]` は本体GRUと同じ観測encoder、GRU、condition射影、
+価値／予測ヘッドを共有し、`heads.diffusion_policy` だけを集団化します。
+`gru_ppo` は全off、`gru_full` はlightのfullと同じ部品とF=BCを使います。
+全offは本体 `train_baseline_single` のPPO更新を直接使い、予測フェーズ込みでbit一致します。
+集団側もnative GRUの系列replayを使い、共有Adam／個体Adamのepsilonは本体と同じ1e-5です。
+Fの外部専用価値、OU/RND除外、採用判定、BC教師、fitnessはlightと同じ規則です。
+RNDとBCのconditionはGRUを射影した特徴。fitnessと個体評価は全話batch、
+正本evaluation.csvは本体 `evaluate_baseline` の逐次評価です。
+
+設定は `config/trysvgd_<task>_gru.json` の幅を維持し、64環境×128step、
+minibatch/microbatch=2048、pretrain=98×8192step、PPO=200/200/1000update、
+交互predict=35/35/195update（carflag/mirror2/tagr）、合計333/333/1293update。
+seed10–14、6config、30jobをmanifestの末尾へ追加しています。
+`scratch.queue` は従来180本のまま、`gru.queue` は別のseed-major順
+（各seedでcarflag→mirror2→tagr、各課題gru_ppo→gru_full）です。
+campaignは `popx-<task>-gru-ppo-v1` / `popx-<task>-gru-full-v1`。
+`python scripts/popx_generate.py` で両系列を再生成し、同内容の既存ファイルのbytesは保持します。
+
+```bash
+bash jobs/popx/run_popx.sh /path/to/popx-tree jobs/popx/popx_scratch_carflag_gru_full_r10.sh 0
+python scripts/popx_bench.py --arms gru_ppo gru_full --tasks carflag mirror2 tagr --output-root results/gru-bench --warmup 5 --repeats 3
+python scripts/popx_gru_smoke.py --output-root results/gru-smoke
+python scripts/popx_model_stats.py --out results/gru-model-stats.json
+```
+
+解析は既存12腕の表を維持し、別のGRU節に `gru_full−gru_ppo`、`full−gru_full`、
+`ppo−gru_ppo` の対応seed差と区間、gru_fullのF診断を出力します。未完走も解析可能です。
+GRUの成果物パスは `full/gru/<task>/seed_<seed>`。`population.pt`で学習再開、
+`latest.pt`は本体GRUのモデル構築とstrict loadで読める推論用です。
+
+GRUで粒子・SVGD・score実装・CUDA Graphsのキーは計算に使いません。
+汎用ExperimentConfigの型・整合性検証は維持し、POPXのlight専用条件はGRUに課しません。
+GRUはcontinuous diffusion/state critic/condition predictionに限定し、混在methods、
+RNN/PF、Gaussian、観測直結、SIL、critic warmup、非zero weight_decay等は明示的に拒否します。
+全offのmicrobatch処理は本体の挙動を維持します（本体はminibatch単位のrecurrent replay）。
+集団PPOはmicrobatchで勾配蓄積、予測更新は本体関数を使用します。
+FLOPsはactingの行列演算計数であり、学習・評価・QD archive・RND等を含む実行時間とは区別してください。

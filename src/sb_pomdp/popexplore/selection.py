@@ -89,8 +89,9 @@ class PopulationSearch:
 
 class ActorAdam:
     """Vectorized Adam(W), with an independent step counter for every actor."""
-    def __init__(self, parameters, config):
+    def __init__(self, parameters, config, *, eps=1e-8):
         self.parameters = list(parameters)
+        self.eps = eps
         self.lr, self.decay = config["learning_rate"], config.get("weight_decay", 0.0)
         n = self.parameters[0].shape[0]
         self.steps = torch.zeros(n, device=self.parameters[0].device, dtype=torch.long)
@@ -111,7 +112,7 @@ class ActorAdam:
             m.copy_(torch.where(mask, 0.9 * m + 0.1 * p.grad, m))
             v.copy_(torch.where(mask, 0.999 * v + 0.001 * p.grad.square(), v))
             count = self.steps.clamp_min(1).reshape_as(mask)
-            direction = (m / (1 - 0.9**count)) / ((v / (1 - 0.999**count)).sqrt() + 1e-8)
+            direction = (m / (1 - 0.9**count)) / ((v / (1 - 0.999**count)).sqrt() + self.eps)
             p.copy_(torch.where(mask, p * (1 - self.lr * self.decay) - self.lr * direction, p))
 
     @torch.no_grad()

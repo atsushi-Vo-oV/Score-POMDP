@@ -308,6 +308,7 @@ def test_jobs_and_budget_manifest():
     from sb_pomdp.popexplore.config import load_config
     from sb_pomdp.popexplore.runner import configured_updates
     manifest = json.loads(Path("jobs/popx/manifest.json").read_text())
+    manifest = [row for row in manifest if row["arm"] in ARMS]
     assert all(r["group"] == "scratch" for r in manifest)
     assert len(manifest) == 180
     assert not list(Path("config").glob("popx_frozen_*"))

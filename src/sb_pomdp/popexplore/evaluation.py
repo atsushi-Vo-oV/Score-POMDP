@@ -7,10 +7,15 @@ from ..ppo import encode_conditions
 from ..train import (BeliefContext, SyncEnvironmentBatch, _sample_belief, _environment_actions,
                      _next_context, encode_action, belief_latent_dim)
 from .actors import assignments
+from .representation import actor, is_gru
 
 
 def evaluate_population(model, *, task, environment_config, model_config, episodes, seed, device, deterministic):
-    policy = model.diffusion_policy
+    if is_gru(model):
+        from .gru_evaluation import evaluate_population as evaluate_gru
+        return evaluate_gru(model, task=task, environment_config=environment_config, episodes=episodes,
+                            seed=seed, device=device, deterministic=deterministic)
+    policy = actor(model)
     n = getattr(policy, "size", 1)
     count = n * episodes
     ids = assignments(count, n, device)

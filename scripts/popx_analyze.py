@@ -16,6 +16,11 @@ import numpy as np
 
 LOO = {"no_f", "no_a2", "no_c", "no_d", "no_qd"}
 SINGLE = {"full", "cem", "es", "pbt", "a2", "d"}
+GRU_CONTRASTS = (("gru_full", "gru_ppo"), ("full", "gru_full"), ("ppo", "gru_ppo"))
+
+
+def gru_contrast(row):
+    return row["arm"].startswith("gru_") or row["reference"].startswith("gru_")
 
 
 def read_csv(path):
@@ -147,7 +152,10 @@ def effects(curves):
     for (group, task, mode), arms in sorted(groups.items()):
         names = sorted({key[0] for key in arms})
         for arm in names:
-            for reference in (("full",) if arm in LOO else ("ppo",) if arm in SINGLE else ()):
+            references_for_arm = list(("full",) if arm in LOO else ("ppo",) if arm in SINGLE else ())
+            if any(name.startswith("gru_") for name in names):
+                references_for_arm += [reference for name, reference in GRU_CONTRASTS if name == arm]
+            for reference in references_for_arm:
                 if arm == reference:
                     continue
                 pairs, progress, references = [], [], []
@@ -256,6 +264,48 @@ def diagnose(runs, curves, contrasts):
     return rows
 
 
+def gru_section(runs, curves, contrasts, events):
+    selected = [r for r in runs if r["arm"].startswith("gru_")]
+    if not selected:
+        return []
+    lines = ["", "## GRU 比較", "",
+             "gru_full − gru_ppo はGRU内の集団探索効果、full − gru_full と ppo − gru_ppo は同じ学習予算でのlightとの比較。",
+             "対応seedごとの最新共通評価updateを使用し、未完走を含む。共通評価がなければ差・区間はNA。",
+             "粒子数等のGRUで使わないキーは計算量の一致を意味しない。実行設定とFLOPsの比較は別途確認する。", "",
+             f"GRU読込: {len(selected)} runs、評価未到達: {sum(not r['evaluation'] for r in selected)} runs。", "",
+             "|群/課題|mode|腕−参照|対応seed数|共通update|平均差|95%区間|seedごとの差|",
+             "|---|---|---|---:|---|---:|---|---|"]
+    for r in contrasts:
+        if gru_contrast(r):
+            individual = "; ".join(f"{seed}: {fmt(delta)}" for _, seed, delta in json.loads(r["paired_differences"])) or "NA"
+            lines.append(f"|{r['group']}/{r['task']}|{r['mode']}|{r['arm']}−{r['reference']}|{r['pairs']}|{r['updates'] or 'NA'}|{fmt(r['difference'])}|[{fmt(r['ci_low'])}, {fmt(r['ci_high'])}]|{individual}|")
+    lines += ["", "### GRU 最新成績", "", "|課題/腕/seed|mode|update|推論収益|F収益|探索最良|", "|---|---|---:|---:|---:|---:|"]
+    latest = {}
+    for row in curves:
+        if row["arm"].startswith("gru_"):
+            key = tuple(row[k] for k in ("group", "task", "arm", "checkpoint_seed", "seed", "mode"))
+            if key not in latest or row["update"] > latest[key]["update"]:
+                latest[key] = row
+    for _, r in sorted(latest.items()):
+        lines.append(f"|{r['task']}/{r['arm']}/{r['seed']}|{r['mode']}|{r['update']}|{fmt(r['inference'])}|{fmt(r['optimizer'])}|{fmt(r['best_explorer'])}|")
+    lines += ["", "### gru_full の F 診断", "",
+              "採用イベントと各runの最新判定を表示。採用前後と次PPO前後は測定したupdateだけ値を持つ。未測定はNA。",
+              "|課題/seed|update|累積採用|採用|候補|pairs|対応差|下側限界|fitness F|探索最良|採用前|採用後|PPO前後差|",
+              "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    f_events = [r for r in events if r["arm"] == "gru_full"]
+    latest_events = {(r["group"], r["task"], r["seed"]): r for r in f_events}
+    for r in f_events:
+        if r["optimizer_adopted"] == 1 or r is latest_events[r["group"], r["task"], r["seed"]]:
+            fields = ("optimizer_adoptions", "optimizer_adopted", "optimizer_candidate", "optimizer_pair_count",
+                      "optimizer_difference", "optimizer_lower_bound", "optimizer_fitness_return",
+                      "optimizer_explorer_best", "optimizer_return_before", "optimizer_return_after", "optimizer_ppo_return_change")
+            lines.append(f"|{r['task']}/{r['seed']}|{r['update']}|" + "|".join(fmt(number(r, k)) for k in fields) + "|")
+    lines += ["", "|run|診断|判定|規則|観測値|", "|---|---|---|---|---|"]
+    for row in diagnose(selected, curves, contrasts):
+        lines.append("|" + "|".join(str(x).replace("|", "\\|") for x in row) + "|")
+    return lines
+
+
 def analyze(paths, out, plots=True):
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -290,16 +340,22 @@ def analyze(paths, out, plots=True):
     for row in latest.values():
         summary[row["group"],row["task"],row["arm"],row["mode"]].append(row)
     for (group, task, arm, mode), values in sorted(summary.items()):
+        if arm.startswith("gru_"):
+            continue
         fields = [fmt(finite_mean([r[k] for r in values])) for k in ("inference","best_individual","population_mean","mean_actor","optimizer","best_explorer")]
         lines.append(f"|{group}/{task}/{arm}|{mode}|{len(values)}|{min(r['update'] for r in values)}–{max(r['update'] for r in values)}|"+"|".join(fields)+"|")
     lines += ["", "## 対応差と区間", "", "|群/課題|mode|腕−参照|pairs/clusters|共通update|平均差|95%区間|", "|---|---|---|---:|---|---:|---|"]
     for r in contrasts:
+        if gru_contrast(r):
+            continue
         lines.append(f"|{r['group']}/{r['task']}|{r['mode']}|{r['arm']}−{r['reference']}|{r['pairs']}/{r['clusters']}|{r['updates']}|{fmt(r['difference'])}|[{fmt(r['ci_low'])}, {fmt(r['ci_high'])}]|")
     lines += ["", "## 課題横断の要約", "",
               "課題ごとに Δ/max(1,|対応参照腕の平均収益|) として規模を揃え、課題を等重みで平均する。単位の異なる生収益は合算しない。",
               "当該対比の利用可能な課題すべてに共通するseedだけを使い、同じseedの課題ベクトルを一緒にbootstrapする。課題が1つなら課題横断の証拠にはならない。",
               "|群/mode|対比|課題|共通seed数|正規化差|95%区間|", "|---|---|---|---:|---:|---|"]
     for r in cross:
+        if gru_contrast(r):
+            continue
         lines.append(f"|{r['group']}/{r['mode']}|{r['arm']}−{r['reference']}|{r['tasks']}|{r['pairs']}|{fmt(r['difference'])}|[{fmt(r['ci_low'])}, {fmt(r['ci_high'])}]|")
     lines += ["", "## 最適化専用個体の取り込み", "",
               "前/後は採用イベントにおける同一評価seedの値。PPO前/後も各update内で同一seed。学習rollout収益とは区別する。",
@@ -308,13 +364,16 @@ def analyze(paths, out, plots=True):
     for r in events:
         latest_events[r["group"],r["task"],r["arm"],r["seed"]] = r
     for r in events:
+        if r["arm"].startswith("gru_"):
+            continue
         if r["optimizer_adopted"] == 1 or r is latest_events[r["group"],r["task"],r["arm"],r["seed"]]:
             values = [fmt(r[k]) for k in ("optimizer_adoptions","optimizer_adopted","optimizer_candidate","optimizer_difference","optimizer_lower_bound","optimizer_return_before","optimizer_return_after","optimizer_ppo_return_change")]
             lines.append(f"|{r['task']}/{r['arm']}/{r['seed']}|{r['update']}|" + "|".join(values) + "|")
     lines += ["", f"全F診断時系列: [{eventpath.name}]({eventpath.name})。課題横断個票: [{crosspath.name}]({crosspath.name})。"]
     lines += ["", "## 失敗時の切り分け（判定規則付き）", "", "|run|診断|判定|規則|観測値|", "|---|---|---|---|---|"]
-    for row in diagnose(runs, curves, contrasts):
+    for row in diagnose([r for r in runs if not r["arm"].startswith("gru_")], curves, contrasts):
         lines.append("|"+"|".join(str(x).replace("|","\\|") for x in row)+"|")
+    lines += gru_section(runs, curves, contrasts, events)
     lines += ["", "## 学習曲線", "", f"全測定点: [{curvepath.name}]({curvepath.name})。対応差の個票: [{effectpath.name}]({effectpath.name})。"]
     if plots and importlib.util.find_spec("matplotlib") is None:
         plots = False

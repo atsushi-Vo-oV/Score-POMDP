@@ -1,5 +1,6 @@
 """Own-actor PPO ratios; no transitions are borrowed by other actors."""
 import torch
+from .representation import actor
 from ..ppo import diffusion_advantage_weights
 
 
@@ -12,7 +13,7 @@ def policy_objective(model, condition, rollout, environment_indices, advantages,
     if c.bank is not None:
         new, entropies = c.bank.log_prob_for(condition, chain, ids)
     else:
-        new, entropies = model.diffusion_policy.log_prob_chain(condition, chain)
+        new, entropies = actor(model).log_prob_chain(condition, chain)
     weights = diffusion_advantage_weights(new.shape[1], model_config["diffusion_advantage_discount"],
                                          device=new.device, dtype=new.dtype)
     advantage = advantages[:, environment_indices].flatten(0, 1)[:, None] * weights

@@ -26,15 +26,16 @@ def configured_updates(config):
 
 def repair_inference_export(state, config, path, task, seed):
     """Recover a crash between the authoritative population commit and export."""
-    from ..train import model_for_environment, resolve_device
+    from ..train import resolve_device
+    from .representation import make_model
     from ..initialization import initialize_model
     from .controller import Controller
     device = resolve_device(config.base["experiment"]["device"])
     env = make_env(task, config.environment_for_task(task), seed=seed)
     with torch.random.fork_rng(devices=[device.index or 0] if device.type == "cuda" else []):
-        model = model_for_environment(env, config.base["model"], device)
+        model = make_model(env, config.base.to_dict(), device)
         initialize_model(model, config.base["model"], resume=True)
-        artifacts = SeedArtifacts(path, task, seed, "score_transformer", "full")
+        artifacts = SeedArtifacts(path, task, seed, config.method, "full")
         controller = Controller(model, config.to_dict(), task, seed, artifacts, env, device, resume=True)
         model.load_state_dict(state["model"], strict=True)
         controller.restore(state["population"])
@@ -47,6 +48,8 @@ def run_population(config, *, campaign_id, seeds=None, bulk_index=None, shard_in
     if not isinstance(config, PopConfig):
         config = PopConfig(config.to_dict())
     config.validate()
+    if config.method == "gru":
+        from .gru_session import train_single
     r = config.to_dict()
     _strict_component(campaign_id, "campaign id")
     if max_updates is not None and segment_updates is not None:
@@ -65,7 +68,7 @@ def run_population(config, *, campaign_id, seeds=None, bulk_index=None, shard_in
     summaries = []
     for index, task, seed in selection:
         shard = Path(r["experiment"]["output_dir"]) / "campaigns" / campaign_id / f"shard{shard_index or index:03d}"
-        path = shard / "full" / "score_transformer" / task / f"seed_{seed:03d}"
+        path = shard / "full" / config.method / task / f"seed_{seed:03d}"
         checkpoint = path / "checkpoints/population.pt"
         resume_path = None
         if path.exists() and any(path.iterdir()):
@@ -93,11 +96,13 @@ def run_population(config, *, campaign_id, seeds=None, bulk_index=None, shard_in
                 continue
             resume_path = checkpoint
         path.mkdir(parents=True, exist_ok=True)
-        artifacts = SeedArtifacts(path, task, seed, "score_transformer", "full")
+        artifacts = SeedArtifacts(path, task, seed, config.method, "full")
         _atomic_write_json(shard / "resolved_config.json", r)
+        trainer_options = {"result_dir": str(path.relative_to(shard))} if config.method == "gru" else {}
         summary = train_single(config, task=task, seed=seed, artifacts=artifacts,
-                               method="score_transformer", resume_checkpoint=resume_path,
-                               segment_updates=segment_updates, max_updates=max_updates, verbose=verbose)
+                               method=config.method, resume_checkpoint=resume_path,
+                               segment_updates=segment_updates, max_updates=max_updates, verbose=verbose,
+                               **trainer_options)
         _atomic_write_json(shard / "summary.json", summary)
         summaries.append(summary)
     return summaries

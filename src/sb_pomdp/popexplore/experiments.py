@@ -19,7 +19,8 @@ ARMS = {
     "ppo": {},
 }
 PRODUCTION_ARMS = tuple(ARMS)
+GRU_ARMS = ("gru_ppo", "gru_full")
 
 
 def arm_config(name):
-    return deepcopy(ARMS[name])
+    return deepcopy(ARMS[name.removeprefix("gru_") if name in GRU_ARMS else name])
