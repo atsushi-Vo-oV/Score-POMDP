@@ -67,3 +67,21 @@ def evaluate_population(model, *, task, environment_config, model_config, episod
     return {"returns": returns.reshape(n, episodes), "lengths": lengths.reshape(n, episodes),
             "descriptors": descriptors.reshape(n, episodes, -1).mean(1),
             "saturation": (saturation / lengths).reshape(n, episodes).mean(1)}
+
+
+def evaluate_batched(model, **arguments):
+    """Single-actor evaluation with the (summary, trajectories) shape of ``train.evaluate``.
+
+    All episodes advance together, so the cost is one horizon of belief updates
+    instead of ``episodes`` horizons.  Random numbers are assigned differently
+    from the sequential ``train.evaluate``; compare its values only with other
+    values from this function.  No trajectories are recorded.
+    """
+    result = evaluate_population(model, **arguments)
+    if result["returns"].shape[0] != 1:
+        raise ValueError("evaluate_batched expects an ordinary single-actor model")
+    returns, lengths = result["returns"][0], result["lengths"][0]
+    summary = {"mean_return": float(returns.mean()), "std_return": float(returns.std()),
+               "mean_length": float(lengths.mean()),
+               "action_saturation_fraction": float(result["saturation"][0])}
+    return summary, {}

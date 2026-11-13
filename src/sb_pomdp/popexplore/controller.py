@@ -10,10 +10,11 @@ import torch
 
 from ..artifacts import CsvAppender
 from ..initialization import load_bc_actor
-from ..train import evaluate, save_checkpoint, build_optimizer, source_sha256
+from ..train import save_checkpoint, build_optimizer, source_sha256
 from ..ppo import update_ppo as ordinary_ppo
 from .actors import PopulationPolicy, OUBias, assignments
-from .evaluation import evaluate_population
+# Single-actor diagnostics use the batched evaluator (one horizon, not one per episode).
+from .evaluation import evaluate_population, evaluate_batched as evaluate
 from .rnd import RND
 from .selection import PopulationSearch, ActorAdam, rank_correlation
 from .optimizer_agent import AdoptionGate, imitate
@@ -205,8 +206,11 @@ class Controller:
             self.teacher_actions.append(action.detach().clone())
 
     def before_learning(self):
-        if self.f_enabled and self.phase == "ppo" and not self.cfg["fitness_from_rollout"]:
+        self.pre_ppo_return = float("nan")
+        if (self.f_enabled and self.phase == "ppo" and not self.cfg["fitness_from_rollout"]
+                and self.gate.followup):
             # Same current-update seeds before/after PPO isolate immediate undoing.
+            # Only the PPO update right after an adoption needs this diagnostic.
             args = self.eval_args(self.cfg["fitness_episodes"], self.seed + 2_000_000 + self.ppo_updates * 1000, False)
             summary, _ = evaluate(self.inference_model("optimizer"), **args)
             self.pre_ppo_return = summary["mean_return"]
@@ -347,8 +351,12 @@ class Controller:
             if self.f_enabled:
                 decision = self.gate.observe(self.ppo_updates, scores)
                 summary = {"mean_return":float("nan")}
-                if not rollout_fitness:
+                adopting = decision["eligible"] and self.fcfg["adopt"] != "none"
+                # F's own before/after evaluation is a diagnostic of adoption events:
+                # run it when F is about to adopt, and in the PPO update after one.
+                if not rollout_fitness and (adopting or self.gate.followup):
                     summary, _ = evaluate(self.inference_model("optimizer"), **args)
+                self.gate.followup = False
                 before = summary["mean_return"]
                 d.update(optimizer_candidate=decision["candidate"], optimizer_pair_count=decision["pairs"],
                          optimizer_difference=decision["difference"], optimizer_lower_bound=decision["lower"],
@@ -357,9 +365,10 @@ class Controller:
                          optimizer_explorer_best=float(np.nanmax(scores[1:])) if np.isfinite(scores[1:]).any() else float("nan"),
                          optimizer_fitness_return=float(scores[0]),
                          optimizer_adopted=0)
-                if decision["eligible"] and self.fcfg["adopt"] != "none":
+                if adopting:
                     d["optimizer_bc_loss"] = self.adopt(decision["candidate"])
                     d["optimizer_adopted"] = 1
+                    self.gate.followup = True
                     if not rollout_fitness:
                         summary, _ = evaluate(self.inference_model("optimizer"), **args)
                 d["optimizer_return_after"] = summary["mean_return"]

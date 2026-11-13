@@ -234,8 +234,8 @@ def test_rnd_fixed_target_and_normalization():
     assert moments.variance == pytest.approx(float(values.double().var(unbiased=False)))
 
 
-@pytest.mark.parametrize("key,value", [("model.score_implementation", "analytic"),
-    ("model.belief_cuda_graphs", True), ("model.particle_sampler", "ula"),
+@pytest.mark.parametrize("key,value", [("model.belief_compile", "inductor"),
+    ("model.dropout", 0.1), ("model.particle_sampler", "ula"),
     ("popexplore.population_size", 3), ("popexplore.ou_tau", 0), ("popexplore.typo", 1)])
 def test_unsupported_rejected(tmp_path, key, value):
     with pytest.raises((ConfigError, ValueError)):
@@ -404,3 +404,23 @@ def test_archive_capacity_quality_and_es_ties():
     before = es.mean.clone()
     es.update(vectors,[1,1,1,1],np.eye(4))
     assert torch.equal(before,es.mean)
+
+
+def test_analytic_score_matches_autograd(tmp_path):
+    """The analytic score is an execution-only switch of the shared belief; the population path only passes it through."""
+    metrics = {}
+    for implementation in ("autograd", "analytic"):
+        root = tmp_path / implementation
+        cfg = tiny(root, "full", **{"model.score_implementation": implementation})
+        run_population(cfg, campaign_id="score", verbose=False)
+        directory = run_dir(root, "score")
+        metrics[implementation] = (rows(directory / "metrics.csv"), rows(directory / "population.csv"))
+    compared = set()
+    for reference, analytic in zip(*metrics.values()):
+        assert len(reference) == len(analytic) > 0
+        for a, b in zip(reference, analytic):
+            for key in ("policy_loss", "value_loss", "fitness_return_std", "return_mean"):
+                if key in a and a[key] not in ("", "nan"):
+                    assert float(b[key]) == pytest.approx(float(a[key]), rel=1e-3, abs=1e-4), key
+                    compared.add(key)
+    assert {"policy_loss", "value_loss", "return_mean"} <= compared

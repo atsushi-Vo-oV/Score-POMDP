@@ -32,6 +32,8 @@ class AdoptionGate:
         self.history = [[] for _ in range(population_size)]
         self.count = 0
         self.last_update = 0
+        # True from an adoption until the next PPO update has been diagnosed.
+        self.followup = False
         self.critical = student_quantile(
             1 - (1 - config["confidence"]) / (population_size - 1), config["window"] - 1)
 

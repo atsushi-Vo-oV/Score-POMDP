@@ -27,8 +27,14 @@ if [[ -n "${SB_POMDP_POPX_OVERRIDES:-}" ]]; then
     args+=(--override "$line")
   done < "$SB_POMDP_POPX_OVERRIDES"
 fi
-args+=(--override model.score_implementation=autograd --override model.belief_cuda_graphs=false
-       --override model.belief_compile=off)
+# Execution-only belief acceleration (same switches as the main trainer's .sb_overrides):
+# SB_POMDP_POPX_FAST=1 selects the analytic score with CUDA Graphs, otherwise autograd.
+if [[ "${SB_POMDP_POPX_FAST:-0}" == 1 ]]; then
+  args+=(--override model.score_implementation=analytic --override model.belief_cuda_graphs=true)
+else
+  args+=(--override model.score_implementation=autograd --override model.belief_cuda_graphs=false)
+fi
+args+=(--override model.belief_compile=off)
 mkdir -p "logs/popx-locks/$SB_POMDP_CAMPAIGN_ID"
 command -v flock >/dev/null || { echo 'flock is required for shard locking (Linux util-linux)'; exit 2; }
 exec 9>"logs/popx-locks/$SB_POMDP_CAMPAIGN_ID/shard$SB_POMDP_SHARD_INDEX.lock"

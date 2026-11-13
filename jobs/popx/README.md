@@ -42,7 +42,7 @@ bash jobs/popx/run_popx.sh /path/to/popx-tree jobs/popx/popx_scratch_carflag_ful
 
 runnerはTREE/JOB/GPU、stdout統合、学習exit codeを維持します。入力不備2、flock競合75。
 `SB_POMDP_SEGMENT_UPDATES=10`で分割再開できます。partial成功もexit0なので、完了まで同じ行を再投入してください。
-`launch.sh`は`.sb_overrides`を読みません。autograd/graphs=false/compile=offを末尾で明示します。
+`launch.sh`は`.sb_overrides`を読みません。既定はautograd/graphs=false、`SB_POMDP_POPX_FAST=1`でanalytic/graphs=true、どちらもcompile=offを末尾で明示します。
 専用の`SB_POMDP_POPX_OVERRIDES`で1行`dotted.key=JSON`のoverrideを渡せます。
 
 mathのscheduler2実物はこのtreeにありません。固定runnerで引数を解釈した後、旧compare引数の構築前に次の分岐を入れる案です。
@@ -99,7 +99,7 @@ population.csvに`rollout_behavior`と記録。QD archiveの再評価も省略�
 採用先の現actorと収益を生んだsnapshotの差も含む近似です。採用直前直後・PPO直前直後の成績は未測定のNAとします。
 定期評価は通常どおり行い、安価な機構のON/OFF比較用としてのみ使ってください。
 既定falseではBは従来の固定方策評価、Fは毎PPO更新の対応評価を使用。archiveも現在のbeliefで再評価するため費用は大きくなります。
-FのPPO前/後、採用前/後は単一actor評価の同一seed比較で別途記録します。
+FのPPO前/後、採用前/後は単一actor評価（全話同時のbatch評価）の同一seed比較で、採用するupdateとその次のPPO updateだけ記録します（それ以外はNaN。毎updateのFの成績は`optimizer_fitness_return`）。
 
 ## 出力と再開
 
@@ -141,4 +141,5 @@ CPU短縮例: `PYTHONPATH=src python scripts/popx_followup_smoke.py --output-roo
 full/ppo/no_f、3課題、2対応seed、1pretrain+8PPO+3predict、縮小モデルで信念も学習します。
 
 対応範囲はdirect/autograd score、SVGD、transformer(dropout0)、continuous diffusion、state/shared encoder、condition prediction。
-analytic score、CUDA Graphs、compile、activation checkpoint、SIL/curl、別value encoder等は従来どおり明示拒否です。
+compile、activation checkpoint、SIL/curl、別value encoder等は従来どおり明示拒否です。
+analytic score と CUDA Graphs は共有beliefの内部だけで働く実行時の切替なので許可しています（`SB_POMDP_POPX_FAST=1`でlaunch.shがanalytic + graphsを指定、既定はautograd）。

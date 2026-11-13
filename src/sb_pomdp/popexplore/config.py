@@ -122,11 +122,13 @@ class PopConfig:
         for key, value in required.items():
             if m.get(key) != value:
                 raise ConfigError(f"popexplore requires model.{key}={value}")
-        for key in ("belief_cuda_graphs", "belief_activation_checkpoint", "policy_observation_input", "score_curl_monitor"):
+        # score_implementation=analytic and belief_cuda_graphs are execution-only switches inside
+        # the shared belief module (not vmapped here), so they are allowed as in the main trainer.
+        for key in ("belief_activation_checkpoint", "policy_observation_input", "score_curl_monitor"):
             if m.get(key):
                 raise ConfigError(f"popexplore does not support model.{key}")
-        if m.get("score_implementation") == "analytic" or m.get("dropout", 0) != 0:
-            raise ConfigError("popexplore requires autograd score and dropout=0")
+        if m.get("dropout", 0) != 0:
+            raise ConfigError("popexplore requires dropout=0")
         if m.get("value_encoder") != "shared":
             raise ConfigError("popexplore requires model.value_encoder=shared")
         for key in ("reward_prediction_coef", "observation_prediction_coef", "score_curl_penalty"):

@@ -238,3 +238,50 @@ def test_pull_changes_only_search_mean(tmp_path, monkeypatch):
     c.external = [torch.ones(4)]
     c.finish_update(SimpleNamespace(returns=torch.ones(2,4),old_values=torch.zeros(2,4)), [])
     assert torch.equal(c.search.mean, original) and torch.equal(c.vectors()[0], original)
+
+
+def test_optimizer_self_evaluation_only_around_adoption(tmp_path, monkeypatch):
+    """F's own before/after evaluations are diagnostics of adoption events, not a per-update cost."""
+    c = controller(tmp_path, **{"popexplore.optimizer_agent.adopt":"copy", "popexplore.selection_interval":100})
+    calls = []
+    monkeypatch.setattr("sb_pomdp.popexplore.controller.evaluate_population",
+                        lambda *a, **k:dict(returns=np.ones((4,2)), descriptors=np.eye(4)))
+    monkeypatch.setattr("sb_pomdp.popexplore.controller.evaluate",
+                        lambda *a, **k:(calls.append(1) or {"mean_return":float(len(calls))}, {}))
+    rollout = SimpleNamespace(returns=torch.ones(2,4), old_values=torch.zeros(2,4))
+    quiet = dict(candidate=1, pairs=1, difference=0., lower=float("nan"), eligible=False)
+
+    def step(update, decision):
+        if update > 1:
+            c.begin_update(update, "ppo")
+        monkeypatch.setattr(c.gate, "observe", lambda u, scores: decision)
+        c.external = [torch.ones(4)]
+        c.before_learning()
+        return c.finish_update(rollout, [])
+
+    result = step(1, quiet)
+    assert not calls and np.isnan(result["optimizer_return_before"]) and np.isnan(result["optimizer_return_after"])
+    result = step(2, {**quiet, "pairs":5, "difference":1., "lower":.5, "eligible":True})
+    assert len(calls) == 2 and result["optimizer_adopted"] == 1 and c.gate.followup
+    assert (result["optimizer_return_before"], result["optimizer_return_after"]) == (1., 2.)
+    assert torch.equal(c.vectors()[0], c.vectors()[1])
+    result = step(3, quiet)  # the PPO update after the adoption: pre-PPO and post-PPO
+    assert len(calls) == 4 and not c.gate.followup and result["optimizer_adopted"] == 0
+    assert result["optimizer_return_pre_ppo"] == 3. and result["optimizer_ppo_return_change"] == 1.
+    result = step(4, quiet)
+    assert len(calls) == 4 and np.isnan(result["optimizer_return_pre_ppo"])
+
+
+def test_evaluate_batched_matches_population_evaluator(tmp_path):
+    from sb_pomdp.popexplore.evaluation import evaluate_batched, evaluate_population
+    c = controller(tmp_path)
+    arguments = c.eval_args(3, 1234, False)
+    model = c.inference_model("optimizer")
+    summary, trajectories = evaluate_batched(model, **arguments)
+    again, _ = evaluate_batched(model, **arguments)
+    reference = evaluate_population(model, **arguments)
+    assert trajectories == {} and summary == again
+    assert set(summary) == {"mean_return", "std_return", "mean_length", "action_saturation_fraction"}
+    assert summary["mean_return"] == float(reference["returns"][0].mean())
+    with pytest.raises(ValueError):
+        evaluate_batched(c.model, **arguments)
