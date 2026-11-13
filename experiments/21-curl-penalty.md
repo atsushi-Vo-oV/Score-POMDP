@@ -4,7 +4,7 @@
 - **腕（campaign）**: `trysvgdlight-<task>-tf-svgd-curl-{mon,c001,c01,r01,r1}-v1`。mon は λ=0 + monitor、c001 / c01 は constant λ=0.01 / 0.1、r01 / r1 は ramp 0→0.1 / 1.0。GRU 対照は既存 `trysvgd-<task>-gru-ctl-v1`、素の light は既存 `trysvgdlight-<task>-tf-svgd-ctl-v1`。
 - **課題**: mirror2（333 総更新、PPO 200）、tagr（1293 総更新、PPO 1000）、各 seed 10–14。2 課題 × 5 腕 × 5 seed = 50 本。
 - **設定とジョブ**: `../config/trysvgdlight_<task>_tf-svgd-curl-<arm>.json`、`../jobs/curl/trysvgdlight_<task>_tf-svgd-curl-<arm>_s{10..14}.sh`。全設定・campaign 対応とスケジュールの定義は [jobs/curl/README.md](../jobs/curl/README.md)。実装 `src/sb_pomdp/score_curl.py`、テスト `src/tests/test_score_curl.py` / `test_curl_experiments.py`。
-- **状態**: 2026-11-12、実装・CPU 検証・設定 10 個・ジョブ 50 本を準備。未投入。既定 off と mon の学習不変性、および変更前 HEAD との off 時の一致を確認。CPU の小設定では penalty のみの最適化で初期網・再帰網とも curl ratio が低下した。
+- **状態**: 2026-11-12、実装・CPU 検証・設定 10 個・ジョブ 50 本を準備し、math へ投入済み（seed 10–12 は SIL の mirror2 の後ろ、seed 13–14 は最後尾。途中結果は下の節）。既定 off と mon の学習不変性、および変更前 HEAD との off 時の一致を確認。CPU の小設定では penalty のみの最適化で初期網・再帰網とも curl ratio が低下した。
 
 ## 結果の解説
 

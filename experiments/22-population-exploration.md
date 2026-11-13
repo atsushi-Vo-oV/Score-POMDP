@@ -13,7 +13,7 @@
 - **対照の注意**: 全腕 64 環境 × 128 step（集団腕は 16 個体 × 4 環境）。update 数を既存の 16 環境の実験と揃えたので、環境 step は既存の 4 倍。既存の `trysvgdlight-<task>-tf-svgd-ctl-v1` とは直接比べず、同じ 64 環境の `ppo` 腕と比べる。F 自身の PPO データは 4 環境分（512 step / update）だけ。
 - **設定とジョブ**: `../config/popx_scratch_<task>_<arm>.json`、`../jobs/popx/popx_scratch_<task>_<arm>_r{10..14}.sh`、対応表 [jobs/popx/manifest.json](../jobs/popx/manifest.json)、説明 [jobs/popx/README.md](../jobs/popx/README.md)。実装 `src/sb_pomdp/popexplore/`（`python -m sb_pomdp.popexplore`。本体の train / compare とは別経路で、本体のソースは変更していない）、テスト `src/tests/test_popexplore.py` / `test_popx_optimizer.py`（全 off が元の PPO と bit 一致することを含む）。解析 `scripts/popx_analyze.py`、速度計測 `scripts/popx_bench.sh`。
 - **実行**: 信念の計算は本体の関数をそのまま呼ぶので、解析スコア + CUDA Graphs（実行時の切替、`SB_POMDP_POPX_FAST=1`）が使える。木の `.sb_overrides` は読まない。math（Ada 4 枚を 13 本で共有）での実測は 1 update あたり、autograd で tagr `ppo` 94〜148 秒 / tagr `full` 127〜185 秒 / mirror2 `full` 195〜247 秒、解析スコア + CUDA Graphs と評価の同時実行（全話を 1 batch で進める）で 44〜72 / 50〜77 / 51〜67 秒。同じ seed の 6 update で、両者の損失・収益・評価値は表示桁まで一致（mirror2 は 4 桁目に浮動小数の差）。最適化専用エージェント自身の前後評価は、取り込みが起きた update とその次の PPO update だけ行う。
-- **状態**: 2026-11-13、実装・CPU 検証（短縮実行は配線確認のみ）・math での速度計測・設定 36 + 6 個・ジョブ 180 + 30 本（GRU は下の節）を準備。未投入。
+- **状態**: 2026-11-13、実装・CPU 検証（短縮実行は配線確認のみ）・math での速度計測・設定 36 + 6 個・ジョブ 180 + 30 本（GRU は下の節）を準備。同日 19:36 に math へ 210 本を投入（木 v27、ユーザー「3seedのは全部優先で、全部投下OK」「早く終わるタスクから優先で！」）。seed 10–12 の 126 本は優先ブロック（SIL の tagr・Car-Flag 長時間版・KAN の seed 10–12）の直後、seed 13–14 の 84 本は最後尾。どちらも課題順は 1 本が短い順の mirror2 → Car-Flag → tagr、その中は seed 順、腕は light 12 腕 → `gru_ppo` → `gru_full`。math 側の投入は `run1102/add_popx.py`、並べ替えは `run1102/reorder_popx.py`。
 
 ## 結果の解説
 
