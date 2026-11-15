@@ -19,7 +19,8 @@
 - **課題**: mirror2（333 update）/ tps（213）/ Car-Flag（333）/ tagrs（1293）× seed 10–14。2 系統 × 3 腕 × 4 課題 × 5 seed = 120 本。
 - **注意**: 1 step の腕は結果のディレクトリが `…/tbptt_1/score_transformer/…` になる（従来は `…/full/…`）。math の評価・ビューア用スクリプトは両方を拾うよう直す。
 - **設定とジョブ**: `../config/trysvgdlight{,2}_<task>_tf-svgd-{bptt1,stored,stored-predfull}.json`、`../jobs/bptt1/*_s{10..14}.sh`、生成 `scripts/bptt1_generate.py`、テスト `src/tests/test_stored_replay.py`。
-- **状態**: 2026-11-15、実装・設定 24 個・ジョブ 120 本・テストを準備。未投入。
+- **速度**（math の共有 GPU、本番設定、16 環境）: PPO 更新 1 回が mirror2 で素 9〜16 秒 / bptt1 9〜13 秒 / stored 0.4〜1.6 秒、tagrs で素 10〜16 秒 / stored 0.3〜0.7 秒。ロールアウトの収集（128 step を時刻順）が残るので、1 update 全体では stored が素の 2〜5 倍（110〜170 → 190〜750 step / 秒）。stored の autograd と本番設定（解析スコア + CUDA Graphs）は 6 update 表示桁まで一致。
+- **状態**: 2026-11-15、実装・設定 24 個・ジョブ 120 本・テストを準備。同日 18:50 に math へ 120 本を投入（木 v35、ユーザー「投入OK.最優先でもおけ」）: seed 10–12 の 72 本は待ちの先頭（tps → mirror2 → Car-Flag → tagrs、各課題の中は stored → stored-predfull → bptt1、v2 が先）、seed 13–14 の 48 本は最後尾。結果待ち。
 
 ## 結果の解説
 
