@@ -275,6 +275,8 @@ _MODEL_KEYS = frozenset(
         "langevin_uniform_half_width",
         "langevin_initial_noise",
         "langevin_observation_anchor_steps",
+        "belief_replay",
+        "prediction_replay",
         "proposal_hidden",
         "initial_belief",
         "encoder_use_scores",
@@ -466,6 +468,13 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         # Rows moved by the observation anchor: "initial" (only t = 0, every earlier run) or "all"
         # (every step starts at mu(o_t) + sigma(o_t) * noise; needs langevin_observation_anchor).
         "langevin_observation_anchor_steps": "initial",
+        # How the PPO update replays the belief: "sequence" (in time order, every earlier run) or
+        # "stored" (every (time, environment) row at once from the incoming particles stored at
+        # collection; one-step gradients, needs belief_gradient_mode=tbptt_1).
+        "belief_replay": "sequence",
+        # Replay of the prediction phases: "same" (as the PPO update), or its own "full" /
+        # "tbptt_1" (in time order) / "stored".
+        "prediction_replay": "same",
         "proposal_hidden": [64],
         # Every earlier run scored t = 0 with its own initial network ("branch"); "prior" scores
         # it with the recursive networks over K learned prior particles and a zero action.
@@ -1114,6 +1123,20 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
     )
     if belief_gradient_mode not in BELIEF_GRADIENT_MODES:
         raise ConfigError("model.belief_gradient_mode must be full or tbptt_1")
+    belief_replay = _nonempty_string(section["belief_replay"], "model.belief_replay")
+    if belief_replay not in {"sequence", "stored"}:
+        raise ConfigError("model.belief_replay must be sequence or stored")
+    if belief_replay == "stored" and belief_gradient_mode != "tbptt_1":
+        raise ConfigError(
+            "model.belief_replay=stored takes one-step gradients: model.belief_gradient_mode must be tbptt_1"
+        )
+    prediction_replay = _nonempty_string(section["prediction_replay"], "model.prediction_replay")
+    if prediction_replay not in {"same", "full", "tbptt_1", "stored"}:
+        raise ConfigError("model.prediction_replay must be same, full, tbptt_1 or stored")
+    if "stored" in (belief_replay, prediction_replay) and (
+        float(section.get("score_curl_penalty", 0.0)) > 0 or bool(section.get("score_curl_monitor", False))
+    ):
+        raise ConfigError("the stored belief replay cannot be combined with the score curl penalty or monitor")
     return section
 
 

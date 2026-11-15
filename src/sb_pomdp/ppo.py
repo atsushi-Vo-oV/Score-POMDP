@@ -337,12 +337,86 @@ def _replay_belief_step(
     )
 
 
+BELIEF_REPLAYS = ("full", "tbptt_1", "stored")
+
+
+def belief_replay_mode(model_config: dict, objective: str = "ppo") -> str:
+    """How the belief is replayed for one objective: ``full`` / ``tbptt_1`` (in time order) or ``stored``.
+
+    The PPO and critic objectives follow ``model.belief_gradient_mode``, or ``stored`` when
+    ``model.belief_replay="stored"``.  The prediction objective follows the same choice unless
+    ``model.prediction_replay`` names its own (``full`` / ``tbptt_1`` / ``stored``).
+    """
+
+    replay = str(model_config["belief_gradient_mode"])
+    if str(model_config.get("belief_replay", "sequence")) == "stored":
+        replay = "stored"
+    if objective == "prediction":
+        chosen = str(model_config.get("prediction_replay", "same"))
+        if chosen != "same":
+            replay = chosen
+    if replay not in BELIEF_REPLAYS:
+        raise ValueError("the belief replay must be full, tbptt_1 or stored")
+    return replay
+
+
+def _replay_belief_stored(
+    model: ScoreBeliefActorCritic,
+    rollout: RolloutBatch,
+    environment_indices: torch.Tensor,
+    model_config: dict,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """One-step replay of every (time, environment) row at once from the stored incoming particles.
+
+    Each row repeats its own belief update with the saved noise, starting from the particles
+    that entered that step when the rollout was collected (a constant: no gradient crosses a
+    time boundary, as with ``tbptt_1``).  Before the first optimizer step of an update the result
+    equals the ``tbptt_1`` sequence replay exactly; afterwards the incoming particles are those of
+    the parameters that collected the rollout (they are not recomputed), which is what removes
+    the loop over time.
+    """
+
+    steps, environments = rollout.rollout_shape[0], int(environment_indices.numel())
+    episode_starts = rollout.initial[:, environment_indices]
+    previous_particles = rollout.previous_particles[:, environment_indices].detach()
+    if steps > 1:
+        # as in the sequence replay, a row that starts an episode inside the rollout begins from zeros
+        previous_particles = torch.cat(
+            (
+                previous_particles[:1],
+                torch.where(
+                    episode_starts[1:, :, None, None],
+                    torch.zeros_like(previous_particles[1:]),
+                    previous_particles[1:],
+                ),
+            )
+        )
+    particles, scores = _replay_belief_step(
+        model,
+        _time_environment_flatten(rollout.observations[:, environment_indices]),
+        _time_environment_flatten(previous_particles),
+        _time_environment_flatten(rollout.previous_actions[:, environment_indices]),
+        _time_environment_flatten(episode_starts),
+        _time_environment_flatten(rollout.ula_initial_noise[:, environment_indices]),
+        _time_environment_flatten(rollout.ula_step_noises[:, environment_indices]),
+        step_size=float(model_config["langevin_step_size"]),
+        gradient_mode="tbptt_1",
+        track_grad=True,
+        activation_checkpoint=False,
+    )
+    return (
+        particles.reshape(steps, environments, *particles.shape[1:]),
+        scores.reshape(steps, environments, *scores.shape[1:]),
+    )
+
+
 def replay_belief_sequence(
     model: ScoreBeliefActorCritic,
     rollout: RolloutBatch,
     environment_indices: torch.Tensor,
     model_config: dict,
     *, curl_samples: CurlReplaySamples | None = None,
+    replay: str | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Replay one rollout-long environment group with saved ULA randomness.
 
@@ -356,6 +430,16 @@ def replay_belief_sequence(
     gradient_mode = str(model_config["belief_gradient_mode"])
     if gradient_mode not in {"full", "tbptt_1"}:
         raise ValueError("model.belief_gradient_mode must be full or tbptt_1")
+    # ``replay`` (chosen per objective by ``belief_replay_mode``) overrides the configured mode.
+    if replay is None:
+        replay = belief_replay_mode(model_config)
+    if replay not in BELIEF_REPLAYS:
+        raise ValueError("replay must be full, tbptt_1 or stored")
+    if replay == "stored":
+        if curl_samples is not None:
+            raise ValueError("the stored belief replay does not support the score curl samples")
+        return _replay_belief_stored(model, rollout, environment_indices, model_config)
+    gradient_mode = replay
 
     observations = rollout.observations[:, environment_indices]
     previous_actions = rollout.previous_actions[:, environment_indices]
@@ -770,6 +854,9 @@ def update_ppo(
     if objective == "critic":
         curl_coef = 0.0
     curl_rng = curl_generator(score_curl_seed, score_curl_update) if use_curl else None
+    belief_replay = belief_replay_mode(model_config, objective)
+    if use_curl and belief_replay == "stored":
+        raise ValueError("score curl needs the sequence belief replay (not the stored replay)")
     rollout_steps, num_environments = rollout.rollout_shape
     configured_minibatch_size = int(ppo_config["minibatch_size"])
     sequence_microbatch_size = int(
@@ -860,6 +947,7 @@ def update_ppo(
                     rollout,
                     environment_indices,
                     model_config,
+                    replay=belief_replay,
                     **replay_kwargs,
                 )
                 condition, value_condition = encode_conditions(

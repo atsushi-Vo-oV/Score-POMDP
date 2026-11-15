@@ -34,6 +34,7 @@ tagr（鬼ごっこ、距離観測、1293）、tagre（楕円距離、環境 64�
 | 25 | 鬼の足を遅くした楕円距離の鬼ごっこ（tagres）で、信念の差は出るか | [25-slow-elliptic-tag.md](25-slow-elliptic-tag.md) | tagres | 設定 4 個・ジョブ 20 本（light v2 / light v1 / GRU / PF v3）を 2026-11-15 に投入、結果待ち |
 | 26 | 観測ノイズを強くした楕円距離の鬼ごっこ（tagresn）で、信念の差は出るか | [26-noisy-slow-elliptic-tag.md](26-noisy-slow-elliptic-tag.md) | tagresn | 設定 4 個・ジョブ 20 本（light v2 / light v1 / GRU / PF v3）を 2026-11-15 に投入、結果待ち |
 | 27 | 観測アンカーを毎 step の開始に入れると（と、その輸送 1 段版） | [27-anchor-every-step.md](27-anchor-every-step.md) | mirror2 / tps / Car-Flag / tagrs | 実装（`langevin_observation_anchor_steps`）・設定 16 個・ジョブ 80 本を 2026-11-15 に投入、結果待ち |
+| 28 | 信念の勾配を 1 step で打ち切ると（保存した粒子から全行を同時に再生する版を含む） | [28-one-step-gradients.md](28-one-step-gradients.md) | mirror2 / tps / Car-Flag / tagrs | 実装（`belief_replay` / `prediction_replay`）・設定 24 個・ジョブ 120 本を準備、未投入（2026-11-15） |
 | 10 | 楕円距離観測（能動的センシング）で信念は効くか | [10-tagre-elliptic.md](10-tagre-elliptic.md) | tagre | 2 seed 完走（FLOPs 未一致に注意） |
 | 11 | 画像観測（Minecraft）で動くか | [11-minecraft.md](11-minecraft.md) | MineRL | ほぼ完走 |
 | 12 | 現在観測を方策に直結すると差は埋まるか（leak 2 × 3） | [12-obs-leak.md](12-obs-leak.md) | tagr / mirror2 | seed 10〜11 完走、12〜14 待ち |

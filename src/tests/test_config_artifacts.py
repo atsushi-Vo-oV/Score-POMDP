@@ -103,6 +103,8 @@ _LEGACY_MODEL_DEFAULTS: dict[str, object] = {
     "langevin_uniform_half_width": 3.0 ** 0.5,
     "langevin_initial_noise": "normal",
     "langevin_observation_anchor_steps": "initial",
+    "belief_replay": "sequence",
+    "prediction_replay": "same",
     "proposal_hidden": [64],
     "initial_belief": "branch",
     "encoder_use_scores": True,

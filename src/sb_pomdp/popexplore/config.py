@@ -130,6 +130,8 @@ class PopConfig:
         if not gru:
             required.update(score_parameterization="direct", particle_sampler="svgd",
                             encoder_kind="transformer", belief_compile="off")
+        # the population learner has its own PPO update, with the sequence replay only
+        required.update(belief_replay="sequence", prediction_replay="same")
         for key, value in required.items():
             if m.get(key) != value:
                 raise ConfigError(f"popexplore requires model.{key}={value}")
