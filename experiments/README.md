@@ -28,9 +28,9 @@ tagr（鬼ごっこ、距離観測、1293）、tagre（楕円距離、環境 64�
 | 19 | スコア網・方策 / 価値ヘッドを KAN にすると | [19-kan.md](19-kan.md) | mirror2 / tagr | 投入済み（2026-11-12） |
 | 20 | BC 初期化 actor から PPO を再開すると保てるか / self-imitation（SIL） | [20-bc-resume-sil.md](20-bc-resume-sil.md) | tagr / Car-Flag | BC 再開 6 本投入（2026-11-12）、SIL は準備済み |
 | 21 | light の curl を一定 / 増加罰則で抑えると（素の light・GRU と比較） | [21-curl-penalty.md](21-curl-penalty.md) | mirror2 / tagr | 実装・CPU 検証・設定 10 個・ジョブ 50 本を math へ投入済み、seed 10–12 の途中結果あり（2026-11-13） |
-| 22 | actor の集団で探索し、最適化専用エージェントに取り込むと（部品の ON / OFF 比較） | [22-population-exploration.md](22-population-exploration.md) | Car-Flag / mirror2 / tagr | 実装・設定 42 個・light 12 腕を既定 v2 の上に作り直し（`popx2-`）、GRU 2 腕と合わせて 210 本。2026-11-14 に mirror2 / Car-Flag の seed 10–12 を最優先へ移動、結果待ち |
-| 23 | light TF-SVGD の既定 v2（一様開始・アンカーなし・非有界）は v1 と比べてどうか | [23-light-default-v2.md](23-light-default-v2.md) | mirror2 / tps / tagr / Car-Flag | 20 本を 2026-11-14 に math へ投入（seed 10–12 は待ちの先頭）、結果待ち。以後の新しい比較はこの v2 を素にする |
-| 24 | 鬼の足を遅くした鬼ごっこ（tagrs）で、信念の差は出るか | [24-slow-tag.md](24-slow-tag.md) | tagrs | 設定・ジョブ 15 本を準備、未投入（2026-11-14） |
+| 22 | actor の集団で探索し、最適化専用エージェントに取り込むと（部品の ON / OFF 比較） | [22-population-exploration.md](22-population-exploration.md) | Car-Flag / mirror2 / tagr | 実装・設定 42 個・light 12 腕を既定 v2 の上に作り直し（`popx2-`）、GRU 2 腕と合わせて 210 本。2026-11-15: mirror2 の seed 10–12 完走、Car-Flag 暫定。どの部品も 64 環境の素の PPO を上回らず（主因は選抜の雑音）。tagr は未着手 |
+| 23 | light TF-SVGD の既定 v2（一様開始・アンカーなし・非有界）は v1 と比べてどうか | [23-light-default-v2.md](23-light-default-v2.md) | mirror2 / tps / tagr / Car-Flag | 2026-11-15: mirror2 / tps / Car-Flag の seed 10–12 完走、3 課題とも v1 より悪い（mirror2 は 2 / 3 seed 崩壊、原因はアンカーなし）。tagr 走行中 |
+| 24 | 鬼の足を遅くした鬼ごっこ（tagrs）で、信念の差は出るか | [24-slow-tag.md](24-slow-tag.md) | tagrs | 2026-11-14 投入、seed 10–12 完走: PF v3 10.27 > GRU 8.08 > light v2 6.72（旋回 8.1、全状態の反発 13.7） |
 | 10 | 楕円距離観測（能動的センシング）で信念は効くか | [10-tagre-elliptic.md](10-tagre-elliptic.md) | tagre | 2 seed 完走（FLOPs 未一致に注意） |
 | 11 | 画像観測（Minecraft）で動くか | [11-minecraft.md](11-minecraft.md) | MineRL | ほぼ完走 |
 | 12 | 現在観測を方策に直結すると差は埋まるか（leak 2 × 3） | [12-obs-leak.md](12-obs-leak.md) | tagr / mirror2 | seed 10〜11 完走、12〜14 待ち |
