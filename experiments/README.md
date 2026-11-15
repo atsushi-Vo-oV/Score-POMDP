@@ -32,6 +32,7 @@ tagr（鬼ごっこ、距離観測、1293）、tagre（楕円距離、環境 64�
 | 23 | light TF-SVGD の既定 v2（一様開始・アンカーなし・非有界）は v1 と比べてどうか | [23-light-default-v2.md](23-light-default-v2.md) | mirror2 / tps / tagr / Car-Flag | 2026-11-15: mirror2 / tps / Car-Flag の seed 10–12 完走、3 課題とも v1 より悪い（mirror2 は 2 / 3 seed 崩壊、原因はアンカーなし）。tagr 走行中 |
 | 24 | 鬼の足を遅くした鬼ごっこ（tagrs）で、信念の差は出るか | [24-slow-tag.md](24-slow-tag.md) | tagrs | 2026-11-14 投入、seed 10–12 完走: PF v3 10.27 > GRU 8.08 > light v2 6.72（旋回 8.1、全状態の反発 13.7）。light v1 の 5 本を 2026-11-15 に準備、未投入 |
 | 25 | 鬼の足を遅くした楕円距離の鬼ごっこ（tagres）で、信念の差は出るか | [25-slow-elliptic-tag.md](25-slow-elliptic-tag.md) | tagres | 設定 4 個・ジョブ 20 本（light v2 / light v1 / GRU / PF v3）を準備、未投入（2026-11-15） |
+| 26 | 観測ノイズを強くした楕円距離の鬼ごっこ（tagresn）で、信念の差は出るか | [26-noisy-slow-elliptic-tag.md](26-noisy-slow-elliptic-tag.md) | tagresn | 設定 4 個・ジョブ 20 本（light v2 / light v1 / GRU / PF v3）を準備、未投入（2026-11-15） |
 | 10 | 楕円距離観測（能動的センシング）で信念は効くか | [10-tagre-elliptic.md](10-tagre-elliptic.md) | tagre | 2 seed 完走（FLOPs 未一致に注意） |
 | 11 | 画像観測（Minecraft）で動くか | [11-minecraft.md](11-minecraft.md) | MineRL | ほぼ完走 |
 | 12 | 現在観測を方策に直結すると差は埋まるか（leak 2 × 3） | [12-obs-leak.md](12-obs-leak.md) | tagr / mirror2 | seed 10〜11 完走、12〜14 待ち |
