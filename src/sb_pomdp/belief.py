@@ -315,6 +315,7 @@ class EnergyBelief(nn.Module):
         langevin_proposal: str = "noise",
         langevin_uniform_half_width: float = 3.0 ** 0.5,
         langevin_initial_noise: str = "normal",
+        observation_anchor_steps: str = "initial",
         num_particles: int | None = None,
         particle_sampler: str = "ula",
         smi_component_scale: float = 0.1,
@@ -550,6 +551,20 @@ class EnergyBelief(nn.Module):
         if langevin_initial_noise not in {"normal", "uniform"}:
             raise ValueError("langevin_initial_noise must be normal or uniform")
         self.langevin_initial_noise = str(langevin_initial_noise)
+        # Which rows the observation anchor shifts and scales: "initial" = only t = 0 (every earlier
+        # run), "all" = every step, i.e. the chain of step t starts at mu(o_t) + sigma(o_t) * noise.
+        # The recursive rows keep their own base noise (N(0, I), or U(-w, w) with the uniform
+        # proposal); a learned proposal or a warm start already owns those rows, so they are exclusive.
+        if observation_anchor_steps not in {"initial", "all"}:
+            raise ValueError("observation_anchor_steps must be initial or all")
+        if observation_anchor_steps == "all":
+            if not observation_anchor:
+                raise ValueError("observation_anchor_steps=all needs the observation anchor")
+            if langevin_proposal not in {"noise", "uniform"} or self.langevin_warm_start:
+                raise ValueError(
+                    "observation_anchor_steps=all cannot be combined with an affine / network proposal or a warm start"
+                )
+        self.observation_anchor_steps = str(observation_anchor_steps)
         self.proposal_mean: nn.Parameter | None = None
         self.proposal_log_scale: nn.Parameter | None = None
         self.proposal_network: nn.Module | None = None
@@ -1207,6 +1222,13 @@ class EnergyBelief(nn.Module):
                 particles = torch.where(initial.view(-1, 1, 1), particles, proposed)
             else:
                 particles = proposed
+        if self.observation_anchor is not None and self.observation_anchor_steps == "all":
+            # the recursive rows hold their base noise here; the same anchor moves them as well
+            particles = torch.where(
+                initial.view(-1, 1, 1),
+                particles,
+                anchor_mean[:, None, :] + anchor_log_scale.exp()[:, None, :] * particles,
+            )
         if self.langevin_warm_start:
             if incoming_particles.shape[1] != particles.shape[1]:
                 raise ValueError(

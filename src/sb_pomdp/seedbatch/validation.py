@@ -32,6 +32,7 @@ def validate(config):
         "policy_observation_input": {False}, "critic_kind": {"state"},
         "initial_belief": {"branch"}, "langevin_proposal": {"noise", "affine", "uniform"},
         "langevin_initial_noise": {"normal"},
+        "langevin_observation_anchor_steps": {"initial"},
         "energy_network_kind": {"mlp"}, "head_network_kind": {"mlp"},
         "trunk_network_kind": {"mlp"}, "policy_head_kind": {"mlp"},
         "reward_prediction_coef": {0.0}, "observation_prediction_coef": {0.0},

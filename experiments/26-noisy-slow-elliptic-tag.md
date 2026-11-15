@@ -7,7 +7,7 @@
 - **腕（campaign）**: light v2 の素 `trysvgdlight2-tagresn-tf-svgd-env64-k64-v1`、light v1 の素 `trysvgdlight-tagresn-tf-svgd-env64-k64-v1`、GRU `trysvgd-tagresn-gru-env64-k64-v1`、粒子フィルタ `trysvgd-tagresn-pf-v3-env64-k64-v1`。幅は tagre と同じ。seed 10–14、20 本。
 - **注意**: tagre と同じく **FLOPs は未一致**（K = 64 の light は GRU の約 9 倍）。
 - **設定とジョブ**: `../config/trysvgdlight2_tagresn_tf-svgd.json`、`../config/trysvgdlight_tagresn_tf-svgd.json`、`../config/trysvgd_tagresn_{gru,pf_v3}.json`、`../jobs/tagresn/*_s{10..14}.sh`、生成 `scripts/tagres_generate.py`、テスト `src/tests/test_tagres.py`（tagre との差が鬼の速さとノイズの 2 キーだけ、v2 は加えて既定 v2 の 5 キーだけであること）。
-- **状態**: 2026-11-15、設定 4 個・ジョブ 20 本・テストを準備。未投入。
+- **状態**: 2026-11-15、設定 4 個・ジョブ 20 本・テストを準備。2026-11-15 12:36 に math へ投入（木 v33、ユーザー「投入はおｋ」）: seed 10–12 は待ちの先頭、seed 13–14 は最後尾。結果待ち。
 
 ## 結果の解説
 

@@ -274,6 +274,7 @@ _MODEL_KEYS = frozenset(
         "langevin_proposal",
         "langevin_uniform_half_width",
         "langevin_initial_noise",
+        "langevin_observation_anchor_steps",
         "proposal_hidden",
         "initial_belief",
         "encoder_use_scores",
@@ -462,6 +463,9 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         # Base noise of the t = 0 chain start (before the observation anchor): "normal" (N(0, I),
         # every earlier run) or "uniform" (U(-w, w) per coordinate, w = langevin_uniform_half_width).
         "langevin_initial_noise": "normal",
+        # Rows moved by the observation anchor: "initial" (only t = 0, every earlier run) or "all"
+        # (every step starts at mu(o_t) + sigma(o_t) * noise; needs langevin_observation_anchor).
+        "langevin_observation_anchor_steps": "initial",
         "proposal_hidden": [64],
         # Every earlier run scored t = 0 with its own initial network ("branch"); "prior" scores
         # it with the recursive networks over K learned prior particles and a zero action.
@@ -913,6 +917,17 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
             "model.langevin_initial_noise has no effect with model.initial_belief=prior "
             "(the t = 0 rows are scored as recursive rows)"
         )
+    anchor_steps = _nonempty_string(section["langevin_observation_anchor_steps"], "model.langevin_observation_anchor_steps")
+    if anchor_steps not in {"initial", "all"}:
+        raise ConfigError("model.langevin_observation_anchor_steps must be initial or all")
+    if anchor_steps == "all":
+        if not section["langevin_observation_anchor"]:
+            raise ConfigError("model.langevin_observation_anchor_steps=all needs model.langevin_observation_anchor")
+        if proposal not in {"noise", "uniform"} or section["langevin_warm_start"]:
+            raise ConfigError(
+                "model.langevin_observation_anchor_steps=all cannot be combined with an affine / network "
+                "model.langevin_proposal or model.langevin_warm_start"
+            )
     initial_belief = _nonempty_string(section["initial_belief"], "model.initial_belief")
     if initial_belief not in {"branch", "prior"}:
         raise ConfigError("model.initial_belief must be branch or prior")

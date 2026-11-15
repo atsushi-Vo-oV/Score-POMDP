@@ -6,7 +6,7 @@
 - **腕（campaign）**: light v2 の素 `trysvgdlight2-tagres-tf-svgd-env64-k64-v1`、light v1 の素 `trysvgdlight-tagres-tf-svgd-env64-k64-v1`（ユーザー 2026-11-15「いったんデフォルトは v2 にするものの、v1 の比較も続けてください」）、GRU `trysvgd-tagres-gru-env64-k64-v1`、粒子フィルタ `trysvgd-tagres-pf-v3-env64-k64-v1`。幅は tagre と同じ。seed 10–14、20 本。
 - **注意**: tagre と同じく **FLOPs は未一致**（K = 64 の light は GRU の約 9 倍: light 20.0 / PF v3 6.4 / GRU 2.16 MFLOP）。tagre の既存の結果は seed 10・11 の 2 本だけ。
 - **設定とジョブ**: `../config/trysvgdlight2_tagres_tf-svgd.json`、`../config/trysvgdlight_tagres_tf-svgd.json`、`../config/trysvgd_tagres_{gru,pf_v3}.json`、`../jobs/tagres/*_s{10..14}.sh`、生成 `scripts/tagres_generate.py`、テスト `src/tests/test_tagres.py`（tagre との差が鬼の速さだけ、v2 は加えて既定 v2 の 5 キーだけであること）。
-- **状態**: 2026-11-15、設定 4 個・ジョブ 20 本・テストを準備。未投入。
+- **状態**: 2026-11-15、設定 4 個・ジョブ 20 本・テストを準備。2026-11-15 12:36 に math へ投入（木 v33、ユーザー「投入はおｋ」）: seed 10–12 は待ちの先頭、seed 13–14 は最後尾。結果待ち。
 
 ## 結果の解説
 

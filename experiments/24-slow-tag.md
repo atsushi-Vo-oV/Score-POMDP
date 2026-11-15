@@ -14,7 +14,7 @@
   0.5〜0.7 は、何もしない方策が 4.1〜4.5、鬼の位置が分かる方策が 13.7〜18.4 で、差が最も読みやすい。
 - **腕（campaign）**: light v2 の素 `trysvgdlight2-tagrs-tf-svgd-v1`、GRU `trysvgd-tagrs-gru-v1`、粒子フィルタ `trysvgd-tagrs-pf-v3-v1`。幅は tagr と同じ（観測の次元が同じなので FLOPs の対応も同じ）。1293 update、seed 10–14、15 本。2026-11-15 に light v1 の素 `trysvgdlight-tagrs-tf-svgd-v1` を追加（ユーザー「いったんデフォルトは v2 にするものの、v1 の比較も続けてください。そのため tagrs を v1 でも検証して」）。v2 との差は [23](23-light-default-v2.md) の 5 キーだけ。5 本、合計 20 本。
 - **設定とジョブ**: `../config/trysvgdlight2_tagrs_tf-svgd.json`、`../config/trysvgdlight_tagrs_tf-svgd.json`（v1）、`../config/trysvgd_tagrs_{gru,pf_v3}.json`、`../jobs/tagrs/*_s{10..14}.sh`、テスト `src/tests/test_tagrs.py`（tagr との差が鬼の速さだけであること）。
-- **状態**: 2026-11-14、設定 3 個・ジョブ 15 本・テストを準備、CPU の短い試走済み。同日 06:14 に math へ 15 本を投入（木 v31、ユーザー「投入OK」）: seed 10–12 の 9 本は待ちの先頭（GRU → PF v3 → light v2）、seed 13–14 の 6 本は最後尾。2026-11-15 朝に seed 10–12 の 9 本が完走。light v1 の 5 本は 2026-11-15 に設定・ジョブ・テストを準備、未投入。
+- **状態**: 2026-11-14、設定 3 個・ジョブ 15 本・テストを準備、CPU の短い試走済み。同日 06:14 に math へ 15 本を投入（木 v31、ユーザー「投入OK」）: seed 10–12 の 9 本は待ちの先頭（GRU → PF v3 → light v2）、seed 13–14 の 6 本は最後尾。2026-11-15 朝に seed 10–12 の 9 本が完走。light v1 の 5 本は 2026-11-15 12:36 に math へ投入（木 v33、ユーザー「投入はおｋ」）: seed 10–12 は待ちの先頭、seed 13–14 は最後尾。
 
 ## 結果の解説
 
