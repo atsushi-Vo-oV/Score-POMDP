@@ -16,7 +16,7 @@
 - **課題**: mirror2（333 update）/ tps（213）/ Car-Flag（333）/ tagrs（1293、[24](24-slow-tag.md)）× seed 10–14 = 80 本。鬼ごっこは腕の差が出る tagrs にした（tagr はどの腕も 3.3〜3.7 に固まるため。私の判断）。
 - **注意**: 輸送 1 段の腕は行動 1 step の計算量が小さい（スコアの評価が 12 回 → 1 回）。FLOPs をそろえた比較ではなく、「輸送が働いているか」の切り分け用。
 - **設定とジョブ**: `../config/trysvgdlight{,2}_<task>_tf-svgd-anchor-all{,-l1}.json`、`../jobs/anchor_all/*_s{10..14}.sh`、生成 `scripts/anchor_all_generate.py`、テスト `src/tests/test_anchor_all.py`（既定が bit 一致、毎 step の開始点が式どおり、アンカーへの勾配、併用不可の組、各腕が素と上の表のキーだけ違うこと）。
-- **状態**: 2026-11-15、実装・設定 16 個・ジョブ 80 本・テストを準備。
+- **状態**: 2026-11-15、実装・設定 16 個・ジョブ 80 本・テストを準備。math の GPU で autograd と本番設定（解析スコア + CUDA Graphs）を 4 update 照合し、12 段・1 段とも損失と収益が表示桁まで一致（`timing_aall/`）。同日 13:03 に math へ 80 本を投入（木 v34、ユーザー「投入はおｋ」）: seed 10–12 の 48 本は待ちの先頭（tps → mirror2 → Car-Flag → tagrs、各課題の中は 1 段の腕が先）、seed 13–14 の 32 本は最後尾。結果待ち。
 
 ## 結果の解説
 
