@@ -8,6 +8,7 @@ import pytest
 from sb_pomdp.config import load_config
 
 ARMS = {"trysvgdlight2_tagrs_tf-svgd": ("trysvgdlight2_tagr_tf-svgd", "trysvgdlight2-tagrs-tf-svgd-v1", "trysvgdlight2_tagrs_svgd"),
+        "trysvgdlight_tagrs_tf-svgd": ("trysvgdlight_tagr_tf-svgd", "trysvgdlight-tagrs-tf-svgd-v1", "trysvgdlight_tagrs_svgd"),
         "trysvgd_tagrs_gru": ("trysvgd_tagr_gru", "trysvgd-tagrs-gru-v1", "trysvgd_tagrs_gru"),
         "trysvgd_tagrs_pf_v3": ("trysvgd_tagr_pf_v3", "trysvgd-tagrs-pf-v3-v1", "trysvgd_tagrs_pf_v3")}
 
