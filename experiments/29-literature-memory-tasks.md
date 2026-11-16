@@ -48,7 +48,8 @@ GRU と PF v3 の幅は、課題ごとに light TF-SVGD の行動 1 step の FLO
 
 - 設定 33 個: `../config/trysvgdlight{,2}_<task>_tf-svgd.json`、`../config/trysvgdlight_<task>_tf-svgd-prev-init.json`、`../config/trysvgd_<task>_{gru,pf_v3,mlp,oracle}.json`。
 - ジョブ 165 本: `../jobs/memref/*_s{10..14}.sh`（5 課題 × 6〜7 腕 × 5 seed）。生成 `scripts/memref_generate.py`、テスト `src/tests/test_memory_reference_tasks.py`。
-- **状態**: 2026-11-16、実装・設定・ジョブ・テストを準備。未投入（投入 OK 待ち）。
+- **状態**: 2026-11-16、実装・設定・ジョブ・テストを準備。math に木 v36（`Belief-Score-Based-Model-v36-20261116`、sha256 一致、CR 0、`.sb_overrides` は v31 と同じ）を置き、関連テスト 178 件通過（落ちる 1 件は v35 でも落ちる Light-Dark の数値比較）。本番の上書き設定（解析スコア + CUDA Graphs）で 12 本を各 12 update だけ GPU で走らせ、全腕・全課題が正常終了（離散行動の light も動く）。キュー追加は `run1102/add_memref.py` の dry-run まで。**未投入（投入 OK 待ち）**。
+- **速度と費用の見込み**（13 本同時の共有 GPU での実測 step / 秒）: light は `cpv` 76、memory length 82〜102、振り子 50〜56。GRU は 134〜471、PF v3 は 55〜144、MLP / oracle は 700〜1500。1 本あたり: 333 update の課題で light 約 2.4 時間・GRU 0.5 時間・PF 1.3 時間・対照 0.1 時間、振り子（1293 update）で light 10〜13 時間・GRU 約 4 時間・PF 6〜12 時間・対照 0.6〜0.8 時間。seed 10–12 の 99 本で約 380 slot 時間（`cpv` 28、`ml10` / `ml30` 各 27、振り子 各 約 150）、seed 13–14 の 66 本で約 255 slot 時間。
 
 ## Car-Flag について（調査で分かったこと）
 
