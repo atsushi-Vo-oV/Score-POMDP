@@ -511,12 +511,18 @@ class MaskedPendulumEnv(_BaseMaskedEnv):
         length: float = 1.0,
         initial_angle_range: float = np.pi,
         initial_speed_range: float = 1.0,
+        observation_clip: bool = False,
     ) -> None:
         super().__init__(
             horizon=horizon,
             observation_noise_std=observation_noise_std,
             seed=seed,
         )
+        if not isinstance(observation_clip, (bool, np.bool_)):
+            raise TypeError("observation_clip must be a boolean")
+        # POPGym's NoisyStatelessPendulum clips the noisy (cos, sin) back into [-1, 1]; every
+        # earlier run left the noisy observation unclipped.
+        self.observation_clip = bool(observation_clip)
         positive = {
             "max_speed": max_speed,
             "max_torque": max_torque,
@@ -553,7 +559,10 @@ class MaskedPendulumEnv(_BaseMaskedEnv):
         assert self._state is not None
         theta = self._state[0]
         signal = np.array([np.cos(theta), np.sin(theta)], dtype=np.float64)
-        return self._add_observation_noise(signal)
+        observation = self._add_observation_noise(signal)
+        if self.observation_clip:
+            observation = np.clip(observation, -1.0, 1.0).astype(np.float32)
+        return observation
 
     def oracle_features(self) -> np.ndarray:
         """Return angle-periodic, normalized full-state features without noise."""
@@ -884,6 +893,7 @@ _PENDULUM_KEYS = {
     "length",
     "initial_angle_range",
     "initial_speed_range",
+    "observation_clip",
 }
 _MOUNTAIN_CAR_KEYS = {
     "horizon",
@@ -1566,6 +1576,74 @@ class HeavenHellEnv(_BaseMaskedEnv):
         return self._observation(), reward, terminated, truncated, self._info()
 
 
+class MemoryChainEnv(_BaseMaskedEnv):
+    """Memory length (bsuite ``memory_len``, Osband et al., ICLR 2020): hold one bit for N steps.
+
+    An episode lasts N = ``horizon`` actions.  The context c in {-1, +1} is drawn at reset and
+    shown only in the first observation; every later observation has 0 in its place.  The reward
+    is 0 for the first N - 1 actions and, for the N-th, +1 if the action names the context
+    (action 1 for c = +1, action 0 for c = -1) and -1 otherwise.  For N >= 2 the deciding
+    observation carries no information about c, so a memoryless policy earns 0 in expectation;
+    the optimum is +1.
+
+    Observation ``(1 - t / N, 0, c if t == 0 else 0)`` before the t-th action (t = 0 .. N - 1):
+    the time left, the query slot of the bsuite layout (always 0 with a single bit) and the
+    context.  State ``(c, 1 - t / N)``.
+    """
+
+    state_dim = 2
+    observation_dim = 3
+    oracle_dim = 2
+
+    def __init__(
+        self,
+        *,
+        horizon: int = 10,
+        observation_noise_std: float = 0.0,
+        seed: int | None = None,
+    ) -> None:
+        super().__init__(
+            horizon=horizon,
+            observation_noise_std=observation_noise_std,
+            seed=seed,
+        )
+        self.action_spec = ActionSpec.discrete(2)
+
+    def _observation(self) -> np.ndarray:
+        assert self._state is not None
+        context, time_left = self._state
+        shown = context if self._elapsed_steps == 0 else 0.0
+        return self._add_observation_noise(np.array([time_left, 0.0, shown], dtype=np.float64))
+
+    def oracle_features(self) -> np.ndarray:
+        """Return the hidden context and the time left."""
+
+        if self._state is None:
+            raise RuntimeError("The environment has not been reset")
+        return np.asarray(self._state, dtype=np.float32)
+
+    def reset(self, seed: int | None = None) -> tuple[np.ndarray, dict[str, Any]]:
+        self._start_reset(seed)
+        context = 1.0 if self._rng.random() < 0.5 else -1.0
+        self._state = np.array([context, 1.0], dtype=np.float64)
+        return self._observation(), self._info()
+
+    def step(self, action: Any) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+        self._before_step()
+        selected = self.action_spec.validate(action)
+        assert isinstance(selected, int) and self._state is not None
+        context = float(self._state[0])
+        last = self._elapsed_steps == self.horizon - 1
+        reward = 0.0
+        if last:
+            reward = 1.0 if (selected == 1) == (context > 0.0) else -1.0
+        self._state = np.array(
+            [context, 1.0 - (self._elapsed_steps + 1) / self.horizon], dtype=np.float64
+        )
+        terminated, truncated = self._finish_step(bool(last))
+        return self._observation(), reward, terminated, truncated, self._info()
+
+
 def disk_tag_ghost_step(
     ghosts: np.ndarray,
     speeds: np.ndarray,
@@ -1939,6 +2017,9 @@ def make_env(
     if key in {"heavenhell", "heavenhellv0"}:
         kwargs = _factory_kwargs(config, _HEAVEN_HELL_KEYS)
         return HeavenHellEnv(seed=seed, **kwargs)
+    if key in {"memorychain", "memorylen", "memorylength"}:
+        kwargs = _factory_kwargs(config, {"horizon", "observation_noise_std"})
+        return MemoryChainEnv(seed=seed, **kwargs)
     if key in {"disktag", "tag"}:
         kwargs = _factory_kwargs(config, _DISK_TAG_KEYS)
         return DiskTagEnv(seed=seed, **kwargs)
@@ -1950,5 +2031,6 @@ def make_env(
 
     raise ValueError(
         f"Unknown environment {name!r}; expected masked_cartpole, masked_pendulum, "
-        "masked_mountain_car_continuous, light_dark, mountain_hike, car_flag, heaven_hell, or disk_tag"
+        "masked_mountain_car_continuous, light_dark, mountain_hike, car_flag, heaven_hell, "
+        "memory_chain, or disk_tag"
     )

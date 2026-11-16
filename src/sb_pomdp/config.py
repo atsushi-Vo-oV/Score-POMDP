@@ -60,8 +60,14 @@ _MOUNTAIN_HIKE_ALIASES = frozenset({"mountainhike", "mountainhikev0", "deathvall
 _PENDULUM_ALIASES = frozenset({"maskedpendulum", "pendulum", "pendulumv0", "pendulumv1"})
 # Masked pendulum start distribution (theta ~ U(-angle, angle) around upright, theta_dot ~
 # U(-speed, speed)); the legacy defaults (pi, 1) are the gym swing-up start.
-_PENDULUM_TASK_KEYS = _ENVIRONMENT_TASK_KEYS | frozenset({"initial_angle_range", "initial_speed_range"})
-_PENDULUM_TASK_DEFAULTS: dict[str, Any] = {"initial_angle_range": math.pi, "initial_speed_range": 1.0}
+# observation_clip (false in every earlier run) clips the noisy (cos, sin) observation back into
+# [-1, 1], as POPGym's NoisyStatelessPendulum does.
+_PENDULUM_TASK_DEFAULTS: dict[str, Any] = {
+    "initial_angle_range": math.pi,
+    "initial_speed_range": 1.0,
+    "observation_clip": False,
+}
+_PENDULUM_TASK_KEYS = _ENVIRONMENT_TASK_KEYS | frozenset(_PENDULUM_TASK_DEFAULTS)
 # Information-gathering tasks from the asymmetric-RL literature (sb_pomdp.envs.CarFlagEnv /
 # HeavenHellEnv); the optional keys default to the published constants.
 _CAR_FLAG_ALIASES = frozenset({"carflag", "carflagv0"})
@@ -807,6 +813,7 @@ def _validate_environment(value: Any, requested_tasks: Sequence[str]) -> Mapping
             if angle > math.pi:
                 raise ConfigError(f"{path}.initial_angle_range cannot exceed pi")
             _number(task["initial_speed_range"], f"{path}.initial_speed_range", minimum=0.0)
+            _boolean(task["observation_clip"], f"{path}.observation_clip")
         if is_car_flag:
             for key in sorted(_CAR_FLAG_TASK_DEFAULTS):
                 minimum = None if key == "priest_position" else 0.0

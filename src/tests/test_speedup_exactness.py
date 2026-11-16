@@ -19,6 +19,8 @@ def _old_replay(
     rollout: RolloutBatch,
     environment_indices: torch.Tensor,
     model_config: dict,
+    *,
+    replay: str | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Replay one rollout-long environment group with saved ULA randomness.
 
@@ -29,6 +31,9 @@ def _old_replay(
     differentiated.
     """
 
+    # update_ppo names the replay it wants (experiment 28); the old implementation knows the
+    # time-ordered ones only, where the name is the gradient mode.
+    assert replay in (None, str(model_config["belief_gradient_mode"]))
     gradient_mode = str(model_config["belief_gradient_mode"])
     if gradient_mode not in {"full", "tbptt_1"}:
         raise ValueError("model.belief_gradient_mode must be full or tbptt_1")
