@@ -477,6 +477,12 @@ class ScoreBeliefActorCritic(nn.Module):
             belief_compile=str(model_config.get("belief_compile", "off")),
             belief_cuda_graphs=bool(model_config.get("belief_cuda_graphs", False)),
             initial_belief=str(model_config.get("initial_belief", "branch")),
+            transition_persistence_init=(
+                None
+                if model_config.get("transition_persistence_init") is None
+                else float(model_config["transition_persistence_init"])
+            ),
+            transition_persistence_units=str(model_config.get("transition_persistence_units", "pair")),
         )
         encoder_use_scores = bool(model_config.get("encoder_use_scores", True))
         self.value_encoder_mode = str(model_config.get("value_encoder", "shared"))

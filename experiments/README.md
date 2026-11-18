@@ -36,6 +36,7 @@ tagr（鬼ごっこ、距離観測、1293）、tagre（楕円距離、環境 64�
 | 27 | 観測アンカーを毎 step の開始に入れると（と、その輸送 1 段版） | [27-anchor-every-step.md](27-anchor-every-step.md) | mirror2 / tps / Car-Flag / tagrs | 実装（`langevin_observation_anchor_steps`）・設定 16 個・ジョブ 80 本を 2026-11-15 に投入、結果待ち |
 | 28 | 信念の勾配を 1 step で打ち切ると（保存した粒子から全行を同時に再生する版を含む） | [28-one-step-gradients.md](28-one-step-gradients.md) | mirror2 / tps / Car-Flag / tagrs | 実装（`belief_replay` / `prediction_replay`）・設定 24 個・ジョブ 120 本を 2026-11-15 に投入、結果待ち |
 | 29 | 文献の記憶課題（速度を隠した CartPole / 振り子、bsuite の memory length）で、light は記憶を使えるようになるか | [29-literature-memory-tasks.md](29-literature-memory-tasks.md) | cpv / pdv / pdvn / ml10 / ml30 | 2026-11-16: 課題の調査・実装（`MemoryChainEnv`、振り子の `observation_clip`）・設定 33 個・ジョブ 165 本を準備し、同日 20:27 に math へ投入（木 v36）。結果待ち |
+| 30 | 遷移の網の初期値を「前の雲へ戻る場」にすると（v2-initialized / v1-initialized） | [30-transition-initialisation.md](30-transition-initialisation.md) | mirror2 / tps / tagr / ml10 / ml30 / cpv / pdv | 2026-11-18: 実装（`transition_persistence_init`）・設定 14 個・ジョブ 70 本を準備、未投入 |
 | 10 | 楕円距離観測（能動的センシング）で信念は効くか | [10-tagre-elliptic.md](10-tagre-elliptic.md) | tagre | 2 seed 完走（FLOPs 未一致に注意） |
 | 11 | 画像観測（Minecraft）で動くか | [11-minecraft.md](11-minecraft.md) | MineRL | ほぼ完走 |
 | 12 | 現在観測を方策に直結すると差は埋まるか（leak 2 × 3） | [12-obs-leak.md](12-obs-leak.md) | tagr / mirror2 | seed 10〜11 完走、12〜14 待ち |

@@ -281,6 +281,8 @@ _MODEL_KEYS = frozenset(
         "langevin_uniform_half_width",
         "langevin_initial_noise",
         "langevin_observation_anchor_steps",
+        "transition_persistence_init",
+        "transition_persistence_units",
         "belief_replay",
         "prediction_replay",
         "proposal_hidden",
@@ -474,6 +476,12 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         # Rows moved by the observation anchor: "initial" (only t = 0, every earlier run) or "all"
         # (every step starts at mu(o_t) + sigma(o_t) * noise; needs langevin_observation_anchor).
         "langevin_observation_anchor_steps": "initial",
+        # Starting weights of the direct transition network: null (orthogonal, every earlier run) or
+        # a positive number p (the transition term starts as p * (mean of the previous cloud - x);
+        # nothing is added to the score).  Units: "pair" (exact, hidden width >= 2 x latent size) or
+        # "single" (one unit per coordinate at the SiLU inflection point, hidden width >= latent size).
+        "transition_persistence_init": None,
+        "transition_persistence_units": "pair",
         # How the PPO update replays the belief: "sequence" (in time order, every earlier run) or
         # "stored" (every (time, environment) row at once from the incoming particles stored at
         # collection; one-step gradients, needs belief_gradient_mode=tbptt_1).
@@ -944,6 +952,18 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
                 "model.langevin_observation_anchor_steps=all cannot be combined with an affine / network "
                 "model.langevin_proposal or model.langevin_warm_start"
             )
+    persistence = section["transition_persistence_init"]
+    if persistence is not None:
+        _positive_number(persistence, "model.transition_persistence_init")
+        if section["score_parameterization"] != "direct" or section["energy_network_kind"] != "mlp":
+            raise ConfigError(
+                "model.transition_persistence_init needs model.score_parameterization=direct and "
+                "model.energy_network_kind=mlp"
+            )
+        if len(section["energy_hidden"]) != 1:
+            raise ConfigError("model.transition_persistence_init needs one hidden layer in model.energy_hidden")
+    if section["transition_persistence_units"] not in {"pair", "single"}:
+        raise ConfigError("model.transition_persistence_units must be pair or single")
     initial_belief = _nonempty_string(section["initial_belief"], "model.initial_belief")
     if initial_belief not in {"branch", "prior"}:
         raise ConfigError("model.initial_belief must be branch or prior")

@@ -116,6 +116,80 @@ SCORE_PARAMETERIZATIONS = ("energy", "direct", "direct_joint", "direct_flat")
 INITIAL_BELIEFS = ("branch", "prior")
 # Width of the previous-belief summary c(x) that the joint direct score network reads.
 _JOINT_CONTEXT_DIM = 8
+# model.transition_persistence_init: how the hidden units of the transition network carry x' - x.
+TRANSITION_PERSISTENCE_UNITS = ("pair", "single")
+# Inflection point of SiLU (root of 2 + u (1 - 2 sigmoid(u)), where the second derivative is 0) and
+# the input scale of the "single" units: SiLU(scale * z + u0) is linear in z to second order.
+# Scale 1 keeps the first-layer weights at the size of the "pair" form.  A small scale (0.25) is
+# closer to linear at the start but needs a large outgoing gain, and the cloud then drifts away
+# during learning (particle norm 5-17 after 10 steps in the retention check of experiment 30).
+_SILU_INFLECTION = 2.3993572805154676
+_PERSISTENCE_SINGLE_SCALE = 1.0
+
+
+def persistence_initialise_(network: nn.Module, state_dim: int, strength: float, units: str = "pair") -> None:
+    """Overwrite the weights of a direct transition network so that it starts as a pull to the previous cloud.
+
+    The network maps a pair (query x, previous particle x', action) to (attention logit, D values).
+    After this call every pair returns logit 0 (uniform attention) and value ``strength * (x' - x)``,
+    so the transition term of the recursive score is ``strength * (mean of the previous cloud - x)``.
+    Nothing is added to the score and the weights stay trainable; only the starting point of the
+    learning changes.  The action does not enter at the start (its weights into the used units are 0).
+
+    ``units="pair"`` uses two hidden units per coordinate and is exact (SiLU(z) - SiLU(-z) = z); it
+    needs a hidden width of at least 2 D.  ``units="single"`` uses one unit per coordinate placed at
+    the inflection point of SiLU (linear to second order in z = x' - x; the pull saturates for
+    z < -2.4 and is about 9 % weaker for large positive z) and needs a hidden width of at least D.  The remaining hidden units keep their first-layer
+    weights and get zero outgoing weights.  No random numbers are drawn.
+    """
+
+    layers = list(network.children()) if isinstance(network, nn.Sequential) else []
+    if (
+        len(layers) != 3
+        or not isinstance(layers[0], nn.Linear)
+        or not isinstance(layers[1], nn.SiLU)
+        or not isinstance(layers[2], nn.Linear)
+    ):
+        raise ValueError("transition_persistence_init needs an MLP transition network with one hidden layer (SiLU)")
+    first, last = layers[0], layers[2]
+    d = int(state_dim)
+    if last.out_features != 1 + d or first.in_features < 2 * d:
+        raise ValueError("transition_persistence_init needs the direct transition network (logit + state_dim values)")
+    if not float(strength) > 0.0:
+        raise ValueError("transition_persistence_init must be positive or None")
+    if units not in TRANSITION_PERSISTENCE_UNITS:
+        raise ValueError("transition_persistence_units must be pair or single")
+    needed = 2 * d if units == "pair" else d
+    if first.out_features < needed:
+        raise ValueError(
+            f"transition_persistence_units={units} needs a hidden width of at least {needed} "
+            f"(state_dim {d}), got {first.out_features}"
+        )
+    p = float(strength)
+    with torch.no_grad():
+        first.weight[:needed].zero_()
+        first.bias[:needed].zero_()
+        last.weight.zero_()
+        last.bias.zero_()
+        if units == "pair":
+            for j in range(d):
+                first.weight[2 * j, j] = -1.0
+                first.weight[2 * j, d + j] = 1.0
+                first.weight[2 * j + 1, j] = 1.0
+                first.weight[2 * j + 1, d + j] = -1.0
+                last.weight[1 + j, 2 * j] = p
+                last.weight[1 + j, 2 * j + 1] = -p
+        else:
+            u0 = _SILU_INFLECTION
+            sigmoid = 1.0 / (1.0 + math.exp(-u0))
+            slope = sigmoid + u0 * sigmoid * (1.0 - sigmoid)
+            gain = p / (slope * _PERSISTENCE_SINGLE_SCALE)
+            first.bias[:d].fill_(u0)
+            for j in range(d):
+                first.weight[j, j] = -_PERSISTENCE_SINGLE_SCALE
+                first.weight[j, d + j] = _PERSISTENCE_SINGLE_SCALE
+                last.weight[1 + j, j] = gain
+                last.bias[1 + j] = -gain * u0 * sigmoid
 # SMI component scales s_k are kept in [1e-3, 2] (same range as the ULA noise scale).
 _LOG_SMI_SCALE_MIN = math.log(1e-3)
 _LOG_SMI_SCALE_MAX = math.log(2.0)
@@ -326,6 +400,8 @@ class EnergyBelief(nn.Module):
         belief_compile: str = "off",
         belief_cuda_graphs: bool = False,
         initial_belief: str = "branch",
+        transition_persistence_init: float | None = None,
+        transition_persistence_units: str = "pair",
     ) -> None:
         super().__init__()
         if initial_belief not in INITIAL_BELIEFS:
@@ -611,6 +687,21 @@ class EnergyBelief(nn.Module):
                 "transition",
                 2 * state_dim + action_feature_dim,
                 1 + (_JOINT_CONTEXT_DIM if joint else state_dim) if direct else 1,
+            )
+        # Starting point of the transition network (None: the usual orthogonal initialisation, every
+        # earlier run).  A positive number p overwrites the weights so that the transition term starts
+        # as p * (mean of the previous cloud - x); see persistence_initialise_.
+        self.transition_persistence_init = (
+            None if transition_persistence_init is None else float(transition_persistence_init)
+        )
+        self.transition_persistence_units = str(transition_persistence_units)
+        if self.transition_persistence_init is not None:
+            if self.score_parameterization != "direct" or self.energy_network_kind != "mlp":
+                raise ValueError(
+                    "transition_persistence_init needs score_parameterization=direct and energy_network_kind=mlp"
+                )
+            persistence_initialise_(
+                self.transition_energy, state_dim, self.transition_persistence_init, self.transition_persistence_units
             )
 
     def _validate_context(

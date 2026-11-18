@@ -33,6 +33,7 @@ def validate(config):
         "initial_belief": {"branch"}, "langevin_proposal": {"noise", "affine", "uniform"},
         "langevin_initial_noise": {"normal"},
         "langevin_observation_anchor_steps": {"initial"},
+        "transition_persistence_init": {None},
         "belief_replay": {"sequence"}, "prediction_replay": {"same"},
         "energy_network_kind": {"mlp"}, "head_network_kind": {"mlp"},
         "trunk_network_kind": {"mlp"}, "policy_head_kind": {"mlp"},
