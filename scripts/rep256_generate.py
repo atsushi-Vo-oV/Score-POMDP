@@ -4,6 +4,8 @@ Every arm carries 256 numbers from one step to the next and spends about the sam
   light TF-SVGD   16 particles x 16 latent dimensions (model.belief_latent_dim 16), score networks of hidden width 32
                   (model.energy_hidden [32]); v2 and v1 defaults, each plain and with the transition-network
                   initialisation of experiment 30 (transition_persistence_init 4, exact paired units: 32 >= 2 x 16)
+                  with its per-particle attention (transition_persistence_kernel 4), and with the narrow first cloud
+                  (initial_score_projection_precision 4, v2 only)
   particle filter 16 particles x 16 dimensions (as before), widths scaled to the light's FLOPs
   GRU             hidden state 256, encoder widths scaled to the light's FLOPs
 WIDTHS holds the measured values (scratchpad flops_rep256.py, the same measurement as the earlier FLOPs matches; the
@@ -20,6 +22,8 @@ ROOT = Path(__file__).resolve().parents[1]
 LF = chr(10)
 LARGE = {"belief_latent_dim": 16, "energy_hidden": [32]}
 TINIT = {"transition_persistence_init": 4.0}
+TMIX = {"transition_persistence_init": 4.0, "transition_persistence_kernel": 4.0}
+TQ = {"transition_persistence_init": 4.0, "initial_score_projection_precision": 4.0}
 SHORT = "333 updates = 98 random-action prediction + 200 PPO + 35 interleaved prediction."
 LONG = "1293 updates = 98 random-action prediction + 1000 PPO + 195 interleaved prediction."
 # task: (updates, updates line, description of the task for the job header)
@@ -50,10 +54,16 @@ ARMS = {
                "trysvgdlight2_{t}_tf-svgd", LARGE, None, "light TF-SVGD, v2 default"),
     "light2-tinit": ("trysvgdlight2_{t}_tf-svgd-tinit-r256", "trysvgdlight2-{t}-tf-svgd-tinit-r256", "trysvgdlight2_{t}_svgd-tinit-r256",
                      "trysvgdlight2_{t}_tf-svgd", {**LARGE, **TINIT}, None, "light TF-SVGD, v2 default, transition network started as a pull to the previous cloud"),
+    "light2-tinitmix": ("trysvgdlight2_{t}_tf-svgd-tinitmix-r256", "trysvgdlight2-{t}-tf-svgd-tinitmix-r256", "trysvgdlight2_{t}_svgd-tinitmix-r256",
+                        "trysvgdlight2_{t}_tf-svgd", {**LARGE, **TMIX}, None, "light TF-SVGD, v2 default, transition network started as a pull to the previous particles near the query"),
+    "light2-tinitq": ("trysvgdlight2_{t}_tf-svgd-tinitq-r256", "trysvgdlight2-{t}-tf-svgd-tinitq-r256", "trysvgdlight2_{t}_svgd-tinitq-r256",
+                      "trysvgdlight2_{t}_tf-svgd", {**LARGE, **TQ}, None, "light TF-SVGD, v2 default, transition network started as a pull to the previous cloud and initial network started as a narrow first cloud"),
     "light1": ("trysvgdlight_{t}_tf-svgd-r256", "trysvgdlight-{t}-tf-svgd-r256", "trysvgdlight_{t}_svgd-r256",
                "trysvgdlight_{t}_tf-svgd", LARGE, None, "light TF-SVGD, v1 default"),
     "light1-tinit": ("trysvgdlight_{t}_tf-svgd-tinit-r256", "trysvgdlight-{t}-tf-svgd-tinit-r256", "trysvgdlight_{t}_svgd-tinit-r256",
                      "trysvgdlight_{t}_tf-svgd", {**LARGE, **TINIT}, None, "light TF-SVGD, v1 default, transition network started as a pull to the previous cloud"),
+    "light1-tinitmix": ("trysvgdlight_{t}_tf-svgd-tinitmix-r256", "trysvgdlight-{t}-tf-svgd-tinitmix-r256", "trysvgdlight_{t}_svgd-tinitmix-r256",
+                        "trysvgdlight_{t}_tf-svgd", {**LARGE, **TMIX}, None, "light TF-SVGD, v1 default, transition network started as a pull to the previous particles near the query"),
     "gru": ("trysvgd_{t}_gru-r256", "trysvgd-{t}-gru-r256", "trysvgd_{t}_gru-r256",
             "trysvgd_{t}_pf_v3", {}, "gru", "GRU baseline, hidden state 256, encoder FLOPs-matched to the enlarged light"),
     "pf": ("trysvgd_{t}_pf_v3-r256", "trysvgd-{t}-pf-v3-r256", "trysvgd_{t}_pf_v3-r256",

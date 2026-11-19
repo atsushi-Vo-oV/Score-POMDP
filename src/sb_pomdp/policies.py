@@ -483,6 +483,16 @@ class ScoreBeliefActorCritic(nn.Module):
                 else float(model_config["transition_persistence_init"])
             ),
             transition_persistence_units=str(model_config.get("transition_persistence_units", "pair")),
+            transition_persistence_kernel=(
+                None
+                if model_config.get("transition_persistence_kernel") is None
+                else float(model_config["transition_persistence_kernel"])
+            ),
+            initial_score_projection_precision=(
+                None
+                if model_config.get("initial_score_projection_precision") is None
+                else float(model_config["initial_score_projection_precision"])
+            ),
         )
         encoder_use_scores = bool(model_config.get("encoder_use_scores", True))
         self.value_encoder_mode = str(model_config.get("value_encoder", "shared"))

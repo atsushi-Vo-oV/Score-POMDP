@@ -10,7 +10,7 @@
   | GRU | 隠れ状態 256（今は 132〜217） | `gru_hidden_dim` 256、`gru_encoder_hidden` を計算量に合わせて拡大（例 mirror2 [3470, 1335]） | light に一致 | 約 580〜590 万 |
 
   粒子数 16・輸送 12 段・読み出し（Transformer、d_model 32）・方策の頭は今のまま。幅合わせは scratchpad の `flops_rep256.py`（これまでの FLOPs 合わせと同じ測り方、的は大きくした light v2）。
-- **腕（campaign）**: 6 腕。
+- **腕（campaign）**: 6 腕 + 2026-11-19 に追加した 3 腕（[30](30-transition-initialisation.md) の近い前粒子へ引く形と t = 0 を狭く始める形）。
 
   | 腕 | campaign |
   |---|---|
@@ -18,10 +18,13 @@
   | v2-initialized（[30](30-transition-initialisation.md) の初期値、強さ 4） | `trysvgdlight2-<task>-tf-svgd-tinit-r256-v1` |
   | light v1 | `trysvgdlight-<task>-tf-svgd-r256-v1` |
   | v1-initialized | `trysvgdlight-<task>-tf-svgd-tinit-r256-v1` |
+  | v2-initialized-mix（c = 4） | `trysvgdlight2-<task>-tf-svgd-tinitmix-r256-v1` |
+  | v1-initialized-mix（c = 4） | `trysvgdlight-<task>-tf-svgd-tinitmix-r256-v1` |
+  | v2-initialized-t0（q = 4） | `trysvgdlight2-<task>-tf-svgd-tinitq-r256-v1` |
   | GRU | `trysvgd-<task>-gru-r256-v1` |
   | PF v3 | `trysvgd-<task>-pf-v3-r256-v1` |
 
-- **課題**: mirror2（333 update）/ tps（213）/ tagr（1293）/ ml10 / ml30 / cpv（各 333）/ pdv（1293）× seed 10–14 = 210 本。
+- **課題**: mirror2（333 update）/ tps（213）/ tagr（1293）/ ml10 / ml30 / cpv（各 333）/ pdv（1293）× seed 10–14 = 210 本。追加の 3 腕は 7 課題 × seed 10–14 = 105 本（計 315 本）。
 - **注意**:
   - この大きさでは隠れ幅 32 = 潜在 16 × 2 なので、遷移の網の初期値は全課題で厳密な形（`pair`）が入る。鬼ごっこだけ近似（`single`）にする必要がない。
   - light の粒子は交換可能な集合なので、256 個の数が自由に使えるわけではない。次元の数はそろえたが、情報量をそろえたわけではない。light の読み出しは粒子に加えてスコア（同じ 256 個）も読む。PF は粒子ごとの重み 16 個も運ぶ。
@@ -37,7 +40,7 @@
 
   記録は `results/reports/nocarry_2026-11-18/spot_more/`（`run_large.sh`、`m1/v2L*`）。
 - **設定とジョブ**: `../config/trysvgdlight{,2}_<task>_tf-svgd{,-tinit}-r256.json`、`../config/trysvgd_<task>_{gru,pf_v3}-r256.json`、`../jobs/rep256/*_s{10..14}.sh`、生成 `scripts/rep256_generate.py`、テスト `src/tests/test_rep256.py`（各腕が元の設定と表のキーだけ違うこと、全腕が 256 個を運ぶこと、初期値が厳密な形で入ること）。
-- **状態**: 2026-11-18、設定 42 個・ジョブ 210 本・テストを準備。未投入（math の再起動後に GPU で所要時間を測り、投入 OK をもらってから）。
+- **状態**: 2026-11-18、設定 42 個・ジョブ 210 本・テストを準備。2026-11-19、追加の 3 腕の設定 21 個・ジョブ 105 本を準備。未投入（math の再起動後に GPU で所要時間を測り、投入 OK をもらってから）。
 
 ## 結果の解説
 

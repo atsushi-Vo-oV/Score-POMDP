@@ -105,6 +105,8 @@ _LEGACY_MODEL_DEFAULTS: dict[str, object] = {
     "langevin_observation_anchor_steps": "initial",
     "transition_persistence_init": None,
     "transition_persistence_units": "pair",
+    "transition_persistence_kernel": None,
+    "initial_score_projection_precision": None,
     "belief_replay": "sequence",
     "prediction_replay": "same",
     "proposal_hidden": [64],

@@ -127,8 +127,22 @@ _SILU_INFLECTION = 2.3993572805154676
 _PERSISTENCE_SINGLE_SCALE = 1.0
 
 
-def persistence_initialise_(network: nn.Module, state_dim: int, strength: float, units: str = "pair") -> None:
+def persistence_initialise_(
+    network: nn.Module, state_dim: int, strength: float, units: str = "pair", kernel: float | None = None
+) -> None:
     """Overwrite the weights of a direct transition network so that it starts as a pull to the previous cloud.
+
+    ``kernel`` (None: uniform attention, as described below) is the sharpness c of a per-particle
+    attention: the logit of a pair starts as ``-c * sum_d z_d tanh(z_d / 2)`` with z = x' - x, read
+    from the same paired units (SiLU(z) + SiLU(-z) = z tanh(z / 2)).  It is ``-c |z|^2 / 2`` near 0
+    and ``-c |z|_1`` far away, so every query is pulled (value ``strength * z``) to the previous
+    particles near it instead of to the mean of the whole cloud.  This attention-weighted pull is
+    NOT in general the score of a density: with an exactly quadratic logit it would be the score
+    of ``q_c ** (strength / c)`` for the kernel density q_c of variance 1 / c, but the SiLU
+    distance differs from the quadratic away from 0 (the field has a non-zero curl).  The strength
+    and the sharpness are independent choices (strength > c pulls a group together while c picks
+    the group).  It needs ``units="pair"``.
+
 
     The network maps a pair (query x, previous particle x', action) to (attention logit, D values).
     After this call every pair returns logit 0 (uniform attention) and value ``strength * (x' - x)``,
@@ -159,6 +173,11 @@ def persistence_initialise_(network: nn.Module, state_dim: int, strength: float,
         raise ValueError("transition_persistence_init must be positive or None")
     if units not in TRANSITION_PERSISTENCE_UNITS:
         raise ValueError("transition_persistence_units must be pair or single")
+    if kernel is not None:
+        if not float(kernel) > 0.0:
+            raise ValueError("transition_persistence_kernel must be positive or None")
+        if units != "pair":
+            raise ValueError("transition_persistence_kernel needs transition_persistence_units=pair")
     needed = 2 * d if units == "pair" else d
     if first.out_features < needed:
         raise ValueError(
@@ -179,6 +198,8 @@ def persistence_initialise_(network: nn.Module, state_dim: int, strength: float,
                 first.weight[2 * j + 1, d + j] = -1.0
                 last.weight[1 + j, 2 * j] = p
                 last.weight[1 + j, 2 * j + 1] = -p
+            if kernel is not None:
+                last.weight[0, :needed] = -float(kernel)
         else:
             u0 = _SILU_INFLECTION
             sigmoid = 1.0 / (1.0 + math.exp(-u0))
@@ -190,6 +211,55 @@ def persistence_initialise_(network: nn.Module, state_dim: int, strength: float,
                 first.weight[j, d + j] = _PERSISTENCE_SINGLE_SCALE
                 last.weight[1 + j, j] = gain
                 last.bias[1 + j] = -gain * u0 * sigmoid
+
+def initial_projection_initialise_(network: nn.Module, observation_dim: int, state_dim: int, precision: float) -> None:
+    """Overwrite the weights of a direct initial network so that the cloud of t = 0 starts narrow.
+
+    After this call the network returns ``precision * (B o - x)``: the score of a normal of
+    variance 1 / precision around a linear image ``B o`` of the first observation.  B is taken
+    from the first-layer weights the network already has (its first D rows, observation columns),
+    so no random numbers are drawn; two hidden units per coordinate (SiLU(z) - SiLU(-z) = z), so
+    the hidden width must be at least 2 D.  The remaining hidden units keep their first-layer
+    weights and get zero outgoing weights; everything stays trainable.  It writes the observation
+    into a narrow cloud, which the later steps can carry; it does not help to build a cloud with
+    several groups at t = 0.
+    """
+
+    layers = list(network.children()) if isinstance(network, nn.Sequential) else []
+    if (
+        len(layers) != 3
+        or not isinstance(layers[0], nn.Linear)
+        or not isinstance(layers[1], nn.SiLU)
+        or not isinstance(layers[2], nn.Linear)
+    ):
+        raise ValueError("initial_score_projection_precision needs an MLP initial network with one hidden layer (SiLU)")
+    first, last = layers[0], layers[2]
+    d, o = int(state_dim), int(observation_dim)
+    if last.out_features != d or first.in_features != o + d:
+        raise ValueError("initial_score_projection_precision needs the direct initial network (observation, x) -> D values")
+    if not float(precision) > 0.0:
+        raise ValueError("initial_score_projection_precision must be positive or None")
+    if first.out_features < 2 * d:
+        raise ValueError(
+            f"initial_score_projection_precision needs a hidden width of at least {2 * d} (state_dim {d}), "
+            f"got {first.out_features}"
+        )
+    q = float(precision)
+    with torch.no_grad():
+        projection = first.weight[:d, :o].clone()
+        first.weight[: 2 * d].zero_()
+        first.bias[: 2 * d].zero_()
+        last.weight.zero_()
+        last.bias.zero_()
+        for j in range(d):
+            first.weight[2 * j, :o] = projection[j]
+            first.weight[2 * j + 1, :o] = -projection[j]
+            first.weight[2 * j, o + j] = -1.0
+            first.weight[2 * j + 1, o + j] = 1.0
+            last.weight[j, 2 * j] = q
+            last.weight[j, 2 * j + 1] = -q
+
+
 # SMI component scales s_k are kept in [1e-3, 2] (same range as the ULA noise scale).
 _LOG_SMI_SCALE_MIN = math.log(1e-3)
 _LOG_SMI_SCALE_MAX = math.log(2.0)
@@ -402,6 +472,8 @@ class EnergyBelief(nn.Module):
         initial_belief: str = "branch",
         transition_persistence_init: float | None = None,
         transition_persistence_units: str = "pair",
+        transition_persistence_kernel: float | None = None,
+        initial_score_projection_precision: float | None = None,
     ) -> None:
         super().__init__()
         if initial_belief not in INITIAL_BELIEFS:
@@ -695,13 +767,42 @@ class EnergyBelief(nn.Module):
             None if transition_persistence_init is None else float(transition_persistence_init)
         )
         self.transition_persistence_units = str(transition_persistence_units)
+        # None: uniform attention at the start (one normal around the mean of the previous cloud).
+        # A positive number c: per-particle attention (every query is pulled to the previous particles near it).
+        self.transition_persistence_kernel = (
+            None if transition_persistence_kernel is None else float(transition_persistence_kernel)
+        )
+        if self.transition_persistence_kernel is not None and self.transition_persistence_init is None:
+            raise ValueError("transition_persistence_kernel needs transition_persistence_init")
         if self.transition_persistence_init is not None:
             if self.score_parameterization != "direct" or self.energy_network_kind != "mlp":
                 raise ValueError(
                     "transition_persistence_init needs score_parameterization=direct and energy_network_kind=mlp"
                 )
             persistence_initialise_(
-                self.transition_energy, state_dim, self.transition_persistence_init, self.transition_persistence_units
+                self.transition_energy, state_dim, self.transition_persistence_init, self.transition_persistence_units,
+                self.transition_persistence_kernel,
+            )
+        # Starting point of the initial network (None: the usual initialisation).  A positive number q
+        # makes the cloud of t = 0 start as a normal of variance 1 / q around a linear image of the
+        # first observation; see initial_projection_initialise_.
+        self.initial_score_projection_precision = (
+            None if initial_score_projection_precision is None else float(initial_score_projection_precision)
+        )
+        if self.initial_score_projection_precision is not None:
+            if (
+                self.score_parameterization != "direct"
+                or self.energy_network_kind != "mlp"
+                or self.initial_energy is None
+                or self.direct_score_bound is not None
+                or self.initial_score_prior != 0.0
+            ):
+                raise ValueError(
+                    "initial_score_projection_precision needs score_parameterization=direct, energy_network_kind=mlp, "
+                    "initial_belief=branch, direct_score_bound=None and initial_score_prior=0"
+                )
+            initial_projection_initialise_(
+                self.initial_energy, observation_dim, state_dim, self.initial_score_projection_precision
             )
 
     def _validate_context(

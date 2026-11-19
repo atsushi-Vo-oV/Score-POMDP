@@ -283,6 +283,8 @@ _MODEL_KEYS = frozenset(
         "langevin_observation_anchor_steps",
         "transition_persistence_init",
         "transition_persistence_units",
+        "transition_persistence_kernel",
+        "initial_score_projection_precision",
         "belief_replay",
         "prediction_replay",
         "proposal_hidden",
@@ -482,6 +484,8 @@ _LEGACY_DEFAULTS: dict[str, dict[str, JSONValue]] = {
         # "single" (one unit per coordinate at the SiLU inflection point, hidden width >= latent size).
         "transition_persistence_init": None,
         "transition_persistence_units": "pair",
+        "transition_persistence_kernel": None,
+        "initial_score_projection_precision": None,
         # How the PPO update replays the belief: "sequence" (in time order, every earlier run) or
         # "stored" (every (time, environment) row at once from the incoming particles stored at
         # collection; one-step gradients, needs belief_gradient_mode=tbptt_1).
@@ -964,9 +968,33 @@ def _validate_model(value: Any) -> Mapping[str, Any]:
             raise ConfigError("model.transition_persistence_init needs one hidden layer in model.energy_hidden")
     if section["transition_persistence_units"] not in {"pair", "single"}:
         raise ConfigError("model.transition_persistence_units must be pair or single")
+    persistence_kernel = section["transition_persistence_kernel"]
+    if persistence_kernel is not None:
+        _positive_number(persistence_kernel, "model.transition_persistence_kernel")
+        if persistence is None or section["transition_persistence_units"] != "pair":
+            raise ConfigError(
+                "model.transition_persistence_kernel needs model.transition_persistence_init and "
+                "model.transition_persistence_units=pair"
+            )
     initial_belief = _nonempty_string(section["initial_belief"], "model.initial_belief")
     if initial_belief not in {"branch", "prior"}:
         raise ConfigError("model.initial_belief must be branch or prior")
+    projection_precision = section["initial_score_projection_precision"]
+    if projection_precision is not None:
+        _positive_number(projection_precision, "model.initial_score_projection_precision")
+        if (
+            section["score_parameterization"] != "direct"
+            or section["energy_network_kind"] != "mlp"
+            or len(section["energy_hidden"]) != 1
+            or initial_belief != "branch"
+            or section["direct_score_bound"] is not None
+            or section["initial_score_prior"] != 0.0
+        ):
+            raise ConfigError(
+                "model.initial_score_projection_precision needs model.score_parameterization=direct, "
+                "model.energy_network_kind=mlp, one hidden layer in model.energy_hidden, model.initial_belief=branch, "
+                "model.direct_score_bound=null and model.initial_score_prior=0"
+            )
     if initial_belief == "prior" and section["langevin_observation_anchor"]:
         raise ConfigError(
             "model.initial_belief=prior has no initial branch; "

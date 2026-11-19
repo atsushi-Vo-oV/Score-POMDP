@@ -20,7 +20,7 @@ def _generator():
 def test_generated_arms_differ_from_their_source_only_in_the_listed_keys():
     generator = _generator()
     assets = list(generator.assets())
-    assert len(assets) == 42
+    assert len(assets) == 63
     for arm, task, name, source, label, campaign, stem, keys, method, updates, _ in assets:
         config, base = load_config(f"config/{name}.json").to_dict(), load_config(f"config/{source}.json").to_dict()
         assert config["experiment"]["label"] == label and campaign == f"{label}-v1"
@@ -29,6 +29,8 @@ def test_generated_arms_differ_from_their_source_only_in_the_listed_keys():
             assert config["model"]["belief_latent_dim"] == 16 and config["model"]["energy_hidden"] == [32]
             assert config["model"]["transition_persistence_units"] == "pair"
             assert config["model"]["transition_persistence_init"] == (4.0 if "tinit" in arm else None)
+            assert config["model"]["transition_persistence_kernel"] == (4.0 if "tinitmix" in arm else None)
+            assert config["model"]["initial_score_projection_precision"] == (4.0 if "tinitq" in arm else None)
             assert config["comparison"] == base["comparison"]
             for key in keys:
                 config["model"][key] = base["model"][key]
